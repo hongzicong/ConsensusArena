@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=1G
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --output=slurm-%j.out
 
 set -euo pipefail
@@ -21,8 +21,29 @@ scratch_root=${SCRATCH:-/scratch/$USER}
 run_dir=${CONSENSUSARENA_RUN_DIR:-$scratch_root/consensusarena-$SLURM_JOB_ID}
 replica_ready_timeout=${REPLICA_READY_TIMEOUT_SECONDS:-180}
 client_timeout=${CLIENT_TIMEOUT_SECONDS:-300}
+write_ratios_spec=${CONSENSUSARENA_WRITE_RATIOS:-0:50:100}
 runner_pid=
 active_run_dir=
+
+IFS=: read -r -a write_ratios <<< "$write_ratios_spec"
+if [[ ${#write_ratios[@]} == 0 ]]; then
+    echo "At least one write ratio is required" >&2
+    exit 1
+fi
+declare -A seen_write_ratios=()
+for index in "${!write_ratios[@]}"; do
+    write_ratio=${write_ratios[$index]//[[:space:]]/}
+    if [[ ! "$write_ratio" =~ ^(0|[1-9][0-9]{0,2})$ ]] || (( write_ratio > 100 )); then
+        echo "Invalid write ratio: ${write_ratios[$index]} (expected an integer from 0 to 100)" >&2
+        exit 1
+    fi
+    if [[ -n "${seen_write_ratios[$write_ratio]:-}" ]]; then
+        echo "Duplicate write ratio: $write_ratio" >&2
+        exit 1
+    fi
+    seen_write_ratios[$write_ratio]=1
+    write_ratios[$index]=$write_ratio
+done
 
 cleanup() {
     if [[ -n "$active_run_dir" ]]; then
@@ -46,6 +67,7 @@ mkdir -p "$run_dir"/{config,ranks}
 printf 'job_id=%s\nsubmitted_at=%s\nbinary=%s\nrepo=%s\n' \
     "$SLURM_JOB_ID" "$(date --iso-8601=seconds)" "$binary" "$repo_root" \
     > "$run_dir/metadata.txt"
+printf 'write_ratios_percent=%s\n' "$(IFS=:; echo "${write_ratios[*]}")" >> "$run_dir/metadata.txt"
 
 echo "Capturing addresses from the two allocated nodes..."
 srun --nodes=2 --ntasks=16 --ntasks-per-node=8 --cpus-per-task=1 --distribution=cyclic \
@@ -101,17 +123,19 @@ fi
 printf 'repetitions=%s\n' "$repetitions" >> "$run_dir/metadata.txt"
 
 run_repetition() {
-    local repetition=$1
+    local ratio_dir=$1
+    local repetition=$2
+    local write_ratio=$3
     local repetition_name repetition_dir deadline ready alias replica_log done_count status_file runner_exit
     repetition_name=$(printf 'repetition-%02d' "$repetition")
-    repetition_dir="$run_dir/$repetition_name"
+    repetition_dir="$ratio_dir/$repetition_name"
     active_run_dir=$repetition_dir
     mkdir -p "$repetition_dir"/{config,logs,results,status,stdout}
-    cp "$run_dir/config/cluster.conf" "$repetition_dir/config/cluster.conf"
-    cp "$run_dir/config/latency.conf" "$repetition_dir/config/latency.conf"
-    cp "$run_dir/config/quorum.conf" "$repetition_dir/config/quorum.conf"
+    cp "$ratio_dir/config/cluster.conf" "$repetition_dir/config/cluster.conf"
+    cp "$ratio_dir/config/latency.conf" "$repetition_dir/config/latency.conf"
+    cp "$ratio_dir/config/quorum.conf" "$repetition_dir/config/quorum.conf"
 
-    echo "Starting $repetition_name/$repetitions: master, five replicas, and ten clients..."
+    echo "Starting write ratio ${write_ratio}% $repetition_name/$repetitions: master, five replicas, and ten clients..."
     srun --nodes=2 --ntasks=16 --ntasks-per-node=8 --cpus-per-task=8 --distribution=cyclic \
         --kill-on-bad-exit=1 bash "$script_dir/node-runner.sh" "$repetition_dir" "$binary" &
     runner_pid=$!
@@ -182,10 +206,39 @@ run_repetition() {
     fi
 }
 
-for repetition in $(seq 1 "$repetitions"); do
-    run_repetition "$repetition"
+combined_summary="$run_dir/summary.csv"
+combined_details="$run_dir/repetition-summaries.csv"
+: > "$combined_summary"
+: > "$combined_details"
+
+for write_ratio in "${write_ratios[@]}"; do
+    ratio_dir="$run_dir/write-ratio-$write_ratio"
+    mkdir -p "$ratio_dir/config"
+    awk -v writes="$write_ratio" \
+        '$1 == "writes:" { $2 = writes } { print }' \
+        "$run_dir/config/cluster.conf" > "$ratio_dir/config/cluster.conf"
+    cp "$run_dir/config/latency.conf" "$ratio_dir/config/latency.conf"
+    cp "$run_dir/config/quorum.conf" "$ratio_dir/config/quorum.conf"
+    printf 'write_ratio_percent=%s\nrepetitions=%s\n' \
+        "$write_ratio" "$repetitions" > "$ratio_dir/metadata.txt"
+
+    for repetition in $(seq 1 "$repetitions"); do
+        run_repetition "$ratio_dir" "$repetition" "$write_ratio"
+    done
+
+    bash "$script_dir/summarize-repetitions.sh" "$ratio_dir" "$repetitions"
+    if [[ ! -s "$combined_summary" ]]; then
+        awk 'NR == 1 { print "WriteRatioPercent," $0 }' "$ratio_dir/summary.csv" > "$combined_summary"
+        awk 'NR == 1 { print "WriteRatioPercent," $0 }' "$ratio_dir/repetition-summaries.csv" > "$combined_details"
+    fi
+    awk -v ratio="$write_ratio" 'NR > 1 { print ratio "," $0 }' \
+        "$ratio_dir/summary.csv" >> "$combined_summary"
+    awk -v ratio="$write_ratio" 'NR > 1 { print ratio "," $0 }' \
+        "$ratio_dir/repetition-summaries.csv" >> "$combined_details"
 done
 
-bash "$script_dir/summarize-repetitions.sh" "$run_dir" "$repetitions"
 printf 'completed_at=%s\n' "$(date --iso-8601=seconds)" >> "$run_dir/metadata.txt"
+cat "$combined_summary"
+printf 'Write-ratio details: %s\n' "$combined_details"
+printf 'Write-ratio summary: %s\n' "$combined_summary"
 echo "Run completed successfully: $run_dir"

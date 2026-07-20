@@ -133,16 +133,27 @@ commandSize: 1000
 clones: 0
 arrivalRate: 50
 warmup: 15s
-duration: 60s
-repetitions: 5
+duration: 45s
+repetitions: 3
 keyCount: 1000000
 zipfSkew: 0.9
 ```
 
-Every repetition generates warm-up traffic for 15 seconds without recording
-latency, records requests generated during the following 60 seconds, and then
-waits for all in-flight replies. The Slurm job restarts the master, replicas,
-and clients before each of the five repetitions.
+`writes` is the percentage of generated commands that are writes. Direct runs
+use the base value above. By default, `slurm/run-latency.sbatch` overrides it
+with `0`, `50`, and `100` in sequence. Every ratio runs three repetitions; every
+repetition generates warm-up traffic for 15 seconds without recording latency,
+records requests generated during the following 45 seconds, and then waits for
+all in-flight replies. The Slurm job restarts the master, replicas, and clients
+before every repetition.
+
+To run a different ratio set, pass a colon-separated override:
+
+```bash
+sbatch --account=dcl \
+  --export=ALL,CONSENSUSARENA_WRITE_RATIOS=25:75 \
+  slurm/run-latency.sbatch
+```
 
 The Slurm launcher discovers the physical node addresses and rewrites the
 logical endpoints before starting the processes. Replica ports `7070` through
@@ -219,12 +230,14 @@ Important output paths:
 
 | Path | Contents |
 | --- | --- |
-| `summary.csv` | Five-run averages and sample standard deviations for mean, median, p95, p99, minimum, and maximum latency. |
-| `repetition-summaries.csv` | All per-repetition summary rows with repetition identifiers. |
-| `repetition-XX/results/summary.csv` | Per-region and overall latency statistics for one repetition. |
-| `repetition-XX/results/` | Raw measured client latency logs; warm-up latency is excluded. |
-| `repetition-XX/stdout/` | Master, replica, and client process output. |
-| `repetition-XX/logs/` | Application logs. |
+| `summary.csv` | Combined averages and sample standard deviations, keyed by `WriteRatioPercent`. |
+| `repetition-summaries.csv` | Combined per-repetition rows, keyed by `WriteRatioPercent`. |
+| `write-ratio-N/summary.csv` | Three-run averages and sample standard deviations for write ratio `N`. |
+| `write-ratio-N/repetition-summaries.csv` | All per-repetition rows for write ratio `N`. |
+| `write-ratio-N/repetition-XX/results/summary.csv` | Per-region and overall latency statistics for one repetition. |
+| `write-ratio-N/repetition-XX/results/` | Raw measured client latency logs; warm-up latency is excluded. |
+| `write-ratio-N/repetition-XX/stdout/` | Master, replica, and client process output. |
+| `write-ratio-N/repetition-XX/logs/` | Application logs. |
 | `config/` | Generated physical-address configuration and latency matrix. |
 | `metadata.txt` | Job ID, timestamps, binary path, and repository path. |
 
@@ -235,11 +248,11 @@ mkdir -p ~/consensusarena-results
 cp -a /scratch/zihong/consensusarena-JOB_ID ~/consensusarena-results/
 ```
 
-To override the binary, result directory, or client timeout:
+To override the binary, result directory, write ratios, or client timeout:
 
 ```bash
 sbatch --account=dcl \
-  --export=ALL,CONSENSUSARENA_BINARY=$HOME/bin/consensusarena,CONSENSUSARENA_RUN_DIR=/scratch/zihong/custom-run,CLIENT_TIMEOUT_SECONDS=300 \
+  --export=ALL,CONSENSUSARENA_BINARY=$HOME/bin/consensusarena,CONSENSUSARENA_RUN_DIR=/scratch/zihong/custom-run,CONSENSUSARENA_WRITE_RATIOS=0:50:100,CLIENT_TIMEOUT_SECONDS=300 \
   slurm/run-latency.sbatch
 ```
 
