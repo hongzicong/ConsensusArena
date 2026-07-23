@@ -110,6 +110,16 @@ EOF
 awk -f "$script_dir/remap-addresses.awk" \
     "$run_dir/config/address-map.txt" "$script_dir/workload.conf" \
     > "$run_dir/config/cluster.conf"
+if [[ -n "${CONSENSUSARENA_WORKLOAD_SEED:-}" ]]; then
+    if [[ ! "$CONSENSUSARENA_WORKLOAD_SEED" =~ ^[0-9]+$ ]]; then
+        echo "Invalid workload seed: $CONSENSUSARENA_WORKLOAD_SEED" >&2
+        exit 1
+    fi
+    awk -v workload_seed="$CONSENSUSARENA_WORKLOAD_SEED" \
+        '$1 == "workloadSeed:" { $2 = workload_seed } { print }' \
+        "$run_dir/config/cluster.conf" > "$run_dir/config/cluster.conf.tmp"
+    mv "$run_dir/config/cluster.conf.tmp" "$run_dir/config/cluster.conf"
+fi
 if [[ -n "${CONSENSUSARENA_PROTOCOL:-}" ]]; then
     case "${CONSENSUSARENA_PROTOCOL,,}" in
         swiftpaxos|curp|xpaxos|fastpaxos|n2paxos|paxos|epaxos) ;;
@@ -141,6 +151,12 @@ preload_records=$(awk 'tolower($1) == "keycount:" { print $2; exit }' "$run_dir/
 preload_value_size=$(awk 'tolower($1) == "commandsize:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
 preload_seed=$(awk 'tolower($1) == "preloadseed:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
 preload_seed=${preload_seed:-1}
+workload_seed=$(awk 'tolower($1) == "workloadseed:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
+workload_seed=${workload_seed:-1}
+if [[ ! "$workload_seed" =~ ^[0-9]+$ ]]; then
+    echo "Invalid workload seed: $workload_seed" >&2
+    exit 1
+fi
 if [[ "$preload_enabled" == "true" ]]; then
     if [[ ! "$preload_records" =~ ^[1-9][0-9]*$ ]]; then
         echo "Invalid preload record count: $preload_records" >&2
@@ -155,8 +171,8 @@ if [[ "$preload_enabled" == "true" ]]; then
         exit 1
     fi
 fi
-printf 'repetitions=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \
-    "$repetitions" "$preload_enabled" "$preload_records" "$preload_value_size" "$preload_seed" \
+printf 'repetitions=%s\nworkload_seed=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \
+    "$repetitions" "$workload_seed" "$preload_enabled" "$preload_records" "$preload_value_size" "$preload_seed" \
     >> "$run_dir/metadata.txt"
 
 run_repetition() {
@@ -172,8 +188,8 @@ run_repetition() {
     cp "$profile_dir/config/cluster.conf" "$repetition_dir/config/cluster.conf"
     cp "$profile_dir/config/latency.conf" "$repetition_dir/config/latency.conf"
     cp "$profile_dir/config/quorum.conf" "$repetition_dir/config/quorum.conf"
-    printf 'ycsb_profile=%s\nwrite_ratio_percent=%s\npreload_enabled=%s\n' \
-        "$profile" "$write_ratio" "$preload_enabled" > "$repetition_dir/metadata.txt"
+    printf 'ycsb_profile=%s\nwrite_ratio_percent=%s\nworkload_seed=%s\npreload_enabled=%s\n' \
+        "$profile" "$write_ratio" "$workload_seed" "$preload_enabled" > "$repetition_dir/metadata.txt"
 
     echo "Starting YCSB profile $profile (${write_ratio}% writes) $repetition_name/$repetitions: master, five replicas, and ten clients..."
     srun --nodes=2 --ntasks=16 --ntasks-per-node=8 --cpus-per-task=8 --distribution=cyclic \
@@ -281,8 +297,8 @@ for index in "${!ycsb_profiles[@]}"; do
         "$run_dir/config/cluster.conf" > "$profile_dir/config/cluster.conf"
     cp "$run_dir/config/latency.conf" "$profile_dir/config/latency.conf"
     cp "$run_dir/config/quorum.conf" "$profile_dir/config/quorum.conf"
-    printf 'ycsb_profile=%s\nread_ratio_percent=%s\nwrite_ratio_percent=%s\nrepetitions=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \
-        "$profile" "$read_ratio" "$write_ratio" "$repetitions" "$preload_enabled" \
+    printf 'ycsb_profile=%s\nread_ratio_percent=%s\nwrite_ratio_percent=%s\nrepetitions=%s\nworkload_seed=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \
+        "$profile" "$read_ratio" "$write_ratio" "$repetitions" "$workload_seed" "$preload_enabled" \
         "$preload_records" "$preload_value_size" "$preload_seed" > "$profile_dir/metadata.txt"
 
     for repetition in $(seq 1 "$repetitions"); do

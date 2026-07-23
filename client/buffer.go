@@ -1,7 +1,9 @@
 package client
 
 import (
+	"encoding/binary"
 	"errors"
+	"hash/fnv"
 	"math"
 	"math/rand"
 	"net"
@@ -32,7 +34,10 @@ type BufferClient struct {
 	warmup      time.Duration
 	duration    time.Duration
 
-	rand *rand.Rand
+	rand          *rand.Rand
+	valueRand     *rand.Rand
+	workloadSeed  int64
+	updateVersion uint64
 }
 
 type zipfParameters struct {
@@ -47,20 +52,38 @@ var zipfCDFCache = struct {
 	values: make(map[zipfParameters][]float64),
 }
 
-func NewBufferClient(c *Client, psize, writes, keyCount int, zipfSkew float64) *BufferClient {
+func NewBufferClient(c *Client, psize, writes, keyCount int, zipfSkew float64, workloadSeed int64) *BufferClient {
 	bc := &BufferClient{
 		Client: c,
 
 		Reply: make(chan *ReqReply, 1024),
 
-		psize:    psize,
-		writes:   writes,
-		keyCount: keyCount,
-		zipfSkew: zipfSkew,
+		psize:        psize,
+		writes:       writes,
+		keyCount:     keyCount,
+		zipfSkew:     zipfSkew,
+		workloadSeed: workloadSeed,
 	}
-	source := rand.NewSource(time.Now().UnixNano() + int64(c.ClientId))
-	bc.rand = rand.New(source)
+	bc.rand = rand.New(rand.NewSource(workloadSeed))
+	bc.valueRand = rand.New(rand.NewSource(mixWorkloadSeed(workloadSeed)))
 	return bc
+}
+
+func DeriveWorkloadSeed(baseSeed int64, alias string, clone int) int64 {
+	hasher := fnv.New64a()
+	var encoded [16]byte
+	binary.LittleEndian.PutUint64(encoded[:8], uint64(baseSeed))
+	binary.LittleEndian.PutUint64(encoded[8:], uint64(clone))
+	hasher.Write(encoded[:])
+	hasher.Write([]byte(alias))
+	return int64(hasher.Sum64() & ((uint64(1) << 63) - 1))
+}
+
+func mixWorkloadSeed(seed int64) int64 {
+	value := uint64(seed) + 0x9e3779b97f4a7c15
+	value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9
+	value = (value ^ (value >> 27)) * 0x94d049bb133111eb
+	return int64(value ^ (value >> 31))
 }
 
 func (c *BufferClient) PoissonArrivals(arrivalRate float64) {
@@ -102,9 +125,7 @@ func (c *BufferClient) Scan(key, count int64) []byte {
 // Assumed to be connected
 func (c *BufferClient) Loop() {
 	getKey := c.genGetKey()
-	val := make([]byte, c.psize)
-	c.rand.Read(val)
-	c.loopOpen(getKey, val)
+	c.loopOpen(getKey)
 }
 
 type scheduledRequest struct {
@@ -119,14 +140,15 @@ type requestTiming struct {
 	write    bool
 }
 
-func (c *BufferClient) loopOpen(getKey func() int64, val []byte) {
+func (c *BufferClient) loopOpen(getKey func() int64) {
+	c.Printf("Workload seed %d\n", c.workloadSeed)
 	c.Printf("Open-loop Poisson arrival rate %v requests/second\n", c.arrivalRate)
 	c.Printf("Warm-up %v, measurement duration %v\n", c.warmup, c.duration)
 
 	c.sendScheduledRequest(scheduledRequest{
 		key:   getKey(),
 		write: c.randomTrue(c.writes),
-	}, val)
+	})
 	<-c.Reply
 
 	requests := make(chan scheduledRequest, 1024)
@@ -175,7 +197,7 @@ func (c *BufferClient) loopOpen(getKey func() int64, val []byte) {
 				write:    request.write,
 			})
 			replies.Add(1)
-			c.sendScheduledRequest(request, val)
+			c.sendScheduledRequest(request)
 		}
 	}()
 
@@ -220,12 +242,24 @@ func (c *BufferClient) poissonInterval() time.Duration {
 	return time.Duration(seconds * float64(time.Second))
 }
 
-func (c *BufferClient) sendScheduledRequest(request scheduledRequest, val []byte) {
+func (c *BufferClient) sendScheduledRequest(request scheduledRequest) {
 	if request.write {
-		c.SendWrite(request.key, state.Value(val))
+		c.SendWrite(request.key, c.nextUpdateValue(request.key))
 	} else {
 		c.SendRead(request.key)
 	}
+}
+
+func (c *BufferClient) nextUpdateValue(key int64) state.Value {
+	c.updateVersion++
+	value := make(state.Value, c.psize)
+	c.valueRand.Read(value)
+	var metadata [24]byte
+	binary.LittleEndian.PutUint64(metadata[:8], c.updateVersion)
+	binary.LittleEndian.PutUint64(metadata[8:16], uint64(c.workloadSeed))
+	binary.LittleEndian.PutUint64(metadata[16:], uint64(key))
+	copy(value, metadata[:])
+	return value
 }
 
 func (c *BufferClient) WaitReplies(waitFrom int) {

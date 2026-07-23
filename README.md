@@ -137,6 +137,7 @@ duration: 20s
 repetitions: 3
 keyCount: 1000000
 zipfSkew: 0.9
+workloadSeed: 1
 preload: true
 preloadSeed: 1
 ```
@@ -159,6 +160,13 @@ Every profile runs three repetitions. Each repetition generates warm-up traffic
 for 10 seconds without recording latency, records requests generated during the
 following 20 seconds, and then waits for all in-flight replies. The Slurm job
 restarts the master, replicas, and clients before every repetition.
+
+`workloadSeed` makes request generation reproducible across protocol runs. Each
+logical client derives a stable stream seed from the base seed, its configured
+client alias, and its clone index. Request selection and value generation use
+independent random streams, so generating a new value for every UPDATE does not
+change the key, operation, or arrival sequence. Every UPDATE value contains its
+per-client version, stream seed, and key before the generated payload bytes.
 
 When `preload` is enabled, every replica constructs the same deterministic
 genesis state before accepting clients. The state contains `keyCount` records
@@ -271,11 +279,11 @@ mkdir -p ~/consensusarena-results
 cp -a /scratch/zihong/consensusarena-JOB_ID ~/consensusarena-results/
 ```
 
-To override the binary, result directory, YCSB profiles, or client timeout:
+To override the binary, result directory, YCSB profiles, workload seed, or client timeout:
 
 ```bash
 sbatch --account=dcl \
-  --export=ALL,CONSENSUSARENA_BINARY=$HOME/bin/consensusarena,CONSENSUSARENA_RUN_DIR=/scratch/zihong/custom-run,CONSENSUSARENA_YCSB_PROFILES=A:B:C,CLIENT_TIMEOUT_SECONDS=300 \
+  --export=ALL,CONSENSUSARENA_BINARY=$HOME/bin/consensusarena,CONSENSUSARENA_RUN_DIR=/scratch/zihong/custom-run,CONSENSUSARENA_YCSB_PROFILES=A:B:C,CONSENSUSARENA_WORKLOAD_SEED=1,CLIENT_TIMEOUT_SECONDS=300 \
   slurm/run-latency.sbatch
 ```
 

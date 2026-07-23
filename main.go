@@ -134,7 +134,8 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	server := c.Proxy.ProxyOf(c.ClientAddrs[c.Alias])
 	server = c.ReplicaAddrs[server]
 	cl := client.NewClientLog(server, c.MasterAddr, c.MasterPort, c.Fast, c.Leaderless, verbose, l)
-	b := client.NewBufferClient(cl, c.CommandSize, c.Writes, c.KeyCount, c.ZipfSkew)
+	workloadSeed := client.DeriveWorkloadSeed(int64(c.WorkloadSeed), c.Alias, i)
+	b := client.NewBufferClient(cl, c.CommandSize, c.Writes, c.KeyCount, c.ZipfSkew, workloadSeed)
 	b.PoissonArrivals(c.ArrivalRate)
 	b.MeasureFor(c.Warmup, c.Duration)
 	if err := b.Connect(); err != nil {
