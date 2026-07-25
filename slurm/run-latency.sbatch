@@ -242,11 +242,14 @@ run_repetition() {
     done
 
     deadline=$((SECONDS + client_timeout))
+    last_done_count=-1
     while true; do
         done_count=$(find "$repetition_dir/status" -maxdepth 1 -name 'client-*.done' | wc -l | tr -d ' ')
-        printf '%s clients completed: %s/10\r' "$repetition_name" "$done_count"
+        if [[ "$done_count" != "$last_done_count" ]]; then
+            printf '%s clients completed: %s/10\n' "$repetition_name" "$done_count"
+            last_done_count=$done_count
+        fi
         if [[ "$done_count" == 10 ]]; then
-            printf '\n'
             break
         fi
         if [[ -f "$repetition_dir/status/node-failed" ]] || ! kill -0 "$runner_pid" 2>/dev/null; then
