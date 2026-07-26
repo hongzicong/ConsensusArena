@@ -260,8 +260,11 @@ Important output paths:
 
 | Path | Contents |
 | --- | --- |
-| `summary.csv` | The only latency summary, containing pooled `A`, `B`, `C`, and `ALL` rows with mean, p50, p95, p99, min, and max; promotion uses the `ALL` mean and p99 only. |
-| `ycsb-X/repetition-XX/raw-latency/overall-ALL` | Raw completed-request latency samples consumed by the pooled summary. |
+| `summary.csv` | Combined averages and sample standard deviations, keyed by YCSB profile, read/write ratio, region, and operation. |
+| `repetition-summaries.csv` | Combined per-repetition rows with separate `READ`, `UPDATE`, and `ALL` operation values. |
+| `ycsb-X/summary.csv` | Three-run per-region, per-operation averages and sample standard deviations for profile `X`. |
+| `ycsb-X/repetition-summaries.csv` | All per-repetition, per-operation rows for profile `X`. |
+| `ycsb-X/repetition-XX/results/summary.csv` | Per-region READ, UPDATE, and ALL latency statistics for one repetition. |
 | `ycsb-X/repetition-XX/results/` | Raw measured client latency logs; warm-up latency is excluded. |
 | `ycsb-X/repetition-XX/stdout/` | Master, replica, and client process output. |
 | `ycsb-X/repetition-XX/logs/` | Application logs. |

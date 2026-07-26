@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +40,7 @@ type Client struct {
 	servers []net.Conn
 	readers []*bufio.Reader
 	writers []*bufio.Writer
+	writeMu []sync.Mutex
 
 	dt         *defs.LatencyTable
 	seqnum     int32
@@ -105,6 +107,7 @@ func (c *Client) Connect() error {
 	c.servers = make([]net.Conn, N)
 	c.readers = make([]*bufio.Reader, N)
 	c.writers = make([]*bufio.Writer, N)
+	c.writeMu = make([]sync.Mutex, N)
 
 	if !c.Leaderless {
 		c.Println("getting leader from master...")
@@ -180,16 +183,20 @@ func (c *Client) SendProposal(cmd defs.Propose) {
 
 	if !c.Fast {
 		c.Println("sending command", cmd.CommandId, "to", d)
+		c.writeMu[d].Lock()
 		c.writers[d].WriteByte(defs.PROPOSE)
 		cmd.Marshal(c.writers[d])
 		c.writers[d].Flush()
+		c.writeMu[d].Unlock()
 	} else {
 		c.Println("sending command", cmd.CommandId, "to everyone")
 		for rep := 0; rep < len(c.servers); rep++ {
 			if c.writers[rep] != nil {
+				c.writeMu[rep].Lock()
 				c.writers[rep].WriteByte(defs.PROPOSE)
 				cmd.Marshal(c.writers[rep])
 				c.writers[rep].Flush()
+				c.writeMu[rep].Unlock()
 			}
 		}
 	}
@@ -290,9 +297,11 @@ func (c *Client) SendMsg(rid int32, code uint8, msg fastrpc.Serializable) {
 		// TODO: return an error
 		return
 	}
+	c.writeMu[rid].Lock()
 	w.WriteByte(code)
 	msg.Marshal(w)
 	w.Flush()
+	c.writeMu[rid].Unlock()
 }
 
 func (c *Client) dial(addr string, connect bool) (net.Conn, error) {

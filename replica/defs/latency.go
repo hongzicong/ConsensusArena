@@ -21,10 +21,12 @@ type DelayProposeChan struct {
 	delay time.Duration
 	pChan chan *GPropose
 	lChan chan logCall
+	next  int64
 }
 
 type bstNode struct {
 	p     *GPropose
+	seq   int64
 	left  *bstNode
 	right *bstNode
 	ready bool
@@ -33,6 +35,7 @@ type bstNode struct {
 type logCall struct {
 	action int
 	arg    *GPropose
+	seq    int64
 }
 
 const (
@@ -40,36 +43,37 @@ const (
 	LOG_HANDLE
 )
 
-func (root *bstNode) insert(p *GPropose) *bstNode {
+func (root *bstNode) insert(p *GPropose, seq int64) *bstNode {
 	if root == nil {
 		return &bstNode{
-			p: p,
+			p:   p,
+			seq: seq,
 		}
 	}
-	if j := root.p.CommandId; p.CommandId < j {
-		root.left = root.left.insert(p)
-	} else if p.CommandId > j {
-		root.right = root.right.insert(p)
+	if seq < root.seq {
+		root.left = root.left.insert(p, seq)
+	} else if seq > root.seq {
+		root.right = root.right.insert(p, seq)
 	}
 
 	return root
 }
 
-func (root *bstNode) find(i int32) *bstNode {
+func (root *bstNode) find(seq int64) *bstNode {
 	if root == nil {
 		return nil
 	}
-	if j := root.p.CommandId; j == i {
+	if root.seq == seq {
 		return root
-	} else if j < i {
-		return root.right.find(i)
+	} else if root.seq < seq {
+		return root.right.find(seq)
 	}
-	return root.left.find(i)
+	return root.left.find(seq)
 }
 
 // call `handle` on each continuous element starting from `min`
 // returns new root and the id of the last handled proposal
-func (root *bstNode) inorderReady(min int32, handle func(*GPropose)) (*bstNode, int32) {
+func (root *bstNode) inorderReady(min int64, handle func(*GPropose)) (*bstNode, int64) {
 	if root == nil {
 		return nil, min
 	}
@@ -80,7 +84,7 @@ func (root *bstNode) inorderReady(min int32, handle func(*GPropose)) (*bstNode, 
 		root.left = nil
 	}
 
-	if !root.ready || i != root.p.CommandId-1 {
+	if !root.ready || i != root.seq-1 {
 		return root, i
 	}
 	handle(root.p)
@@ -104,7 +108,7 @@ func NewDelayProposeChan(d time.Duration, c chan *GPropose) *DelayProposeChan {
 
 	var (
 		log *bstNode
-		min int32 = -1
+		min int64 = -1
 	)
 
 	go func() {
@@ -112,12 +116,12 @@ func NewDelayProposeChan(d time.Duration, c chan *GPropose) *DelayProposeChan {
 			a := <-dc.lChan
 			switch a.action {
 			case LOG_INSERT:
-				log = log.insert(a.arg)
+				log = log.insert(a.arg, a.seq)
 			case LOG_HANDLE:
-				n := log.find(a.arg.CommandId)
+				n := log.find(a.seq)
 				if n == nil {
-					log = log.insert(a.arg)
-					n = log.find(a.arg.CommandId)
+					log = log.insert(a.arg, a.seq)
+					n = log.find(a.seq)
 				}
 				n.ready = true
 				log, min = log.inorderReady(min, func(p *GPropose) {
@@ -136,15 +140,19 @@ func (c *DelayProposeChan) Write(p *GPropose) {
 		return
 	}
 
+	seq := c.next
+	c.next++
 	c.lChan <- logCall{
 		action: LOG_INSERT,
 		arg:    p,
+		seq:    seq,
 	}
 	go func() {
 		time.Sleep(c.delay)
 		c.lChan <- logCall{
 			action: LOG_HANDLE,
 			arg:    p,
+			seq:    seq,
 		}
 	}()
 }

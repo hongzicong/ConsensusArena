@@ -122,7 +122,7 @@ if [[ -n "${CONSENSUSARENA_WORKLOAD_SEED:-}" ]]; then
 fi
 if [[ -n "${CONSENSUSARENA_PROTOCOL:-}" ]]; then
     case "${CONSENSUSARENA_PROTOCOL,,}" in
-        swiftpaxos|curp|xpaxos|fastpaxos|n2paxos|paxos|epaxos) ;;
+        swiftpaxos|curp|fastpaxos|n2paxos|paxos|epaxos) ;;
         *) echo "Unsupported protocol: $CONSENSUSARENA_PROTOCOL" >&2; exit 1 ;;
     esac
     awk -v protocol="$CONSENSUSARENA_PROTOCOL" \
@@ -242,14 +242,11 @@ run_repetition() {
     done
 
     deadline=$((SECONDS + client_timeout))
-    last_done_count=-1
     while true; do
         done_count=$(find "$repetition_dir/status" -maxdepth 1 -name 'client-*.done' | wc -l | tr -d ' ')
-        if [[ "$done_count" != "$last_done_count" ]]; then
-            printf '%s clients completed: %s/10\n' "$repetition_name" "$done_count"
-            last_done_count=$done_count
-        fi
+        printf '%s clients completed: %s/10\r' "$repetition_name" "$done_count"
         if [[ "$done_count" == 10 ]]; then
+            printf '\n'
             break
         fi
         if [[ -f "$repetition_dir/status/node-failed" ]] || ! kill -0 "$runner_pid" 2>/dev/null; then
@@ -270,7 +267,7 @@ run_repetition() {
         fi
     done
 
-    bash "$script_dir/extract-latency.sh" "$repetition_dir"
+    bash "$script_dir/summarize-latency.sh" "$repetition_dir"
     touch "$repetition_dir/status/stop"
     set +e
     wait "$runner_pid"
@@ -283,6 +280,11 @@ run_repetition() {
         return 1
     fi
 }
+
+combined_summary="$run_dir/summary.csv"
+combined_details="$run_dir/repetition-summaries.csv"
+: > "$combined_summary"
+: > "$combined_details"
 
 for index in "${!ycsb_profiles[@]}"; do
     profile=${ycsb_profiles[$index]}
@@ -303,9 +305,21 @@ for index in "${!ycsb_profiles[@]}"; do
         run_repetition "$profile_dir" "$repetition" "$profile" "$write_ratio"
     done
 
+    bash "$script_dir/summarize-repetitions.sh" "$profile_dir" "$repetitions"
+    if [[ ! -s "$combined_summary" ]]; then
+        awk 'NR == 1 { print "YCSBProfile,ReadRatioPercent,WriteRatioPercent," $0 }' "$profile_dir/summary.csv" > "$combined_summary"
+        awk 'NR == 1 { print "YCSBProfile,ReadRatioPercent,WriteRatioPercent," $0 }' "$profile_dir/repetition-summaries.csv" > "$combined_details"
+    fi
+    awk -v profile="$profile" -v read_ratio="$read_ratio" -v write_ratio="$write_ratio" \
+        'NR > 1 { print profile "," read_ratio "," write_ratio "," $0 }' \
+        "$profile_dir/summary.csv" >> "$combined_summary"
+    awk -v profile="$profile" -v read_ratio="$read_ratio" -v write_ratio="$write_ratio" \
+        'NR > 1 { print profile "," read_ratio "," write_ratio "," $0 }' \
+        "$profile_dir/repetition-summaries.csv" >> "$combined_details"
 done
 
-bash "$script_dir/summarize-pooled-latency.sh" "$run_dir"
 printf 'completed_at=%s\n' "$(date --iso-8601=seconds)" >> "$run_dir/metadata.txt"
-printf 'Latency metrics: %s\n' "$run_dir/summary.csv"
+cat "$combined_summary"
+printf 'YCSB profile details: %s\n' "$combined_details"
+printf 'YCSB profile summary: %s\n' "$combined_summary"
 echo "Run completed successfully: $run_dir"
