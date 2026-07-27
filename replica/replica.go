@@ -431,6 +431,8 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 		gbeacon      defs.Beacon
 		gbeaconReply defs.BeaconReply
 	)
+	deliveries := defs.NewDeliveryQueue(r.Dt.WaitDurationID(rid))
+	defer deliveries.CloseAndDrain()
 
 	for err == nil && !r.Shutdown {
 		if msgType, err = reader.ReadByte(); err != nil {
@@ -447,7 +449,6 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 				Rid:       int32(rid),
 				Timestamp: gbeacon.Timestamp,
 			})
-			break
 
 		case defs.GENERIC_SMR_BEACON_REPLY:
 			if err = gbeaconReply.Unmarshal(reader); err != nil {
@@ -458,7 +459,6 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 			r.M.Unlock()
 			now := time.Now().UnixNano()
 			r.Ewma[rid] = 0.99*r.Ewma[rid] + 0.01*float64(now-gbeaconReply.Timestamp)
-			break
 
 		default:
 			p, exists := r.RPC.Get(msgType)
@@ -467,10 +467,8 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 				if err = obj.Unmarshal(reader); err != nil {
 					break
 				}
-				go func(obj fastrpc.Serializable) {
-					time.Sleep(r.Dt.WaitDurationID(rid))
-					p.Chan <- obj
-				}(obj)
+				notify := p.Chan
+				deliveries.Write(defs.ChannelDelivery(notify, obj))
 			} else {
 				r.Fatal("Error: received unknown message type ", msgType, " from ", rid)
 			}
@@ -499,8 +497,8 @@ func (r *Replica) clientListener(conn net.Conn) {
 	isProxy := r.Config.Proxy.IsProxy(r.Alias, addr)
 
 	mutex := &sync.Mutex{}
-
-	dchan := defs.NewDelayProposeChan(r.Dt.WaitDuration(addr), r.ProposeChan)
+	deliveries := defs.NewDeliveryQueue(r.Dt.WaitDuration(addr))
+	defer deliveries.CloseAndDrain()
 
 	for !r.Shutdown && err == nil {
 		if msgType, err = reader.ReadByte(); err != nil {
@@ -525,15 +523,15 @@ func (r *Replica) clientListener(conn net.Conn) {
 					Timestamp: propose.Timestamp,
 				}, writer, mutex)
 			} else {
-				dchan.Write(&defs.GPropose{
+				gpropose := &defs.GPropose{
 					Propose: propose,
 					Reply:   writer,
 					Mutex:   mutex,
 					Proxy:   isProxy,
 					Addr:    addr,
-				})
+				}
+				deliveries.Write(defs.ChannelDelivery(r.ProposeChan, gpropose))
 			}
-			break
 
 		case defs.READ:
 			// TODO: do something with this
@@ -541,7 +539,6 @@ func (r *Replica) clientListener(conn net.Conn) {
 			if err = read.Unmarshal(reader); err != nil {
 				break
 			}
-			break
 
 		case defs.PROPOSE_AND_READ:
 			// TODO: do something with this
@@ -549,7 +546,6 @@ func (r *Replica) clientListener(conn net.Conn) {
 			if err = pr.Unmarshal(reader); err != nil {
 				break
 			}
-			break
 
 		case defs.STATS:
 			r.M.Lock()
@@ -565,10 +561,8 @@ func (r *Replica) clientListener(conn net.Conn) {
 				if err = obj.Unmarshal(reader); err != nil {
 					break
 				}
-				go func(obj fastrpc.Serializable) {
-					time.Sleep(r.Dt.WaitDuration(addr))
-					p.Chan <- obj
-				}(obj)
+				notify := p.Chan
+				deliveries.Write(defs.ChannelDelivery(notify, obj))
 			} else {
 				r.Fatal("Error: received unknown client message ", msgType)
 			}

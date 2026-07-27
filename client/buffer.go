@@ -263,6 +263,8 @@ func (c *BufferClient) nextUpdateValue(key int64) state.Value {
 
 func (c *BufferClient) WaitReplies(waitFrom int) {
 	go func() {
+		deliveries := defs.NewDeliveryQueue(c.dt.WaitDuration(c.replicas[waitFrom]))
+		defer deliveries.CloseAndDrain()
 		for {
 			r, err := c.GetReplyFrom(waitFrom)
 			if err != nil {
@@ -277,10 +279,21 @@ func (c *BufferClient) WaitReplies(waitFrom int) {
 				c.Println("Faulty reply")
 				break
 			}
-			go func(val state.Value, seqnum int32) {
-				time.Sleep(c.dt.WaitDuration(c.replicas[waitFrom]))
-				c.RegisterReply(val, seqnum)
-			}(r.Value, r.CommandId)
+			val := r.Value
+			seqnum := r.CommandId
+			deliveries.Write(func(stop <-chan struct{}) bool {
+				reply := &ReqReply{
+					Val:    val,
+					Seqnum: int(seqnum),
+					Time:   time.Now(),
+				}
+				select {
+				case c.Reply <- reply:
+					return true
+				case <-stop:
+					return false
+				}
+			})
 		}
 	}()
 }

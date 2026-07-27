@@ -264,6 +264,8 @@ func (c *Client) GetReplyFrom(rid int) (*defs.ProposeReplyTS, error) {
 func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
 	for i, reader := range c.readers {
 		go func(i int, reader *bufio.Reader) {
+			deliveries := defs.NewDeliveryQueue(c.dt.WaitDuration(c.replicas[i]))
+			defer deliveries.CloseAndDrain()
 			for {
 				var (
 					msgType uint8
@@ -281,10 +283,8 @@ func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
 				if err = obj.Unmarshal(reader); err != nil {
 					break
 				}
-				go func(obj fastrpc.Serializable) {
-					time.Sleep(c.dt.WaitDuration(c.replicas[i]))
-					p.Chan <- obj
-				}(obj)
+				notify := p.Chan
+				deliveries.Write(defs.ChannelDelivery(notify, obj))
 			}
 		}(i, reader)
 	}
