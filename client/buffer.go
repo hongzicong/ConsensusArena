@@ -107,7 +107,6 @@ func (c *BufferClient) RegisterReply(val state.Value, seqnum int32) {
 func (c *BufferClient) Write(key int64, val []byte) {
 	c.SendWrite(key, val)
 	<-c.Reply
-	return
 }
 
 func (c *BufferClient) Read(key int64) []byte {

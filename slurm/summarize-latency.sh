@@ -15,6 +15,8 @@ regions=(
 )
 clones=$(awk '$1 == "clones:" { print $2; exit }' "$config")
 expected_files=$((clones + 1))
+slow_path_commands=0
+completed_commands=0
 
 percentile() {
     local sorted_file=$1
@@ -58,6 +60,14 @@ for region in "${regions[@]}"; do
         echo "Expected $expected_files client log files for $region but found ${#files[@]}" >&2
         exit 1
     fi
+    for file in "${files[@]}"; do
+        read -r client_slow_paths client_completed < <(
+            awk '/Slow Paths:/ { last = $NF; completed++ }
+                 END { printf "%d %d\n", last + 0, completed + 0 }' "$file"
+        )
+        slow_path_commands=$((slow_path_commands + client_slow_paths))
+        completed_commands=$((completed_commands + client_completed))
+    done
     read_raw="$raw_dir/$region-READ"
     update_raw="$raw_dir/$region-UPDATE"
     all_raw="$raw_dir/$region-ALL"
@@ -87,5 +97,22 @@ if [[ -s "$raw_dir/overall-UPDATE" ]]; then
 fi
 write_row OVERALL ALL "$raw_dir/overall-ALL"
 
+fallback_ratio=NA
+if [[ "$completed_commands" != 0 ]]; then
+    fallback_ratio=$(awk -v slow="$slow_path_commands" -v total="$completed_commands" \
+        'BEGIN { printf "%.6f", slow / total }')
+    fallback_percent=$(awk -v ratio="$fallback_ratio" \
+        'BEGIN { printf "%.3f", ratio * 100 }')
+fi
+awk -F, -v ratio="$fallback_ratio" '
+    BEGIN { OFS = "," }
+    NR == 1 { print $0, "FallbackRatio"; next }
+    { print $0, ratio }
+' "$summary" > "$summary.tmp"
+mv "$summary.tmp" "$summary"
+
 cat "$summary"
+if [[ "$completed_commands" != 0 ]]; then
+    printf 'Fallback ratio: %s (%s%%)\n' "$fallback_ratio" "$fallback_percent"
+fi
 printf 'Latency summary: %s\n' "$summary"
