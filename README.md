@@ -131,7 +131,7 @@ Default workload values:
 writes: 50
 commandSize: 1000
 clones: 0
-arrivalRate: 4000
+arrivalRate: 2000
 warmup: 10s
 duration: 20s
 repetitions: 3

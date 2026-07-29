@@ -17,6 +17,7 @@ repo_root=${CONSENSUSARENA_ROOT:-${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR is not set
 repo_root=$(cd "$repo_root" && pwd)
 script_dir="$repo_root/slurm"
 binary=${CONSENSUSARENA_BINARY:-$repo_root/consensusarena-linux-amd64}
+expected_binary_sha256=${CONSENSUSARENA_BINARY_SHA256:-}
 scratch_root=${SCRATCH:-/scratch/$USER}
 run_dir=${CONSENSUSARENA_RUN_DIR:-$scratch_root/consensusarena-$SLURM_JOB_ID}
 replica_ready_timeout=${REPLICA_READY_TIMEOUT_SECONDS:-900}
@@ -67,11 +68,20 @@ if [[ ! -x "$binary" ]]; then
     echo "Build consensusarena-linux-amd64 and run chmod +x before submitting." >&2
     exit 1
 fi
-binary=$(readlink -f "$binary")
+source_binary=$(readlink -f "$binary")
 
-mkdir -p "$run_dir"/{config,ranks}
-printf 'job_id=%s\nsubmitted_at=%s\nbinary=%s\nrepo=%s\n' \
-    "$SLURM_JOB_ID" "$(date --iso-8601=seconds)" "$binary" "$repo_root" \
+mkdir -p "$run_dir"/{binary,config,ranks}
+binary="$run_dir/binary/consensusarena-linux-amd64"
+cp "$source_binary" "$binary"
+chmod +x "$binary"
+binary_sha256=$(sha256sum "$binary" | awk '{ print $1 }')
+if [[ -n "$expected_binary_sha256" && "${binary_sha256,,}" != "${expected_binary_sha256,,}" ]]; then
+    echo "Binary SHA-256 mismatch: got $binary_sha256, expected $expected_binary_sha256" >&2
+    exit 1
+fi
+
+printf 'job_id=%s\nsubmitted_at=%s\nbinary=%s\nbinary_source=%s\nbinary_sha256=%s\nrepo=%s\n' \
+    "$SLURM_JOB_ID" "$(date --iso-8601=seconds)" "$binary" "$source_binary" "$binary_sha256" "$repo_root" \
     > "$run_dir/metadata.txt"
 printf 'ycsb_profiles=%s\nwrite_ratios_percent=%s\n' \
     "$(IFS=:; echo "${ycsb_profiles[*]}")" \

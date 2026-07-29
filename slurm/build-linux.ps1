@@ -42,4 +42,22 @@ finally {
     [Environment]::SetEnvironmentVariable("GOCACHE", $previousCache, "Process")
 }
 
-Get-Item -LiteralPath $outputPath | Select-Object FullName, Length, LastWriteTime
+$binarySha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $outputPath).Hash.ToLowerInvariant()
+$frozenDirectory = Join-Path $repoRoot "results\binaries\$binarySha256"
+$frozenPath = Join-Path $frozenDirectory "consensusarena-linux-amd64"
+New-Item -ItemType Directory -Force -Path $frozenDirectory | Out-Null
+
+if (Test-Path -LiteralPath $frozenPath) {
+    $existingSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $frozenPath).Hash.ToLowerInvariant()
+    if ($existingSha256 -ne $binarySha256) {
+        throw "Frozen binary hash mismatch at $frozenPath"
+    }
+}
+else {
+    Copy-Item -LiteralPath $outputPath -Destination $frozenPath
+}
+
+[PSCustomObject]@{
+    FrozenPath = $frozenPath
+    SHA256 = $binarySha256
+} | ConvertTo-Json -Compress
