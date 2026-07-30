@@ -63,6 +63,10 @@ type Replica struct {
 
 func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, config *config.Config, l *dlog.Logger) *Replica {
 	n := len(addrs)
+	dt, err := defs.NewLatencyTable(defs.LatencyConf, defs.IP(), addrs)
+	if err != nil {
+		panic(fmt.Sprintf("load latency configuration for replica %s: %v", alias, err))
+	}
 	stateMachine := state.InitState()
 	if config.Preload {
 		started := time.Now()
@@ -109,7 +113,7 @@ func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, con
 		Ewma:      make([]float64, n),
 		Latencies: make([]int64, n),
 
-		Dt: defs.NewLatencyTable(defs.LatencyConf, defs.IP(), addrs),
+		Dt: dt,
 	}
 
 	for i := 0; i < r.N; i++ {
@@ -493,7 +497,24 @@ func (r *Replica) clientListener(conn net.Conn) {
 	r.Println("Client up", conn.RemoteAddr(), "(", r.LRead, ")")
 	r.M.Unlock()
 
-	addr := strings.Split(conn.RemoteAddr().String(), ":")[0]
+	addr, identityErr := defs.ReadClientIdentity(reader)
+	if identityErr != nil {
+		r.Printf("Rejecting client %s: %v", conn.RemoteAddr(), identityErr)
+		conn.Close()
+		return
+	}
+	knownClient := false
+	for _, endpoint := range r.Config.ClientAddrs {
+		if endpoint == addr {
+			knownClient = true
+			break
+		}
+	}
+	if !knownClient {
+		r.Printf("Rejecting client %s with unknown endpoint identity %q", conn.RemoteAddr(), addr)
+		conn.Close()
+		return
+	}
 	isProxy := r.Config.Proxy.IsProxy(r.Alias, addr)
 
 	mutex := &sync.Mutex{}

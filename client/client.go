@@ -101,7 +101,10 @@ func (c *Client) Connect() error {
 	c.Println("replicas", c.replicas)
 	c.Println("closest (alive)", c.ClosestId)
 
-	c.dt = defs.NewLatencyTable(defs.LatencyConf, defs.IP(), c.replicas)
+	c.dt, err = defs.NewLatencyTable(defs.LatencyConf, defs.IP(), c.replicas)
+	if err != nil {
+		return fmt.Errorf("load latency configuration for client %s: %w", defs.IP(), err)
+	}
 
 	N := len(c.replicas)
 	c.servers = make([]net.Conn, N)
@@ -134,6 +137,10 @@ func (c *Client) Connect() error {
 		c.servers[i], err = c.dial(c.replicas[i], false)
 		if err != nil {
 			return err
+		}
+		if err = defs.WriteClientIdentity(c.servers[i], defs.IP()); err != nil {
+			c.servers[i].Close()
+			return fmt.Errorf("identify client to replica %d: %w", i, err)
 		}
 		c.readers[i] = bufio.NewReader(c.servers[i])
 		c.writers[i] = bufio.NewWriter(c.servers[i])
