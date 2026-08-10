@@ -262,8 +262,6 @@ func (c *BufferClient) nextUpdateValue(key int64) state.Value {
 
 func (c *BufferClient) WaitReplies(waitFrom int) {
 	go func() {
-		deliveries := defs.NewDeliveryQueue(c.dt.WaitDuration(c.replicas[waitFrom]))
-		defer deliveries.CloseAndDrain()
 		for {
 			r, err := c.GetReplyFrom(waitFrom)
 			if err != nil {
@@ -280,19 +278,11 @@ func (c *BufferClient) WaitReplies(waitFrom int) {
 			}
 			val := r.Value
 			seqnum := r.CommandId
-			deliveries.Write(func(stop <-chan struct{}) bool {
-				reply := &ReqReply{
-					Val:    val,
-					Seqnum: int(seqnum),
-					Time:   time.Now(),
-				}
-				select {
-				case c.Reply <- reply:
-					return true
-				case <-stop:
-					return false
-				}
-			})
+			c.Reply <- &ReqReply{
+				Val:    val,
+				Seqnum: int(seqnum),
+				Time:   time.Now(),
+			}
 		}
 	}()
 }

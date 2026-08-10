@@ -25,7 +25,7 @@ func runReplica(c *config.Config, logger *dlog.Logger) {
 	maddr := fmt.Sprintf("%s:%d", c.MasterAddr, c.MasterPort)
 	addr, port := replicaEndpoint(c.ReplicaAddrs[c.Alias], c.Port)
 	log.Printf("Server starting on %s:%d", addr, port)
-	replicaId, nodeList, isLeader := registerWithMaster(addr, maddr, port)
+	replicaId, nodeList, isLeader := registerWithMaster(c.Alias, addr, maddr, port)
 	f := (len(c.ReplicaAddrs) - 1) / 2
 	log.Printf("Tolerating %d max. failures", f)
 
@@ -80,11 +80,12 @@ func replicaEndpoint(endpoint string, defaultPort int) (string, int) {
 	return host, port
 }
 
-func registerWithMaster(addr, mAddr string, port int) (int, []string, bool) {
+func registerWithMaster(alias, addr, mAddr string, port int) (int, []string, bool) {
 	var reply defs.RegisterReply
 	args := &defs.RegisterArgs{
-		Addr: addr,
-		Port: port,
+		Alias: alias,
+		Addr:  addr,
+		Port:  port,
 	}
 	log.Printf("connecting to: %v", mAddr)
 

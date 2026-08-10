@@ -42,7 +42,6 @@ type Client struct {
 	writers []*bufio.Writer
 	writeMu []sync.Mutex
 
-	dt         *defs.LatencyTable
 	seqnum     int32
 	server     string // co-located with
 	masterPort int
@@ -100,11 +99,6 @@ func (c *Client) Connect() error {
 	}
 	c.Println("replicas", c.replicas)
 	c.Println("closest (alive)", c.ClosestId)
-
-	c.dt, err = defs.NewLatencyTable(defs.LatencyConf, defs.IP(), c.replicas)
-	if err != nil {
-		return fmt.Errorf("load latency configuration for client %s: %w", defs.IP(), err)
-	}
 
 	N := len(c.replicas)
 	c.servers = make([]net.Conn, N)
@@ -271,8 +265,6 @@ func (c *Client) GetReplyFrom(rid int) (*defs.ProposeReplyTS, error) {
 func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
 	for i, reader := range c.readers {
 		go func(i int, reader *bufio.Reader) {
-			deliveries := defs.NewDeliveryQueue(c.dt.WaitDuration(c.replicas[i]))
-			defer deliveries.CloseAndDrain()
 			for {
 				var (
 					msgType uint8
@@ -291,7 +283,7 @@ func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
 					break
 				}
 				notify := p.Chan
-				deliveries.Write(defs.ChannelDelivery(notify, obj))
+				notify <- obj
 			}
 		}(i, reader)
 	}
@@ -319,7 +311,8 @@ func (c *Client) dial(addr string, connect bool) (net.Conn, error) {
 	)
 
 	for try := 0; try < 3; try++ {
-		conn, err = net.DialTimeout("tcp", addr, 3*time.Second)
+		dialAddr := defs.DialAddress(addr)
+		conn, err = net.DialTimeout("tcp", dialAddr, 3*time.Second)
 		if err == nil {
 			if connect {
 				io.WriteString(conn, "CONNECT "+rpc.DefaultRPCPath+" HTTP/1.0\n\n")
@@ -334,7 +327,7 @@ func (c *Client) dial(addr string, connect bool) (net.Conn, error) {
 				return conn, nil
 			}
 		} else {
-			c.Println(addr, "connection error:", err)
+			c.Println(addr, "via", dialAddr, "connection error:", err)
 		}
 		if conn != nil {
 			conn.Close()

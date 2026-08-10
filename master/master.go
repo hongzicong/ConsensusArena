@@ -21,20 +21,23 @@ import (
 type Master struct {
 	*dlog.Logger
 
-	N          int
-	port       int
-	nodeList   []string
-	addrList   []string
-	portList   []int
-	lock       *sync.Mutex
-	nodes      []*rpc.Client
-	leader     []bool
-	alive      []bool
-	latencies  []float64
-	finishInit bool
-	initCond   *sync.Cond
-	nextLeader int
-	config     *config.Config
+	N               int
+	port            int
+	nodeList        []string
+	addrList        []string
+	portList        []int
+	lock            *sync.Mutex
+	nodes           []*rpc.Client
+	leader          []bool
+	alive           []bool
+	latencies       []float64
+	registered      []bool
+	registeredCount int
+	replicaIDs      map[string]int
+	finishInit      bool
+	initCond        *sync.Cond
+	nextLeader      int
+	config          *config.Config
 }
 
 func New(N, port int, config *config.Config, logger *dlog.Logger) *Master {
@@ -43,17 +46,26 @@ func New(N, port int, config *config.Config, logger *dlog.Logger) *Master {
 
 		N:          N,
 		port:       port,
-		nodeList:   make([]string, 0, N),
-		addrList:   make([]string, 0, N),
-		portList:   make([]int, 0, N),
+		nodeList:   make([]string, N),
+		addrList:   make([]string, N),
+		portList:   make([]int, N),
 		lock:       new(sync.Mutex),
 		nodes:      make([]*rpc.Client, N),
 		leader:     make([]bool, N),
 		alive:      make([]bool, N),
 		latencies:  make([]float64, N),
+		registered: make([]bool, N),
+		replicaIDs: make(map[string]int, N),
 		finishInit: false,
 		nextLeader: -1,
 		config:     config,
+	}
+	if len(config.ReplicaAliases) != N {
+		panic(fmt.Sprintf("configured replica order has %d entries, expected %d",
+			len(config.ReplicaAliases), N))
+	}
+	for id, alias := range config.ReplicaAliases {
+		master.replicaIDs[alias] = id
 	}
 	master.initCond = sync.NewCond(master.lock)
 	return master
@@ -76,7 +88,7 @@ func (master *Master) Run() {
 func (master *Master) run() {
 	for {
 		master.lock.Lock()
-		if len(master.nodeList) == master.N {
+		if master.registeredCount == master.N {
 			master.lock.Unlock()
 			break
 		}
@@ -188,27 +200,19 @@ func (master *Master) Register(args *defs.RegisterArgs, reply *defs.RegisterRepl
 	master.lock.Lock()
 	defer master.lock.Unlock()
 
-	nlen := len(master.nodeList)
-	index := nlen
-
 	addrPort := fmt.Sprintf("%s:%d", args.Addr, args.Port)
-
-	for i, ap := range master.nodeList {
-		if addrPort == ap {
-			index = i
-			break
-		}
+	index, err := master.registrationIndex(args.Alias, addrPort)
+	if err != nil {
+		return err
 	}
 
-	if index == nlen {
-		master.nodeList = master.nodeList[0 : nlen+1]
-		master.nodeList[nlen] = addrPort
-		master.addrList = master.addrList[0 : nlen+1]
-		master.addrList[nlen] = args.Addr
-		master.portList = master.portList[0 : nlen+1]
-		master.portList[nlen] = args.Port
+	if !master.registered[index] {
+		master.nodeList[index] = addrPort
+		master.addrList[index] = args.Addr
+		master.portList[index] = args.Port
 		master.leader[index] = false
-		nlen++
+		master.registered[index] = true
+		master.registeredCount++
 
 		addr := args.Addr
 		if addr == "" {
@@ -225,7 +229,7 @@ func (master *Master) Register(args *defs.RegisterArgs, reply *defs.RegisterRepl
 		}
 	}
 
-	if nlen == master.N {
+	if master.registeredCount == master.N {
 		reply.Ready = true
 		reply.ReplicaId = index
 		reply.NodeList = master.nodeList
@@ -259,6 +263,26 @@ func (master *Master) Register(args *defs.RegisterArgs, reply *defs.RegisterRepl
 	return nil
 }
 
+func (master *Master) registrationIndex(alias, addrPort string) (int, error) {
+	index, exists := master.replicaIDs[alias]
+	if !exists {
+		return 0, fmt.Errorf("unknown replica alias %q", alias)
+	}
+	expected := master.config.ReplicaAddrs[alias]
+	if _, _, err := net.SplitHostPort(expected); err != nil {
+		expected = fmt.Sprintf("%s:%d", expected, master.config.Port)
+	}
+	if addrPort != expected {
+		return 0, fmt.Errorf("replica %q registered endpoint %q, expected %q",
+			alias, addrPort, expected)
+	}
+	if master.registered[index] && master.nodeList[index] != addrPort {
+		return 0, fmt.Errorf("replica %q changed endpoint from %q to %q",
+			alias, master.nodeList[index], addrPort)
+	}
+	return index, nil
+}
+
 func (master *Master) GetLeader(args *defs.GetLeaderArgs, reply *defs.GetLeaderReply) error {
 	master.lock.Lock()
 	defer master.lock.Unlock()
@@ -281,7 +305,7 @@ func (master *Master) GetReplicaList(args *defs.GetReplicaListArgs, reply *defs.
 		master.initCond.Wait()
 	}
 
-	if len(master.nodeList) == master.N {
+	if master.registeredCount == master.N {
 		reply.Ready = true
 	} else {
 		reply.Ready = false

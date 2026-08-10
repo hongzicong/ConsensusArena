@@ -3,10 +3,11 @@ set -euo pipefail
 
 run_dir=$1
 binary=$2
+toxiproxy_server=$3
 rank=${SLURM_PROCID:?SLURM_PROCID is not set}
 config="$run_dir/config/cluster.conf"
-latency="$run_dir/config/latency.conf"
 quorum="$run_dir/config/quorum.conf"
+script_dir=$(cd "$(dirname "$0")" && pwd)
 
 replica_alias=
 client_alias=
@@ -49,6 +50,13 @@ run_app() {
     GOMAXPROCS=${SLURM_CPUS_PER_TASK:-8} "$binary" "$@"
 }
 
+if [[ "$rank" != 15 ]]; then
+    dial_map=$(bash "$script_dir/setup-toxiproxy.sh" "$run_dir" "$rank" "$toxiproxy_server")
+    toxiproxy_pid=$(tr -d '[:space:]' < "$run_dir/status/toxiproxy-$rank.pid")
+    pids+=("$toxiproxy_pid")
+    export CONSENSUSARENA_DIAL_MAP="$dial_map"
+fi
+
 if [[ "$rank" == 15 ]]; then
     run_app -run master -config "$config" -alias m0 \
         -log "$run_dir/logs/master.log" \
@@ -69,7 +77,7 @@ else
 fi
 
 if [[ -n "$replica_alias" ]]; then
-    run_app -run replica -config "$config" -latency "$latency" \
+    run_app -run replica -config "$config" \
         -alias "$replica_alias" -quorum "$quorum" \
         -log "$run_dir/logs/${replica_alias}-replica.log" \
         > "$run_dir/stdout/${replica_alias}-replica.out" 2>&1 &
@@ -83,7 +91,7 @@ if [[ -n "$client_alias" ]]; then
     done
 
     set +e
-    run_app -run client -config "$config" -latency "$latency" \
+    run_app -run client -config "$config" \
         -alias "$client_alias" -log "$run_dir/results/${client_alias}-client-" \
         > "$run_dir/stdout/${client_alias}-client.out" 2>&1
     client_exit=$?

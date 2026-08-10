@@ -9,7 +9,6 @@ import (
 	"math"
 	"net"
 	"os"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -57,16 +56,10 @@ type Replica struct {
 
 	Ewma      []float64
 	Latencies []int64
-
-	Dt *defs.LatencyTable
 }
 
 func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, config *config.Config, l *dlog.Logger) *Replica {
 	n := len(addrs)
-	dt, err := defs.NewLatencyTable(defs.LatencyConf, defs.IP(), addrs)
-	if err != nil {
-		panic(fmt.Sprintf("load latency configuration for replica %s: %v", alias, err))
-	}
 	stateMachine := state.InitState()
 	if config.Preload {
 		started := time.Now()
@@ -112,8 +105,6 @@ func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, con
 
 		Ewma:      make([]float64, n),
 		Latencies: make([]int64, n),
-
-		Dt: dt,
 	}
 
 	for i := 0; i < r.N; i++ {
@@ -150,25 +141,12 @@ func (r *Replica) ReadQuorumSize() int {
 }
 
 func (r *Replica) ConnectToPeers() {
-	var b [4]byte
-	bs := b[:4]
 	done := make(chan bool)
 
 	go r.waitForPeerConnections(done)
 
 	for i := 0; i < int(r.Id); i++ {
-		for {
-			if conn, err := net.Dial("tcp", r.PeerAddrList[i]); err == nil {
-				r.Peers[i] = conn
-				break
-			}
-			time.Sleep(1e9)
-		}
-		binary.LittleEndian.PutUint32(bs, uint32(r.Id))
-		if _, err := r.Peers[i].Write(bs); err != nil {
-			r.Println("Write id error:", err)
-			continue
-		}
+		r.Peers[i] = r.connectToPeer(i)
 		r.Alive[i] = true
 		r.PeerReaders[i] = bufio.NewReader(r.Peers[i])
 		r.PeerWriters[i] = bufio.NewWriter(r.Peers[i])
@@ -187,31 +165,47 @@ func (r *Replica) ConnectToPeers() {
 }
 
 func (r *Replica) ConnectToPeersNoListeners() {
-	var b [4]byte
-	bs := b[:4]
 	done := make(chan bool)
 
 	go r.waitForPeerConnections(done)
 
 	for i := 0; i < int(r.Id); i++ {
-		for {
-			if conn, err := net.Dial("tcp", r.PeerAddrList[i]); err == nil {
-				r.Peers[i] = conn
-				break
-			}
-			time.Sleep(1e9)
-		}
-		binary.LittleEndian.PutUint32(bs, uint32(r.Id))
-		if _, err := r.Peers[i].Write(bs); err != nil {
-			r.Println("Write id error:", err)
-			continue
-		}
+		r.Peers[i] = r.connectToPeer(i)
 		r.Alive[i] = true
 		r.PeerReaders[i] = bufio.NewReader(r.Peers[i])
 		r.PeerWriters[i] = bufio.NewWriter(r.Peers[i])
 	}
 	<-done
 	r.Printf("Replica id: %d. Done connecting to peers\n", r.Id)
+}
+
+const peerHandshakeAck = byte(0xca)
+
+func (r *Replica) connectToPeer(peerID int) net.Conn {
+	var identity [4]byte
+	binary.LittleEndian.PutUint32(identity[:], uint32(r.Id))
+	dialAddress := defs.DialAddress(r.PeerAddrList[peerID])
+
+	for {
+		conn, err := net.DialTimeout("tcp", dialAddress, 3*time.Second)
+		if err == nil {
+			_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+			var ack [1]byte
+			if _, err = conn.Write(identity[:]); err == nil {
+				_, err = io.ReadFull(conn, ack[:])
+			}
+			if err == nil && ack[0] == peerHandshakeAck {
+				_ = conn.SetDeadline(time.Time{})
+				return conn
+			}
+			_ = conn.Close()
+			if err == nil {
+				err = fmt.Errorf("invalid peer handshake acknowledgement %#x", ack[0])
+			}
+		}
+		r.Printf("Connect to peer %d via %s failed: %v; retrying", peerID, dialAddress, err)
+		time.Sleep(time.Second)
+	}
 }
 
 func (r *Replica) WaitForClientConnections() {
@@ -375,15 +369,7 @@ func (r *Replica) ComputeClosestPeers() []float64 {
 	}
 	r.M.Unlock()
 
-	if r.Dt == nil {
-		r.UpdatePreferredPeerOrder(quorum)
-	} else {
-		sort.Slice(r.PreferredPeerOrder, func(i, j int) bool {
-			di := r.Dt.WaitDurationID(int(r.PreferredPeerOrder[i]))
-			dj := r.Dt.WaitDurationID(int(r.PreferredPeerOrder[j]))
-			return dj == time.Duration(0) || di < dj
-		})
-	}
+	r.UpdatePreferredPeerOrder(quorum)
 
 	latencies := make([]float64, r.N-1)
 
@@ -407,7 +393,8 @@ func (r *Replica) waitForPeerConnections(done chan bool) {
 		r.Fatal(r.PeerAddrList[r.Id], err)
 	}
 	r.Listener = l
-	for i := r.Id + 1; i < int32(r.N); i++ {
+	expected := int32(r.N) - r.Id - 1
+	for accepted := int32(0); accepted < expected; {
 		conn, err := r.Listener.Accept()
 		if err != nil {
 			r.Println("Accept error:", err)
@@ -415,13 +402,25 @@ func (r *Replica) waitForPeerConnections(done chan bool) {
 		}
 		if _, err := io.ReadFull(conn, bs); err != nil {
 			r.Println("Connection establish error:", err)
+			_ = conn.Close()
 			continue
 		}
 		id := int32(binary.LittleEndian.Uint32(bs))
+		if id <= r.Id || id >= int32(r.N) || r.Peers[id] != nil {
+			r.Printf("Invalid or duplicate peer identity %d", id)
+			_ = conn.Close()
+			continue
+		}
+		if _, err := conn.Write([]byte{peerHandshakeAck}); err != nil {
+			r.Println("Connection acknowledgement error:", err)
+			_ = conn.Close()
+			continue
+		}
 		r.Peers[id] = conn
 		r.PeerReaders[id] = bufio.NewReader(conn)
 		r.PeerWriters[id] = bufio.NewWriter(conn)
 		r.Alive[id] = true
+		accepted++
 		r.Printf("IN Connected to %d", id)
 	}
 
@@ -435,9 +434,6 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 		gbeacon      defs.Beacon
 		gbeaconReply defs.BeaconReply
 	)
-	deliveries := defs.NewDeliveryQueue(r.Dt.WaitDurationID(rid))
-	defer deliveries.CloseAndDrain()
-
 	for err == nil && !r.Shutdown {
 		if msgType, err = reader.ReadByte(); err != nil {
 			break
@@ -472,7 +468,7 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 					break
 				}
 				notify := p.Chan
-				deliveries.Write(defs.ChannelDelivery(notify, obj))
+				notify <- obj
 			} else {
 				r.Fatal("Error: received unknown message type ", msgType, " from ", rid)
 			}
@@ -518,9 +514,6 @@ func (r *Replica) clientListener(conn net.Conn) {
 	isProxy := r.Config.Proxy.IsProxy(r.Alias, addr)
 
 	mutex := &sync.Mutex{}
-	deliveries := defs.NewDeliveryQueue(r.Dt.WaitDuration(addr))
-	defer deliveries.CloseAndDrain()
-
 	for !r.Shutdown && err == nil {
 		if msgType, err = reader.ReadByte(); err != nil {
 			break
@@ -551,7 +544,7 @@ func (r *Replica) clientListener(conn net.Conn) {
 					Proxy:   isProxy,
 					Addr:    addr,
 				}
-				deliveries.Write(defs.ChannelDelivery(r.ProposeChan, gpropose))
+				r.ProposeChan <- gpropose
 			}
 
 		case defs.READ:
@@ -583,7 +576,7 @@ func (r *Replica) clientListener(conn net.Conn) {
 					break
 				}
 				notify := p.Chan
-				deliveries.Write(defs.ChannelDelivery(notify, obj))
+				notify <- obj
 			} else {
 				r.Fatal("Error: received unknown client message ", msgType)
 			}

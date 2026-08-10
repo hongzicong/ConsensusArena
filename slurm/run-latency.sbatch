@@ -18,6 +18,10 @@ repo_root=$(cd "$repo_root" && pwd)
 script_dir="$repo_root/slurm"
 binary=${CONSENSUSARENA_BINARY:-$repo_root/consensusarena-linux-amd64}
 expected_binary_sha256=${CONSENSUSARENA_BINARY_SHA256:-}
+toxiproxy_source=${CONSENSUSARENA_TOXIPROXY_SERVER:-$repo_root/toxiproxy-server-linux-amd64}
+expected_toxiproxy_sha256=${CONSENSUSARENA_TOXIPROXY_SHA256:-556d891134a3c582dc1e1a3f7335fd55142e5965769855a00b944e13e48302fc}
+latency_jitter_ms=${CONSENSUSARENA_LATENCY_JITTER_MS:-10}
+bandwidth_kbps=${CONSENSUSARENA_BANDWIDTH_KBPS:-125000}
 scratch_root=${SCRATCH:-/scratch/$USER}
 run_dir=${CONSENSUSARENA_RUN_DIR:-$scratch_root/consensusarena-$SLURM_JOB_ID}
 replica_ready_timeout=${REPLICA_READY_TIMEOUT_SECONDS:-900}
@@ -25,6 +29,17 @@ client_timeout=${CLIENT_TIMEOUT_SECONDS:-300}
 ycsb_profiles_spec=${CONSENSUSARENA_YCSB_PROFILES:-A:B:C}
 runner_pid=
 active_run_dir=
+
+[[ "$latency_jitter_ms" =~ ^[0-9]+$ ]] || {
+    echo "Invalid latency jitter in milliseconds: $latency_jitter_ms" >&2
+    exit 1
+}
+[[ "$bandwidth_kbps" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Invalid bandwidth in KB/s: $bandwidth_kbps" >&2
+    exit 1
+}
+export CONSENSUSARENA_LATENCY_JITTER_MS=$latency_jitter_ms
+export CONSENSUSARENA_BANDWIDTH_KBPS=$bandwidth_kbps
 
 IFS=: read -r -a requested_profiles <<< "$ycsb_profiles_spec"
 if [[ ${#requested_profiles[@]} == 0 ]]; then
@@ -69,20 +84,39 @@ if [[ ! -x "$binary" ]]; then
     exit 1
 fi
 source_binary=$(readlink -f "$binary")
+if [[ ! -x "$toxiproxy_source" ]]; then
+    echo "Toxiproxy server is missing or not executable: $toxiproxy_source" >&2
+    echo "Fetch the pinned binary with slurm/fetch-toxiproxy.ps1, upload it, and run chmod +x." >&2
+    exit 1
+fi
+source_toxiproxy=$(readlink -f "$toxiproxy_source")
 
 mkdir -p "$run_dir"/{binary,config,ranks}
 binary="$run_dir/binary/consensusarena-linux-amd64"
+toxiproxy_binary="$run_dir/binary/toxiproxy-server-linux-amd64"
 cp "$source_binary" "$binary"
+cp "$source_toxiproxy" "$toxiproxy_binary"
 chmod +x "$binary"
+chmod +x "$toxiproxy_binary"
 binary_sha256=$(sha256sum "$binary" | awk '{ print $1 }')
 if [[ -n "$expected_binary_sha256" && "${binary_sha256,,}" != "${expected_binary_sha256,,}" ]]; then
     echo "Binary SHA-256 mismatch: got $binary_sha256, expected $expected_binary_sha256" >&2
     exit 1
 fi
+toxiproxy_sha256=$(sha256sum "$toxiproxy_binary" | awk '{ print $1 }')
+if [[ "${toxiproxy_sha256,,}" != "${expected_toxiproxy_sha256,,}" ]]; then
+    echo "Toxiproxy SHA-256 mismatch: got $toxiproxy_sha256, expected $expected_toxiproxy_sha256" >&2
+    exit 1
+fi
+toxiproxy_version=$($toxiproxy_binary -version 2>&1 | tr -d '\r' | head -n 1)
 
 printf 'job_id=%s\nsubmitted_at=%s\nbinary=%s\nbinary_source=%s\nbinary_sha256=%s\nrepo=%s\n' \
     "$SLURM_JOB_ID" "$(date --iso-8601=seconds)" "$binary" "$source_binary" "$binary_sha256" "$repo_root" \
     > "$run_dir/metadata.txt"
+printf 'latency_backend=toxiproxy\ntoxiproxy_binary=%s\ntoxiproxy_source=%s\ntoxiproxy_sha256=%s\ntoxiproxy_version=%s\nlatency_rounding=%s\nlatency_jitter_ms=%s\nbandwidth_kbps=%s\nbandwidth_bits_per_second=%s\nbandwidth_scope=%s\n' \
+    "$toxiproxy_binary" "$source_toxiproxy" "$toxiproxy_sha256" "$toxiproxy_version" \
+    'ceil(rtt_ms/2) per stream direction' "$latency_jitter_ms" "$bandwidth_kbps" \
+    "$((bandwidth_kbps * 8000))" 'per TCP connection per stream direction' >> "$run_dir/metadata.txt"
 printf 'ycsb_profiles=%s\nwrite_ratios_percent=%s\n' \
     "$(IFS=:; echo "${ycsb_profiles[*]}")" \
     "$(IFS=:; echo "${write_ratios[*]}")" >> "$run_dir/metadata.txt"
@@ -132,7 +166,7 @@ if [[ -n "${CONSENSUSARENA_WORKLOAD_SEED:-}" ]]; then
 fi
 if [[ -n "${CONSENSUSARENA_PROTOCOL:-}" ]]; then
     case "${CONSENSUSARENA_PROTOCOL,,}" in
-        swiftpaxos|curp|fastpaxos|n2paxos|paxos|epaxos) ;;
+		swiftpaxos|curp|fastpaxos|n2paxos|paxos|epaxos) ;;
         *) echo "Unsupported protocol: $CONSENSUSARENA_PROTOCOL" >&2; exit 1 ;;
     esac
     awk -v protocol="$CONSENSUSARENA_PROTOCOL" \
@@ -196,14 +230,16 @@ run_repetition() {
     active_run_dir=$repetition_dir
     mkdir -p "$repetition_dir"/{config,logs,results,status,stdout}
     cp "$profile_dir/config/cluster.conf" "$repetition_dir/config/cluster.conf"
+    cp "$profile_dir/config/address-map.txt" "$repetition_dir/config/address-map.txt"
     cp "$profile_dir/config/latency.conf" "$repetition_dir/config/latency.conf"
     cp "$profile_dir/config/quorum.conf" "$repetition_dir/config/quorum.conf"
     printf 'ycsb_profile=%s\nwrite_ratio_percent=%s\nworkload_seed=%s\npreload_enabled=%s\n' \
         "$profile" "$write_ratio" "$workload_seed" "$preload_enabled" > "$repetition_dir/metadata.txt"
 
-    echo "Starting YCSB profile $profile (${write_ratio}% writes) $repetition_name/$repetitions: master, five replicas, and ten clients..."
+    echo "Starting YCSB profile $profile (${write_ratio}% writes) $repetition_name/$repetitions through Toxiproxy..."
     srun --nodes=2 --ntasks=16 --ntasks-per-node=8 --cpus-per-task=8 --distribution=cyclic \
-        --kill-on-bad-exit=1 bash "$script_dir/node-runner.sh" "$repetition_dir" "$binary" &
+        --kill-on-bad-exit=1 bash "$script_dir/node-runner.sh" \
+        "$repetition_dir" "$binary" "$toxiproxy_binary" &
     runner_pid=$!
 
     deadline=$((SECONDS + replica_ready_timeout))
@@ -305,6 +341,7 @@ for index in "${!ycsb_profiles[@]}"; do
     awk -v writes="$write_ratio" \
         '$1 == "writes:" { $2 = writes } { print }' \
         "$run_dir/config/cluster.conf" > "$profile_dir/config/cluster.conf"
+    cp "$run_dir/config/address-map.txt" "$profile_dir/config/address-map.txt"
     cp "$run_dir/config/latency.conf" "$profile_dir/config/latency.conf"
     cp "$run_dir/config/quorum.conf" "$profile_dir/config/quorum.conf"
     printf 'ycsb_profile=%s\nread_ratio_percent=%s\nwrite_ratio_percent=%s\nrepetitions=%s\nworkload_seed=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \

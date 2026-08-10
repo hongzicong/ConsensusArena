@@ -11,8 +11,9 @@ import (
 // master RPC definitions
 
 type RegisterArgs struct {
-	Addr string
-	Port int
+	Alias string
+	Addr  string
+	Port  int
 }
 
 type RegisterReply struct {

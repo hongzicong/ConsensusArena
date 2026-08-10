@@ -20,7 +20,6 @@ import (
 
 var (
 	confs        = flag.String("config", "", "Deployment config `file` (required)")
-	latency      = flag.String("latency", "", "Latency config `file`")
 	logFile      = flag.String("log", "", "Path to the log `file`")
 	machineAlias = flag.String("alias", "", "An `alias` of this participant")
 	machineType  = flag.String("run", "server", "Run a `participant`, which is either a server (or replica), a client or a master")
@@ -45,7 +44,11 @@ func main() {
 	if *protocol != "" {
 		c.Protocol = *protocol
 	}
-	defs.LatencyConf = *latency
+	if dialMap := os.Getenv("CONSENSUSARENA_DIAL_MAP"); dialMap != "" {
+		if err := defs.ConfigureDialMap(dialMap); err != nil {
+			log.Fatalf("configure Toxiproxy dial map: %v", err)
+		}
+	}
 
 	switch *machineType {
 	case "replica":

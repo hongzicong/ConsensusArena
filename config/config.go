@@ -62,8 +62,9 @@ type Config struct {
 	Port        int
 
 	// associates client/replica alias with the address
-	ClientAddrs  map[string]string
-	ReplicaAddrs map[string]string
+	ClientAddrs    map[string]string
+	ReplicaAddrs   map[string]string
+	ReplicaAliases []string
 
 	// -- master info --
 	MasterAlias string
@@ -118,7 +119,6 @@ type Config struct {
 	Quorum string
 
 	Proxy *ProxyInfo
-	//latency *LatencyTable
 }
 
 func Read(filename, alias string) (*Config, error) {
@@ -293,6 +293,9 @@ func Read(filename, alias string) (*Config, error) {
 					c.MasterAlias = words[0]
 					c.MasterAddr = addr
 				} else if readingReplicas {
+					if _, exists := c.ReplicaAddrs[words[0]]; !exists {
+						c.ReplicaAliases = append(c.ReplicaAliases, words[0])
+					}
 					c.ReplicaAddrs[words[0]] = addr
 				} else if readingClients {
 					c.ClientAddrs[words[0]] = addr
