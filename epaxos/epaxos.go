@@ -21,7 +21,12 @@ const TRUE = uint8(1)
 const FALSE = uint8(0)
 const ADAPT_TIME_SEC = 10
 
-const COMMIT_GRACE_PERIOD = 10 * 1e9 // 10 second(s)
+const COMMIT_GRACE_PERIOD = 10 * time.Second
+
+const MAX_BATCH = 1000
+
+const INITIAL_RECOVERY_BACKOFF = 10 * time.Second
+const MAX_RECOVERY_BACKOFF = time.Minute
 
 const BF_K = 4
 const BF_M_N = 32.0
@@ -79,10 +84,17 @@ type Replica struct {
 	clientMutex        *sync.Mutex
 	instancesToRecover chan *instanceId
 	// does this replica think it is the leader
-	IsLeader      bool
-	maxRecvBallot int32
-	batchWait     int
-	transconf     bool
+	IsLeader         bool
+	maxRecvBallot    int32
+	batchWait        int
+	transconf        bool
+	recoveryMu       sync.Mutex
+	recoveryAttempts map[uint64]recoveryAttempt
+}
+
+type recoveryAttempt struct {
+	nextAttempt time.Time
+	backoff     time.Duration
 }
 
 type InstPair struct {
@@ -98,6 +110,7 @@ type Instance struct {
 	Deps           []int32
 	lb             *LeaderBookkeeping
 	Index, Lowlink int
+	onStack        bool
 	bfilter        any
 	proposeTime    int64
 	id             *instanceId
@@ -161,6 +174,8 @@ func New(alias string, id int, peerAddrList []string, exec, beacon, durable bool
 		-1,
 		batchWait,
 		transconf,
+		sync.Mutex{},
+		make(map[uint64]recoveryAttempt),
 	}
 
 	r.Beacon = beacon
@@ -190,6 +205,9 @@ func New(alias string, id int, peerAddrList []string, exec, beacon, durable bool
 	r.tryPreAcceptReplyRPC = r.RPC.Register(new(TryPreAcceptReply), r.tryPreAcceptReplyChan)
 
 	r.Stats.M["weird"], r.Stats.M["conflicted"], r.Stats.M["slow"], r.Stats.M["fast"], r.Stats.M["totalCommitTime"], r.Stats.M["totalBatching"], r.Stats.M["totalBatchingSize"] = 0, 0, 0, 0, 0, 0, 0
+	r.Stats.M["proposedCommands"], r.Stats.M["maxBatchSize"], r.Stats.M["maxProposalQueue"] = 0, 0, 0
+	r.Stats.M["recoveryScheduled"], r.Stats.M["recoverySuppressed"], r.Stats.M["recoveryQueueFull"] = 0, 0, 0
+	r.Stats.M["executedCommands"], r.Stats.M["clientReplies"] = 0, 0
 
 	go r.run()
 
@@ -275,6 +293,78 @@ func (r *Replica) BatchingEnabled() bool {
 	return r.batchWait > 0
 }
 
+func (r *Replica) maxBatchCommands() int {
+	if !r.BatchingEnabled() {
+		return 1
+	}
+	return MAX_BATCH
+}
+
+func recoveryKey(replica, instance int32) uint64 {
+	return uint64(uint32(replica))<<32 | uint64(uint32(instance))
+}
+
+func (r *Replica) scheduleRecovery(replica, instance int32, now time.Time) bool {
+	key := recoveryKey(replica, instance)
+	r.recoveryMu.Lock()
+	attempt, exists := r.recoveryAttempts[key]
+	if exists && now.Before(attempt.nextAttempt) {
+		r.recoveryMu.Unlock()
+		r.M.Lock()
+		r.Stats.M["recoverySuppressed"]++
+		r.M.Unlock()
+		return false
+	}
+	backoff := INITIAL_RECOVERY_BACKOFF
+	if exists {
+		backoff = attempt.backoff * 2
+		if backoff > MAX_RECOVERY_BACKOFF {
+			backoff = MAX_RECOVERY_BACKOFF
+		}
+	}
+	r.recoveryAttempts[key] = recoveryAttempt{nextAttempt: now.Add(backoff), backoff: backoff}
+	r.recoveryMu.Unlock()
+
+	select {
+	case r.instancesToRecover <- &instanceId{replica: replica, instance: instance}:
+		r.M.Lock()
+		r.Stats.M["recoveryScheduled"]++
+		r.M.Unlock()
+		if r.Logger != nil {
+			r.Printf("EPAXOS_RECOVERY_SCHEDULED replica=%d instance=%d next_backoff=%s", replica, instance, backoff)
+		}
+		return true
+	default:
+		r.M.Lock()
+		r.Stats.M["recoveryQueueFull"]++
+		r.M.Unlock()
+		return false
+	}
+}
+
+func (r *Replica) clearRecovery(replica, instance int32) {
+	r.recoveryMu.Lock()
+	delete(r.recoveryAttempts, recoveryKey(replica, instance))
+	r.recoveryMu.Unlock()
+}
+
+func (r *Replica) logProgress() {
+	r.M.Lock()
+	proposed := r.Stats.M["proposedCommands"]
+	batches := r.Stats.M["totalBatching"]
+	maxBatch := r.Stats.M["maxBatchSize"]
+	maxProposalQueue := r.Stats.M["maxProposalQueue"]
+	fast := r.Stats.M["fast"]
+	slow := r.Stats.M["slow"]
+	executed := r.Stats.M["executedCommands"]
+	replies := r.Stats.M["clientReplies"]
+	recoveryScheduled := r.Stats.M["recoveryScheduled"]
+	recoverySuppressed := r.Stats.M["recoverySuppressed"]
+	r.M.Unlock()
+	r.Printf("EPAXOS_PROGRESS proposed=%d batches=%d max_batch=%d max_proposal_queue=%d fast=%d slow=%d executed=%d replies=%d recovery_scheduled=%d recovery_suppressed=%d recovery_queue=%d",
+		proposed, batches, maxBatch, maxProposalQueue, fast, slow, executed, replies, recoveryScheduled, recoverySuppressed, len(r.instancesToRecover))
+}
+
 func (r *Replica) run() {
 	r.ConnectToPeers()
 
@@ -297,6 +387,8 @@ func (r *Replica) run() {
 	}
 
 	onOffProposeChan := r.ProposeChan
+	progressTicker := time.NewTicker(5 * time.Second)
+	defer progressTicker.Stop()
 
 	go r.WaitForClientConnections()
 
@@ -376,6 +468,10 @@ func (r *Replica) run() {
 			}
 			break
 
+		case <-progressTicker.C:
+			r.logProgress()
+			break
+
 		case iid := <-r.instancesToRecover:
 			r.startRecoveryForInstance(iid.replica, iid.instance)
 		}
@@ -385,10 +481,9 @@ func (r *Replica) run() {
 func (r *Replica) executeCommands() {
 	const SLEEP_TIME_NS = 1e6
 	problemInstance := make([]int32, r.N)
-	timeout := make([]uint64, r.N)
+	blockedSince := make([]time.Time, r.N)
 	for q := 0; q < r.N; q++ {
 		problemInstance[q] = -1
-		timeout[q] = 0
 	}
 
 	for !r.Shutdown {
@@ -402,17 +497,14 @@ func (r *Replica) executeCommands() {
 					continue
 				}
 				if r.InstanceSpace[q][inst] == nil || r.InstanceSpace[q][inst].Status < COMMITTED || r.InstanceSpace[q][inst].Cmds == nil {
+					now := time.Now()
 					if inst == problemInstance[q] {
-						timeout[q] += SLEEP_TIME_NS
-						if timeout[q] >= COMMIT_GRACE_PERIOD {
-							for k := problemInstance[q]; k <= r.crtInstance[q]; k++ {
-								r.instancesToRecover <- &instanceId{q, k}
-							}
-							timeout[q] = 0
+						if now.Sub(blockedSince[q]) >= COMMIT_GRACE_PERIOD {
+							r.scheduleRecovery(q, problemInstance[q], now)
 						}
 					} else {
 						problemInstance[q] = inst
-						timeout[q] = 0
+						blockedSince[q] = now
 					}
 					break
 				}
@@ -724,10 +816,21 @@ func equal(deps1 []int32, deps2 []int32) bool {
 func (r *Replica) handlePropose(propose *defs.GPropose) {
 	//TODO!! Handle client retries
 
-	batchSize := len(r.ProposeChan) + 1
+	proposalQueue := len(r.ProposeChan)
+	batchSize := proposalQueue + 1
+	if maxBatch := r.maxBatchCommands(); batchSize > maxBatch {
+		batchSize = maxBatch
+	}
 	r.M.Lock()
 	r.Stats.M["totalBatching"]++
 	r.Stats.M["totalBatchingSize"] += batchSize
+	r.Stats.M["proposedCommands"] += batchSize
+	if batchSize > r.Stats.M["maxBatchSize"] {
+		r.Stats.M["maxBatchSize"] = batchSize
+	}
+	if proposalQueue > r.Stats.M["maxProposalQueue"] {
+		r.Stats.M["maxProposalQueue"] = proposalQueue
+	}
 	r.M.Unlock()
 
 	r.crtInstance[r.Id]++
@@ -928,6 +1031,7 @@ func (r *Replica) handlePreAcceptReply(pareply *PreAcceptReply) {
 		r.sync()
 
 		r.updateCommitted(pareply.Replica)
+		r.clearRecovery(pareply.Replica, pareply.Instance)
 		if inst.lb.clientProposals != nil && !r.Dreply {
 			for i := 0; i < len(inst.lb.clientProposals); i++ {
 				r.ReplyProposeTS(
@@ -938,6 +1042,9 @@ func (r *Replica) handlePreAcceptReply(pareply *PreAcceptReply) {
 						inst.lb.clientProposals[i].Timestamp},
 					inst.lb.clientProposals[i].Reply,
 					inst.lb.clientProposals[i].Mutex)
+				r.M.Lock()
+				r.Stats.M["clientReplies"]++
+				r.M.Unlock()
 			}
 		}
 
@@ -1038,6 +1145,7 @@ func (r *Replica) handleAcceptReply(areply *AcceptReply) {
 		lb.status = COMMITTED
 		inst.Status = COMMITTED
 		r.updateCommitted(areply.Replica)
+		r.clearRecovery(areply.Replica, areply.Instance)
 		r.recordInstanceMetadata(inst)
 		r.sync()
 
@@ -1051,6 +1159,9 @@ func (r *Replica) handleAcceptReply(areply *AcceptReply) {
 						inst.lb.clientProposals[i].Timestamp},
 					inst.lb.clientProposals[i].Reply,
 					inst.lb.clientProposals[i].Mutex)
+				r.M.Lock()
+				r.Stats.M["clientReplies"]++
+				r.M.Unlock()
 			}
 		}
 
@@ -1107,6 +1218,7 @@ func (r *Replica) handleCommit(commit *Commit) {
 
 	r.updateConflicts(commit.Command, commit.Replica, commit.Instance, commit.Seq)
 	r.updateCommitted(commit.Replica)
+	r.clearRecovery(commit.Replica, commit.Instance)
 	r.recordInstanceMetadata(r.InstanceSpace[commit.Replica][commit.Instance])
 	r.recordCommands(commit.Command)
 
@@ -1130,6 +1242,7 @@ func (r *Replica) startRecoveryForInstance(replica int32, instance int32) {
 		inst = r.newInstanceDefault(replica, instance)
 		r.InstanceSpace[replica][instance] = inst
 	} else if inst.Status >= COMMITTED && inst.Cmds != nil {
+		r.clearRecovery(replica, instance)
 		r.Printf("No need to recover %d.%d", replica, instance)
 		return
 	}
@@ -1510,7 +1623,7 @@ func (r *Replica) newInstanceDefault(replica int32, instance int32) *Instance {
 }
 
 func (r *Replica) newInstance(replica int32, instance int32, cmds []state.Command, cballot int32, lballot int32, status int8, seq int32, deps []int32) *Instance {
-	return &Instance{cmds, cballot, lballot, status, seq, deps, nil, 0, 0, nil, time.Now().UnixNano(), &instanceId{replica, instance}}
+	return &Instance{cmds, cballot, lballot, status, seq, deps, nil, 0, 0, false, nil, time.Now().UnixNano(), &instanceId{replica, instance}}
 }
 
 func (r *Replica) newLeaderBookkeepingDefault() *LeaderBookkeeping {

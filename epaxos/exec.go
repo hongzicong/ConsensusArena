@@ -51,6 +51,7 @@ func (e *Exec) findSCC(root *Instance) bool {
 	// reset all indexes in the stack
 	for j := 0; j < len(stack); j++ {
 		stack[j].Index = 0
+		stack[j].onStack = false
 	}
 	return ret
 }
@@ -68,6 +69,7 @@ func (e *Exec) strongconnect(v *Instance, index *int) bool {
 	}
 	stack = stack[0 : l+1]
 	stack[l] = v
+	v.onStack = true
 
 	if v.Cmds == nil {
 		return false
@@ -107,7 +109,7 @@ func (e *Exec) strongconnect(v *Instance, index *int) bool {
 				if w.Lowlink < v.Lowlink {
 					v.Lowlink = w.Lowlink
 				}
-			} else if e.inStack(w) {
+			} else if w.onStack {
 				if w.Index < v.Lowlink {
 					v.Lowlink = w.Index
 				}
@@ -136,25 +138,23 @@ func (e *Exec) strongconnect(v *Instance, index *int) bool {
 							w.lb.clientProposals[idx].Timestamp},
 						w.lb.clientProposals[idx].Reply,
 						w.lb.clientProposals[idx].Mutex)
+					e.r.M.Lock()
+					e.r.Stats.M["clientReplies"]++
+					e.r.M.Unlock()
 				} else if w.Cmds[idx].Op == state.PUT {
 					w.Cmds[idx].Execute(e.r.State)
 				}
 			}
 			w.Status = EXECUTED
+			w.onStack = false
+			e.r.M.Lock()
+			e.r.Stats.M["executedCommands"] += len(w.Cmds)
+			e.r.M.Unlock()
 		}
 		stack = stack[0:l]
 	}
 
 	return true
-}
-
-func (e *Exec) inStack(w *Instance) bool {
-	for _, u := range stack {
-		if w == u {
-			return true
-		}
-	}
-	return false
 }
 
 type nodeArray []*Instance
