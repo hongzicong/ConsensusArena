@@ -509,6 +509,7 @@ func (t *MReply) Marshal(wire io.Writer) {
 		bs[0] = byte(t.Rep[i])
 		wire.Write(bs)
 	}
+	bs = b[:1]
 	bs[0] = byte(t.Ok)
 	wire.Write(bs)
 }
@@ -533,6 +534,9 @@ func (t *MReply) Unmarshal(rr io.Reader) error {
 	if err != nil {
 		return err
 	}
+	if alen1 < 0 {
+		return fmt.Errorf("invalid MReply payload length %d", alen1)
+	}
 	t.Rep = make([]byte, alen1)
 	for i := int64(0); i < alen1; i++ {
 		bs = b[:1]
@@ -541,7 +545,8 @@ func (t *MReply) Unmarshal(rr io.Reader) error {
 		}
 		t.Rep[i] = byte(bs[0])
 	}
-	if _, err := io.ReadAtLeast(wire, bs, 1); err != nil {
+	bs = b[:1]
+	if _, err := io.ReadFull(wire, bs); err != nil {
 		return err
 	}
 	t.Ok = uint8(bs[0])
