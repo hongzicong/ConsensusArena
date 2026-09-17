@@ -264,7 +264,8 @@ func (r *Replica) deliver(desc *commandDesc, slot int) {
 			return
 		}
 
-		if desc.phase != COMMIT && !r.isLeader {
+		// The previous slot may wake this one before its own quorum has committed it.
+		if desc.phase != COMMIT {
 			return
 		}
 

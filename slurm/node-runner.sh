@@ -9,27 +9,17 @@ config="$run_dir/config/cluster.conf"
 quorum="$run_dir/config/quorum.conf"
 script_dir=$(cd "$(dirname "$0")" && pwd)
 
+source "$script_dir/topology.sh"
 replica_alias=
 client_alias=
-case "$rank" in
-    0) replica_alias=ap-south-1 ;;
-    1) replica_alias=ap-northeast-1 ;;
-    2) replica_alias=eu-west-3 ;;
-    3) replica_alias=us-west-1 ;;
-    4) replica_alias=af-south-1 ;;
-    5) client_alias=ap-east-1 ;;
-    6) client_alias=ap-northeast-1 ;;
-    7) client_alias=ap-southeast-2 ;;
-    8) client_alias=eu-west-1 ;;
-    9) client_alias=ca-central-1 ;;
-    10) client_alias=sa-east-1 ;;
-    11) client_alias=us-east-1 ;;
-    12) client_alias=us-east-2 ;;
-    13) client_alias=us-west-1 ;;
-    14) client_alias=us-west-2 ;;
-    15) ;;
-    *) echo "Unexpected Slurm rank: $rank" >&2; exit 1 ;;
-esac
+if (( rank >= 0 && rank < replica_count )); then
+    replica_alias=${replicas[$rank]}
+elif (( rank >= replica_count && rank < master_rank )); then
+    client_alias=${clients[$((rank - replica_count))]}
+elif (( rank != master_rank )); then
+    echo "Unexpected Slurm rank: $rank" >&2
+    exit 1
+fi
 
 pids=()
 client_exit=0
@@ -47,17 +37,21 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 run_app() {
-    GOMAXPROCS=${SLURM_CPUS_PER_TASK:-8} "$binary" "$@"
+    # One resource record per role, outside the request path (GNU time).
+    GOMAXPROCS=${SLURM_CPUS_PER_TASK:-8} /usr/bin/time \
+        -o "$run_dir/stdout/resources-rank-$rank.txt" \
+        -f 'elapsed_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kb=%M\nvoluntary_context_switches=%w\ninvoluntary_context_switches=%c\nexit_status=%x' \
+        "$binary" "$@"
 }
 
-if [[ "$rank" != 15 ]]; then
+if [[ "$rank" != "$master_rank" ]]; then
     dial_map=$(bash "$script_dir/setup-toxiproxy.sh" "$run_dir" "$rank" "$toxiproxy_server")
     toxiproxy_pid=$(tr -d '[:space:]' < "$run_dir/status/toxiproxy-$rank.pid")
     pids+=("$toxiproxy_pid")
     export CONSENSUSARENA_DIAL_MAP="$dial_map"
 fi
 
-if [[ "$rank" == 15 ]]; then
+if [[ "$rank" == "$master_rank" ]]; then
     run_app -run master -config "$config" -alias m0 \
         -log "$run_dir/logs/master.log" \
         > "$run_dir/stdout/master.out" 2>&1 &

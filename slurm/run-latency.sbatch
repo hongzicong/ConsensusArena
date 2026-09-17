@@ -2,8 +2,8 @@
 #SBATCH --job-name=consensusarena-latency
 #SBATCH --partition=standard
 #SBATCH --qos=parallel
-#SBATCH --nodes=2
-#SBATCH --ntasks=16
+#SBATCH --nodes=3
+#SBATCH --ntasks=24
 #SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=1G
@@ -16,6 +16,28 @@ export LC_ALL=C
 repo_root=${CONSENSUSARENA_ROOT:-${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR is not set}}
 repo_root=$(cd "$repo_root" && pwd)
 script_dir="$repo_root/slurm"
+replica_counts_spec=${CONSENSUSARENA_REPLICAS:-5:9:13}
+if [[ ! "$replica_counts_spec" =~ ^(5|9|13)(:(5|9|13))*$ ]]; then
+    echo "Invalid replica sizes: $replica_counts_spec (expected 5, 9, or 13 separated by colons)" >&2
+    exit 1
+fi
+IFS=: read -r -a requested_replica_counts <<< "$replica_counts_spec"
+declare -A seen_replica_counts=()
+max_replica_count=0
+for count in "${requested_replica_counts[@]}"; do
+    if [[ -n "${seen_replica_counts[$count]:-}" ]]; then
+        echo "Duplicate replica count: $count" >&2
+        exit 1
+    fi
+    seen_replica_counts[$count]=1
+    if (( count > max_replica_count )); then max_replica_count=$count; fi
+done
+required_tasks=$((max_replica_count + 11))
+required_nodes=$(((required_tasks + 7) / 8))
+if (( ${SLURM_NTASKS:-0} < required_tasks || ${SLURM_JOB_NUM_NODES:-0} < required_nodes || ${SLURM_CPUS_PER_TASK:-8} < 8 )); then
+    echo "Replica sizes $replica_counts_spec require at least $required_tasks tasks on $required_nodes nodes and 8 CPUs/task; use run-latency.sbatch with its default allocation" >&2
+    exit 1
+fi
 binary=${CONSENSUSARENA_BINARY:-$repo_root/consensusarena-linux-amd64}
 expected_binary_sha256=${CONSENSUSARENA_BINARY_SHA256:-}
 toxiproxy_source=${CONSENSUSARENA_TOXIPROXY_SERVER:-$repo_root/toxiproxy-server-linux-amd64}
@@ -91,7 +113,7 @@ if [[ ! -x "$toxiproxy_source" ]]; then
 fi
 source_toxiproxy=$(readlink -f "$toxiproxy_source")
 
-mkdir -p "$run_dir"/{binary,config,ranks}
+mkdir -p "$run_dir/binary"
 binary="$run_dir/binary/consensusarena-linux-amd64"
 toxiproxy_binary="$run_dir/binary/toxiproxy-server-linux-amd64"
 cp "$source_binary" "$binary"
@@ -123,248 +145,279 @@ printf 'ycsb_profiles=%s\nwrite_ratios_percent=%s\n' \
 printf '%s\n' \
     'ycsb_semantics=ratio-only; READ is mapped to GET; UPDATE is mapped to PUT' \
     'request_distribution=zipfian' >> "$run_dir/metadata.txt"
+printf 'resource_observer=GNU time per role; exit-time CPU, RSS, context switches\n' >> "$run_dir/metadata.txt"
 
-echo "Capturing addresses from the two allocated nodes..."
-srun --nodes=2 --ntasks=16 --ntasks-per-node=8 --cpus-per-task=1 --distribution=cyclic \
-    bash "$script_dir/capture-ip.sh" "$run_dir/ranks"
+run_scale() {
+    local run_dir="$sweep_dir/replicas-$1"
+    local combined_summary combined_details
+    export CONSENSUSARENA_REPLICAS=$1
+    source "$script_dir/topology.sh"
+    # Pin both steps to the same nodes when this size uses only part of the allocation.
+    local -a scale_node_names
+    local scale_nodes
+    mapfile -t scale_node_names < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
+    scale_nodes=$(IFS=,; echo "${scale_node_names[*]:0:node_count}")
+    mkdir -p "$run_dir"/{config,ranks}
+    cp "$sweep_dir/metadata.txt" "$run_dir/metadata.txt"
+    bash "$script_dir/prepare-topology.sh" "$run_dir/config/logical"
+    cat "$run_dir/config/logical/topology-metadata.txt" >> "$run_dir/metadata.txt"
+    printf 'slurm_nodes=%s\nslurm_tasks=%s\ncpus_per_task=8\n' "$node_count" "$task_count" >> "$run_dir/metadata.txt"
+    echo "Capturing addresses from $node_count allocated nodes for $replica_count replicas..."
+    srun --nodelist="$scale_nodes" --nodes="$node_count" --ntasks="$task_count" --ntasks-per-node="$tasks_per_node" --cpus-per-task=1 --distribution=cyclic \
+        bash "$script_dir/capture-ip.sh" "$run_dir/ranks"
 
-rank_ip() {
-    tr -d '[:space:]' < "$run_dir/ranks/$1.ip"
-}
+    rank_ip() {
+        tr -d '[:space:]' < "$run_dir/ranks/$1.ip"
+    }
 
-cat > "$run_dir/config/address-map.txt" <<EOF
-0.0.2.1 $(rank_ip 15)
-0.0.0.1 $(rank_ip 0):7070
-0.0.0.2 $(rank_ip 1):7071
-0.0.0.3 $(rank_ip 2):7072
-0.0.0.4 $(rank_ip 3):7073
-0.0.0.5 $(rank_ip 4):7074
-0.0.1.1 $(rank_ip 5):17000
-0.0.1.2 $(rank_ip 6):17001
-0.0.1.3 $(rank_ip 7):17002
-0.0.1.4 $(rank_ip 8):17003
-0.0.1.5 $(rank_ip 9):17004
-0.0.1.6 $(rank_ip 10):17005
-0.0.1.7 $(rank_ip 11):17006
-0.0.1.8 $(rank_ip 12):17007
-0.0.1.9 $(rank_ip 13):17008
-0.0.1.10 $(rank_ip 14):17009
-EOF
+    {
+        printf '0.0.2.1 %s\n' "$(rank_ip "$master_rank")"
+        for ((rank=0; rank<replica_count; rank++)); do
+            printf '0.0.0.%s %s:%s\n' "$((rank + 1))" "$(rank_ip "$rank")" "$((7070 + rank))"
+        done
+        for ((client=0; client<client_count; client++)); do
+            printf '0.0.1.%s %s:%s\n' "$((client + 1))" "$(rank_ip "$((replica_count + client))")" "$((17000 + client))"
+        done
+    } > "$run_dir/config/address-map.txt"
 
-awk -f "$script_dir/remap-addresses.awk" \
-    "$run_dir/config/address-map.txt" "$script_dir/workload.conf" \
-    > "$run_dir/config/cluster.conf"
-if [[ -n "${CONSENSUSARENA_WORKLOAD_SEED:-}" ]]; then
-    if [[ ! "$CONSENSUSARENA_WORKLOAD_SEED" =~ ^[0-9]+$ ]]; then
-        echo "Invalid workload seed: $CONSENSUSARENA_WORKLOAD_SEED" >&2
+    awk -f "$script_dir/remap-addresses.awk" \
+        "$run_dir/config/address-map.txt" "$run_dir/config/logical/workload.conf" \
+        > "$run_dir/config/cluster.conf"
+    if [[ -n "${CONSENSUSARENA_WORKLOAD_SEED:-}" ]]; then
+        if [[ ! "$CONSENSUSARENA_WORKLOAD_SEED" =~ ^[0-9]+$ ]]; then
+            echo "Invalid workload seed: $CONSENSUSARENA_WORKLOAD_SEED" >&2
+            exit 1
+        fi
+        awk -v workload_seed="$CONSENSUSARENA_WORKLOAD_SEED" \
+            '$1 == "workloadSeed:" { $2 = workload_seed } { print }' \
+            "$run_dir/config/cluster.conf" > "$run_dir/config/cluster.conf.tmp"
+        mv "$run_dir/config/cluster.conf.tmp" "$run_dir/config/cluster.conf"
+    fi
+    if [[ -n "${CONSENSUSARENA_PROTOCOL:-}" ]]; then
+        case "${CONSENSUSARENA_PROTOCOL,,}" in
+            swiftpaxos|curp|fastpaxos|n2paxos|paxos|epaxos) ;;
+            *) echo "Unsupported protocol: $CONSENSUSARENA_PROTOCOL" >&2; exit 1 ;;
+        esac
+        awk -v protocol="$CONSENSUSARENA_PROTOCOL" \
+            '$1 == "protocol:" { $2 = protocol } { print }' \
+            "$run_dir/config/cluster.conf" > "$run_dir/config/cluster.conf.tmp"
+        mv "$run_dir/config/cluster.conf.tmp" "$run_dir/config/cluster.conf"
+    fi
+    awk -f "$script_dir/remap-addresses.awk" \
+        "$run_dir/config/address-map.txt" "$run_dir/config/logical/latency.conf" \
+        > "$run_dir/config/latency.conf"
+    cp "$run_dir/config/logical/quorum.conf" "$run_dir/config/quorum.conf"
+
+    repetitions=$(awk '$1 == "repetitions:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
+    if [[ ! "$repetitions" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Invalid repetitions value: $repetitions" >&2
         exit 1
     fi
-    awk -v workload_seed="$CONSENSUSARENA_WORKLOAD_SEED" \
-        '$1 == "workloadSeed:" { $2 = workload_seed } { print }' \
-        "$run_dir/config/cluster.conf" > "$run_dir/config/cluster.conf.tmp"
-    mv "$run_dir/config/cluster.conf.tmp" "$run_dir/config/cluster.conf"
-fi
-if [[ -n "${CONSENSUSARENA_PROTOCOL:-}" ]]; then
-    case "${CONSENSUSARENA_PROTOCOL,,}" in
-		swiftpaxos|curp|fastpaxos|n2paxos|paxos|epaxos) ;;
-        *) echo "Unsupported protocol: $CONSENSUSARENA_PROTOCOL" >&2; exit 1 ;;
-    esac
-    awk -v protocol="$CONSENSUSARENA_PROTOCOL" \
-        '$1 == "protocol:" { $2 = protocol } { print }' \
-        "$run_dir/config/cluster.conf" > "$run_dir/config/cluster.conf.tmp"
-    mv "$run_dir/config/cluster.conf.tmp" "$run_dir/config/cluster.conf"
-fi
-awk -f "$script_dir/remap-addresses.awk" \
-    "$run_dir/config/address-map.txt" "$repo_root/latency.conf" \
-    > "$run_dir/config/latency.conf"
-cp "$repo_root/quorum.conf" "$run_dir/config/quorum.conf"
-
-replicas=(ap-south-1 ap-northeast-1 eu-west-3 us-west-1 af-south-1)
-repetitions=$(awk '$1 == "repetitions:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
-if [[ ! "$repetitions" =~ ^[1-9][0-9]*$ ]]; then
-    echo "Invalid repetitions value: $repetitions" >&2
-    exit 1
-fi
-preload_enabled=$(awk 'tolower($1) == "preload:" { print tolower($2); exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
-preload_enabled=${preload_enabled:-false}
-if [[ "$preload_enabled" != "true" && "$preload_enabled" != "false" ]]; then
-    echo "Invalid preload value: $preload_enabled" >&2
-    exit 1
-fi
-preload_records=$(awk 'tolower($1) == "keycount:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
-preload_value_size=$(awk 'tolower($1) == "commandsize:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
-preload_seed=$(awk 'tolower($1) == "preloadseed:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
-preload_seed=${preload_seed:-1}
-workload_seed=$(awk 'tolower($1) == "workloadseed:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
-workload_seed=${workload_seed:-1}
-if [[ ! "$workload_seed" =~ ^[0-9]+$ ]]; then
-    echo "Invalid workload seed: $workload_seed" >&2
-    exit 1
-fi
-if [[ "$preload_enabled" == "true" ]]; then
-    if [[ ! "$preload_records" =~ ^[1-9][0-9]*$ ]]; then
-        echo "Invalid preload record count: $preload_records" >&2
+    preload_enabled=$(awk 'tolower($1) == "preload:" { print tolower($2); exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
+    preload_enabled=${preload_enabled:-false}
+    if [[ "$preload_enabled" != "true" && "$preload_enabled" != "false" ]]; then
+        echo "Invalid preload value: $preload_enabled" >&2
         exit 1
     fi
-    if [[ ! "$preload_value_size" =~ ^[1-9][0-9]*$ ]]; then
-        echo "Invalid preload value size: $preload_value_size" >&2
+    preload_records=$(awk 'tolower($1) == "keycount:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
+    preload_value_size=$(awk 'tolower($1) == "commandsize:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
+    preload_seed=$(awk 'tolower($1) == "preloadseed:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
+    preload_seed=${preload_seed:-1}
+    workload_seed=$(awk 'tolower($1) == "workloadseed:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
+    workload_seed=${workload_seed:-1}
+    if [[ ! "$workload_seed" =~ ^[0-9]+$ ]]; then
+        echo "Invalid workload seed: $workload_seed" >&2
         exit 1
     fi
-    if [[ ! "$preload_seed" =~ ^[0-9]+$ ]]; then
-        echo "Invalid preload seed: $preload_seed" >&2
-        exit 1
+    if [[ "$preload_enabled" == "true" ]]; then
+        if [[ ! "$preload_records" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid preload record count: $preload_records" >&2
+            exit 1
+        fi
+        if [[ ! "$preload_value_size" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid preload value size: $preload_value_size" >&2
+            exit 1
+        fi
+        if [[ ! "$preload_seed" =~ ^[0-9]+$ ]]; then
+            echo "Invalid preload seed: $preload_seed" >&2
+            exit 1
+        fi
     fi
-fi
-printf 'repetitions=%s\nworkload_seed=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \
-    "$repetitions" "$workload_seed" "$preload_enabled" "$preload_records" "$preload_value_size" "$preload_seed" \
-    >> "$run_dir/metadata.txt"
+    printf 'repetitions=%s\nworkload_seed=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \
+        "$repetitions" "$workload_seed" "$preload_enabled" "$preload_records" "$preload_value_size" "$preload_seed" \
+        >> "$run_dir/metadata.txt"
 
-run_repetition() {
-    local profile_dir=$1
-    local repetition=$2
-    local profile=$3
-    local write_ratio=$4
-    local repetition_name repetition_dir deadline ready alias replica_log done_count status_file runner_exit digest preload_digest
-    repetition_name=$(printf 'repetition-%02d' "$repetition")
-    repetition_dir="$profile_dir/$repetition_name"
-    active_run_dir=$repetition_dir
-    mkdir -p "$repetition_dir"/{config,logs,results,status,stdout}
-    cp "$profile_dir/config/cluster.conf" "$repetition_dir/config/cluster.conf"
-    cp "$profile_dir/config/address-map.txt" "$repetition_dir/config/address-map.txt"
-    cp "$profile_dir/config/latency.conf" "$repetition_dir/config/latency.conf"
-    cp "$profile_dir/config/quorum.conf" "$repetition_dir/config/quorum.conf"
-    printf 'ycsb_profile=%s\nwrite_ratio_percent=%s\nworkload_seed=%s\npreload_enabled=%s\n' \
-        "$profile" "$write_ratio" "$workload_seed" "$preload_enabled" > "$repetition_dir/metadata.txt"
+    run_repetition() {
+        local profile_dir=$1
+        local repetition=$2
+        local profile=$3
+        local write_ratio=$4
+        local repetition_name repetition_dir deadline ready alias replica_log done_count status_file runner_exit digest preload_digest
+        repetition_name=$(printf 'repetition-%02d' "$repetition")
+        repetition_dir="$profile_dir/$repetition_name"
+        active_run_dir=$repetition_dir
+        mkdir -p "$repetition_dir"/{config,logs,results,status,stdout}
+        cp "$profile_dir/config/cluster.conf" "$repetition_dir/config/cluster.conf"
+        cp "$profile_dir/config/address-map.txt" "$repetition_dir/config/address-map.txt"
+        cp "$profile_dir/config/latency.conf" "$repetition_dir/config/latency.conf"
+        cp "$profile_dir/config/quorum.conf" "$repetition_dir/config/quorum.conf"
+        printf 'ycsb_profile=%s\nwrite_ratio_percent=%s\nworkload_seed=%s\npreload_enabled=%s\n' \
+            "$profile" "$write_ratio" "$workload_seed" "$preload_enabled" > "$repetition_dir/metadata.txt"
 
-    echo "Starting YCSB profile $profile (${write_ratio}% writes) $repetition_name/$repetitions through Toxiproxy..."
-    srun --nodes=2 --ntasks=16 --ntasks-per-node=8 --cpus-per-task=8 --distribution=cyclic \
-        --kill-on-bad-exit=1 bash "$script_dir/node-runner.sh" \
-        "$repetition_dir" "$binary" "$toxiproxy_binary" &
-    runner_pid=$!
+        echo "Starting YCSB profile $profile (${write_ratio}% writes) $repetition_name/$repetitions through Toxiproxy..."
+        srun --nodelist="$scale_nodes" --nodes="$node_count" --ntasks="$task_count" --ntasks-per-node="$tasks_per_node" --cpus-per-task=8 --distribution=cyclic \
+            --kill-on-bad-exit=1 bash "$script_dir/node-runner.sh" \
+            "$repetition_dir" "$binary" "$toxiproxy_binary" &
+        runner_pid=$!
 
-    deadline=$((SECONDS + replica_ready_timeout))
-    while true; do
-        ready=0
-        for alias in "${replicas[@]}"; do
-            replica_log="$repetition_dir/logs/${alias}-replica.log"
-            if [[ -f "$replica_log" ]] && grep -q 'Waiting for client connections' "$replica_log"; then
-                ready=$((ready + 1))
+        deadline=$((SECONDS + replica_ready_timeout))
+        while true; do
+            ready=0
+            for alias in "${replicas[@]}"; do
+                replica_log="$repetition_dir/logs/${alias}-replica.log"
+                if [[ -f "$replica_log" ]] && grep -q 'Waiting for client connections' "$replica_log"; then
+                    ready=$((ready + 1))
+                fi
+            done
+            printf '%s replica readiness: %s/%s\r' "$repetition_name" "$ready" "$replica_count"
+            if [[ "$ready" == "$replica_count" ]]; then
+                printf '\n'
+                if [[ "$preload_enabled" == "true" ]]; then
+                    preload_digest=
+                    for alias in "${replicas[@]}"; do
+                        replica_log="$repetition_dir/logs/${alias}-replica.log"
+                        digest=$(awk '/PRELOAD_COMPLETE/ { for (field = 1; field <= NF; field++) if ($field ~ /^digest=/) { sub(/^digest=/, "", $field); value = $field } } END { print value }' "$replica_log")
+                        if [[ -z "$digest" ]]; then
+                            echo "Replica $alias did not report a preload digest" >&2
+                            return 1
+                        fi
+                        if [[ -z "$preload_digest" ]]; then
+                            preload_digest=$digest
+                        elif [[ "$digest" != "$preload_digest" ]]; then
+                            echo "Preload digest mismatch: replica $alias reported $digest, expected $preload_digest" >&2
+                            return 1
+                        fi
+                    done
+                    printf 'preload_digest=%s\n' "$preload_digest" >> "$repetition_dir/metadata.txt"
+                    echo "Verified preload digest $preload_digest across $replica_count replicas"
+                fi
+                touch "$repetition_dir/status/replicas.ready"
+                break
+            fi
+            if [[ -f "$repetition_dir/status/node-failed" ]] || ! kill -0 "$runner_pid" 2>/dev/null; then
+                echo "A master or replica failed; inspect $repetition_dir/stdout" >&2
+                return 1
+            fi
+            if (( SECONDS >= deadline )); then
+                echo "Replicas did not become ready within $replica_ready_timeout seconds" >&2
+                return 1
+            fi
+            sleep 2
+        done
+
+        deadline=$((SECONDS + client_timeout))
+        while true; do
+            done_count=$(find "$repetition_dir/status" -maxdepth 1 -name 'client-*.done' | wc -l | tr -d ' ')
+            printf '%s clients completed: %s/%s\r' "$repetition_name" "$done_count" "$client_count"
+            if [[ "$done_count" == "$client_count" ]]; then
+                printf '\n'
+                break
+            fi
+            if [[ -f "$repetition_dir/status/node-failed" ]] || ! kill -0 "$runner_pid" 2>/dev/null; then
+                echo "A workload process failed; inspect $repetition_dir/stdout" >&2
+                return 1
+            fi
+            if (( SECONDS >= deadline )); then
+                echo "Clients did not finish within $client_timeout seconds" >&2
+                return 1
+            fi
+            sleep 3
+        done
+
+        for status_file in "$repetition_dir"/status/client-*.exit; do
+            if [[ $(tr -d '[:space:]' < "$status_file") != 0 ]]; then
+                echo "Client failed according to $status_file" >&2
+                return 1
             fi
         done
-        printf '%s replica readiness: %s/5\r' "$repetition_name" "$ready"
-        if [[ "$ready" == 5 ]]; then
-            printf '\n'
-            if [[ "$preload_enabled" == "true" ]]; then
-                preload_digest=
-                for alias in "${replicas[@]}"; do
-                    replica_log="$repetition_dir/logs/${alias}-replica.log"
-                    digest=$(awk '/PRELOAD_COMPLETE/ { for (field = 1; field <= NF; field++) if ($field ~ /^digest=/) { sub(/^digest=/, "", $field); value = $field } } END { print value }' "$replica_log")
-                    if [[ -z "$digest" ]]; then
-                        echo "Replica $alias did not report a preload digest" >&2
-                        return 1
-                    fi
-                    if [[ -z "$preload_digest" ]]; then
-                        preload_digest=$digest
-                    elif [[ "$digest" != "$preload_digest" ]]; then
-                        echo "Preload digest mismatch: replica $alias reported $digest, expected $preload_digest" >&2
-                        return 1
-                    fi
-                done
-                printf 'preload_digest=%s\n' "$preload_digest" >> "$repetition_dir/metadata.txt"
-                echo "Verified preload digest $preload_digest across five replicas"
-            fi
-            touch "$repetition_dir/status/replicas.ready"
-            break
-        fi
-        if [[ -f "$repetition_dir/status/node-failed" ]] || ! kill -0 "$runner_pid" 2>/dev/null; then
-            echo "A master or replica failed; inspect $repetition_dir/stdout" >&2
+
+        bash "$script_dir/summarize-latency.sh" "$repetition_dir"
+        touch "$repetition_dir/status/stop"
+        set +e
+        wait "$runner_pid"
+        runner_exit=$?
+        set -e
+        runner_pid=
+        active_run_dir=
+        if [[ "$runner_exit" != 0 ]]; then
+            echo "$repetition_name runner failed with exit code $runner_exit" >&2
             return 1
         fi
-        if (( SECONDS >= deadline )); then
-            echo "Replicas did not become ready within $replica_ready_timeout seconds" >&2
-            return 1
+    }
+
+    protocol=$(awk '$1 == "protocol:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
+    printf 'protocol=%s\n' "$protocol" >> "$run_dir/metadata.txt"
+    combined_summary="$run_dir/summary.csv"
+    combined_details="$run_dir/repetition-summaries.csv"
+    : > "$combined_summary"
+    : > "$combined_details"
+
+    for index in "${!ycsb_profiles[@]}"; do
+        profile=${ycsb_profiles[$index]}
+        write_ratio=${write_ratios[$index]}
+        read_ratio=$((100 - write_ratio))
+        profile_dir="$run_dir/ycsb-$profile"
+        mkdir -p "$profile_dir/config"
+        awk -v writes="$write_ratio" \
+            '$1 == "writes:" { $2 = writes } { print }' \
+            "$run_dir/config/cluster.conf" > "$profile_dir/config/cluster.conf"
+        cp "$run_dir/config/address-map.txt" "$profile_dir/config/address-map.txt"
+        cp "$run_dir/config/latency.conf" "$profile_dir/config/latency.conf"
+        cp "$run_dir/config/quorum.conf" "$profile_dir/config/quorum.conf"
+        printf 'ycsb_profile=%s\nread_ratio_percent=%s\nwrite_ratio_percent=%s\nrepetitions=%s\nworkload_seed=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \
+            "$profile" "$read_ratio" "$write_ratio" "$repetitions" "$workload_seed" "$preload_enabled" \
+            "$preload_records" "$preload_value_size" "$preload_seed" > "$profile_dir/metadata.txt"
+
+        for repetition in $(seq 1 "$repetitions"); do
+            run_repetition "$profile_dir" "$repetition" "$profile" "$write_ratio"
+        done
+
+        bash "$script_dir/summarize-repetitions.sh" "$profile_dir" "$repetitions"
+        if [[ ! -s "$combined_summary" ]]; then
+            awk 'NR == 1 { print "ReplicaCount,Protocol,YCSBProfile,ReadRatioPercent,WriteRatioPercent," $0 }' "$profile_dir/summary.csv" > "$combined_summary"
+            awk 'NR == 1 { print "ReplicaCount,Protocol,YCSBProfile,ReadRatioPercent,WriteRatioPercent," $0 }' "$profile_dir/repetition-summaries.csv" > "$combined_details"
         fi
-        sleep 2
+        awk -v replica_count="$replica_count" -v protocol="$protocol" -v profile="$profile" -v read_ratio="$read_ratio" -v write_ratio="$write_ratio" \
+            'NR > 1 { print replica_count "," protocol "," profile "," read_ratio "," write_ratio "," $0 }' \
+            "$profile_dir/summary.csv" >> "$combined_summary"
+        awk -v replica_count="$replica_count" -v protocol="$protocol" -v profile="$profile" -v read_ratio="$read_ratio" -v write_ratio="$write_ratio" \
+            'NR > 1 { print replica_count "," protocol "," profile "," read_ratio "," write_ratio "," $0 }' \
+            "$profile_dir/repetition-summaries.csv" >> "$combined_details"
     done
 
-    deadline=$((SECONDS + client_timeout))
-    while true; do
-        done_count=$(find "$repetition_dir/status" -maxdepth 1 -name 'client-*.done' | wc -l | tr -d ' ')
-        printf '%s clients completed: %s/10\r' "$repetition_name" "$done_count"
-        if [[ "$done_count" == 10 ]]; then
-            printf '\n'
-            break
-        fi
-        if [[ -f "$repetition_dir/status/node-failed" ]] || ! kill -0 "$runner_pid" 2>/dev/null; then
-            echo "A workload process failed; inspect $repetition_dir/stdout" >&2
-            return 1
-        fi
-        if (( SECONDS >= deadline )); then
-            echo "Clients did not finish within $client_timeout seconds" >&2
-            return 1
-        fi
-        sleep 3
-    done
-
-    for status_file in "$repetition_dir"/status/client-*.exit; do
-        if [[ $(tr -d '[:space:]' < "$status_file") != 0 ]]; then
-            echo "Client failed according to $status_file" >&2
-            return 1
-        fi
-    done
-
-    bash "$script_dir/summarize-latency.sh" "$repetition_dir"
-    touch "$repetition_dir/status/stop"
-    set +e
-    wait "$runner_pid"
-    runner_exit=$?
-    set -e
-    runner_pid=
-    active_run_dir=
-    if [[ "$runner_exit" != 0 ]]; then
-        echo "$repetition_name runner failed with exit code $runner_exit" >&2
-        return 1
-    fi
+    printf 'completed_at=%s\n' "$(date --iso-8601=seconds)" >> "$run_dir/metadata.txt"
+    echo "Replica size $replica_count completed: $run_dir"
 }
 
+sweep_dir=$run_dir
+printf 'replica_counts=%s\nallocated_nodes=%s\nallocated_tasks=%s\ncpus_per_task=%s\n' \
+    "$replica_counts_spec" "$SLURM_JOB_NUM_NODES" "$SLURM_NTASKS" "${SLURM_CPUS_PER_TASK:-8}" >> "$run_dir/metadata.txt"
+for filename in summary.csv repetition-summaries.csv; do
+    : > "$run_dir/$filename"
+done
+for requested_count in "${requested_replica_counts[@]}"; do
+    run_scale "$requested_count"
+    for filename in summary.csv repetition-summaries.csv; do
+        source_csv="$run_dir/replicas-$requested_count/$filename"
+        if [[ ! -s "$run_dir/$filename" ]]; then
+            head -n 1 "$source_csv" > "$run_dir/$filename"
+        fi
+        tail -n +2 "$source_csv" >> "$run_dir/$filename"
+    done
+done
 combined_summary="$run_dir/summary.csv"
 combined_details="$run_dir/repetition-summaries.csv"
-: > "$combined_summary"
-: > "$combined_details"
-
-for index in "${!ycsb_profiles[@]}"; do
-    profile=${ycsb_profiles[$index]}
-    write_ratio=${write_ratios[$index]}
-    read_ratio=$((100 - write_ratio))
-    profile_dir="$run_dir/ycsb-$profile"
-    mkdir -p "$profile_dir/config"
-    awk -v writes="$write_ratio" \
-        '$1 == "writes:" { $2 = writes } { print }' \
-        "$run_dir/config/cluster.conf" > "$profile_dir/config/cluster.conf"
-    cp "$run_dir/config/address-map.txt" "$profile_dir/config/address-map.txt"
-    cp "$run_dir/config/latency.conf" "$profile_dir/config/latency.conf"
-    cp "$run_dir/config/quorum.conf" "$profile_dir/config/quorum.conf"
-    printf 'ycsb_profile=%s\nread_ratio_percent=%s\nwrite_ratio_percent=%s\nrepetitions=%s\nworkload_seed=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \
-        "$profile" "$read_ratio" "$write_ratio" "$repetitions" "$workload_seed" "$preload_enabled" \
-        "$preload_records" "$preload_value_size" "$preload_seed" > "$profile_dir/metadata.txt"
-
-    for repetition in $(seq 1 "$repetitions"); do
-        run_repetition "$profile_dir" "$repetition" "$profile" "$write_ratio"
-    done
-
-    bash "$script_dir/summarize-repetitions.sh" "$profile_dir" "$repetitions"
-    if [[ ! -s "$combined_summary" ]]; then
-        awk 'NR == 1 { print "YCSBProfile,ReadRatioPercent,WriteRatioPercent," $0 }' "$profile_dir/summary.csv" > "$combined_summary"
-        awk 'NR == 1 { print "YCSBProfile,ReadRatioPercent,WriteRatioPercent," $0 }' "$profile_dir/repetition-summaries.csv" > "$combined_details"
-    fi
-    awk -v profile="$profile" -v read_ratio="$read_ratio" -v write_ratio="$write_ratio" \
-        'NR > 1 { print profile "," read_ratio "," write_ratio "," $0 }' \
-        "$profile_dir/summary.csv" >> "$combined_summary"
-    awk -v profile="$profile" -v read_ratio="$read_ratio" -v write_ratio="$write_ratio" \
-        'NR > 1 { print profile "," read_ratio "," write_ratio "," $0 }' \
-        "$profile_dir/repetition-summaries.csv" >> "$combined_details"
-done
-
+printf 'protocol=%s\n' "$protocol" >> "$run_dir/metadata.txt"
 printf 'completed_at=%s\n' "$(date --iso-8601=seconds)" >> "$run_dir/metadata.txt"
 cat "$combined_summary"
 printf 'YCSB profile details: %s\n' "$combined_details"

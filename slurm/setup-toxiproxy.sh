@@ -4,10 +4,12 @@ set -euo pipefail
 run_dir=$1
 rank=$2
 server_binary=$3
+script_dir=$(cd "$(dirname "$0")" && pwd)
+source "$script_dir/topology.sh"
 address_map="$run_dir/config/address-map.txt"
 latency_matrix="$run_dir/config/latency.conf"
 control_port=$((18000 + rank))
-proxy_port_base=$((20000 + rank * 8))
+proxy_port_base=$((20000 + rank * 16))
 dial_map="$run_dir/config/dial-map-$rank.txt"
 pid_file="$run_dir/status/toxiproxy-$rank.pid"
 proxy_snapshot="$run_dir/config/toxiproxy-$rank.json"
@@ -23,24 +25,7 @@ bandwidth_kbps=${CONSENSUSARENA_BANDWIDTH_KBPS:-125000}
     exit 1
 }
 
-case "$rank" in
-    0) source_logical=0.0.0.1 ;;
-    1) source_logical=0.0.0.2 ;;
-    2) source_logical=0.0.0.3 ;;
-    3) source_logical=0.0.0.4 ;;
-    4) source_logical=0.0.0.5 ;;
-    5) source_logical=0.0.1.1 ;;
-    6) source_logical=0.0.1.2 ;;
-    7) source_logical=0.0.1.3 ;;
-    8) source_logical=0.0.1.4 ;;
-    9) source_logical=0.0.1.5 ;;
-    10) source_logical=0.0.1.6 ;;
-    11) source_logical=0.0.1.7 ;;
-    12) source_logical=0.0.1.8 ;;
-    13) source_logical=0.0.1.9 ;;
-    14) source_logical=0.0.1.10 ;;
-    *) echo "Rank $rank does not originate benchmark data connections" >&2; exit 1 ;;
-esac
+source_logical=$(source_logical_for_rank "$rank")
 
 lookup_endpoint() {
     local logical=$1
@@ -105,7 +90,7 @@ for _ in $(seq 1 100); do
 done
 curl --fail --silent "http://127.0.0.1:$control_port/version" >/dev/null
 
-for target_index in $(seq 0 4); do
+for ((target_index=0; target_index<replica_count; target_index++)); do
     target_logical="0.0.0.$((target_index + 1))"
     target_endpoint=$(lookup_endpoint "$target_logical")
     proxy_port=$((proxy_port_base + target_index))
