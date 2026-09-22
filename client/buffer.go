@@ -124,6 +124,10 @@ func (c *BufferClient) Scan(key, count int64) []byte {
 // Assumed to be connected
 func (c *BufferClient) Loop() {
 	getKey := c.genGetKey()
+	if c.fault != nil {
+		c.loopFault(getKey)
+		return
+	}
 	c.loopOpen(getKey)
 }
 
@@ -261,6 +265,10 @@ func (c *BufferClient) nextUpdateValue(key int64) state.Value {
 }
 
 func (c *BufferClient) WaitReplies(waitFrom int) {
+	if c.fault != nil {
+		c.waitFaultReplies(waitFrom)
+		return
+	}
 	go func() {
 		for {
 			r, err := c.GetReplyFrom(waitFrom)

@@ -144,6 +144,9 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	if err := b.Connect(); err != nil {
 		log.Fatal(err)
 	}
+	if err := b.ConfigureFaultRun(c.Alias, i); err != nil {
+		log.Fatal(err)
+	}
 	if p := strings.ToLower(c.Protocol); p == "swiftpaxos" {
 		cl := swift.NewClient(b, len(c.ReplicaAddrs))
 		if cl == nil {

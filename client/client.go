@@ -24,6 +24,8 @@ import (
 )
 
 type Client struct {
+	// Optional protocol interception; configured before the workload starts.
+	ProposalHook func(defs.Propose) bool
 	*dlog.Logger
 
 	ClientId  int32
@@ -41,6 +43,7 @@ type Client struct {
 	readers []*bufio.Reader
 	writers []*bufio.Writer
 	writeMu []sync.Mutex
+	fault   *faultTransport
 
 	seqnum     int32
 	server     string // co-located with
@@ -177,6 +180,13 @@ func (c *Client) Reconnect() error {
 }
 
 func (c *Client) SendProposal(cmd defs.Propose) {
+	if c.ProposalHook != nil && c.ProposalHook(cmd) {
+		return
+	}
+	if c.fault != nil {
+		c.sendFaultProposal(cmd)
+		return
+	}
 	d := c.LeaderId
 	if c.Leaderless {
 		d = c.ClosestId
@@ -265,12 +275,16 @@ func (c *Client) GetReplyFrom(rid int) (*defs.ProposeReplyTS, error) {
 func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
 	for i, reader := range c.readers {
 		go func(i int, reader *bufio.Reader) {
+			if reader == nil {
+				return
+			}
 			for {
 				var (
 					msgType uint8
 					err     error
 				)
 				if msgType, err = reader.ReadByte(); err != nil {
+					c.markFaultPeer(i)
 					break
 				}
 				p, exists := t.Get(msgType)
@@ -280,6 +294,7 @@ func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
 				}
 				obj := p.Obj.New()
 				if err = obj.Unmarshal(reader); err != nil {
+					c.markFaultPeer(i)
 					break
 				}
 				notify := p.Chan
@@ -291,6 +306,10 @@ func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
 
 // For custom client messages
 func (c *Client) SendMsg(rid int32, code uint8, msg fastrpc.Serializable) {
+	if c.fault != nil {
+		c.faultWrite(int(rid), code, msg)
+		return
+	}
 	w := c.writers[rid]
 	if w == nil {
 		// TODO: return an error
