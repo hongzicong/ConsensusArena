@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/bodega"
+
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/curp"
 	"github.com/hongzicong/ConsensusArena/dlog"
@@ -30,6 +32,10 @@ func runReplica(c *config.Config, logger *dlog.Logger) {
 	log.Printf("Tolerating %d max. failures", f)
 
 	switch strings.ToLower(c.Protocol) {
+	case "bodega":
+		log.Println("Starting Bodega replica...")
+		rep := bodega.New(c.Alias, replicaId, nodeList, isLeader, c, logger)
+		rpc.Register(rep)
 	case "swiftpaxos":
 		log.Println("Starting SwiftPaxos replica...")
 		swift.MaxDescRoutines = 100

@@ -26,6 +26,10 @@ import (
 type Client struct {
 	// Optional protocol interception; configured before the workload starts.
 	ProposalHook func(defs.Propose) bool
+	// BodegaRouting selects local GETs and direct-to-roster-leader writes.
+	// Set before Connect; other protocols retain their existing transport.
+	BodegaRouting bool
+	BodegaUnhold  time.Duration // zero selects the 250 ms artifact default
 	*dlog.Logger
 
 	ClientId  int32
@@ -44,6 +48,7 @@ type Client struct {
 	writers []*bufio.Writer
 	writeMu []sync.Mutex
 	fault   *faultTransport
+	bodega  *bodegaRouting
 
 	seqnum     int32
 	server     string // co-located with
@@ -143,10 +148,29 @@ func (c *Client) Connect() error {
 		c.writers[i] = bufio.NewWriter(c.servers[i])
 	}
 
+	if c.BodegaRouting {
+		if err := c.startBodegaRouting(); err != nil {
+			c.Disconnect()
+			return err
+		}
+	}
 	return nil
 }
 
 func (c *Client) Disconnect() {
+	if c.bodega != nil {
+		c.bodega.closeOnce.Do(func() {
+			close(c.bodega.stop)
+			c.stopBodegaReads()
+			c.Printf("BODEGA_CLIENT_ROUTES local_reads=%d leader_commands=%d discovery_forwards=%d\n", c.bodega.reads.Load(), c.bodega.writes.Load(), c.bodega.forwarded.Load())
+			counts := make([]uint64, len(c.bodega.readDestinations))
+			for i := range counts {
+				counts[i] = c.bodega.readDestinations[i].Load()
+			}
+			c.Printf("BODEGA_CLIENT_DESTINATIONS read_attempts=%v\n", counts)
+			c.Printf("BODEGA_CLIENT_HEDGES sent=%d wins=%d duplicate_replies=%d cancels=%d\n", c.bodega.hedges.Load(), c.bodega.hedgeWins.Load(), c.bodega.duplicates.Load(), c.bodega.cancels.Load())
+		})
+	}
 	for _, s := range c.servers {
 		if s != nil {
 			s.Close()
@@ -181,6 +205,10 @@ func (c *Client) Reconnect() error {
 
 func (c *Client) SendProposal(cmd defs.Propose) {
 	if c.ProposalHook != nil && c.ProposalHook(cmd) {
+		return
+	}
+	if c.bodega != nil {
+		c.sendBodegaProposal(cmd)
 		return
 	}
 	if c.fault != nil {
@@ -384,6 +412,9 @@ func (c *Client) findClosest(alive []bool) error {
 		if c.replicas[i] == c.server || (!hasPort(c.server) && addr == c.server) {
 			c.ClosestId = i
 		}
+		if c.BodegaRouting {
+			continue // Bodega ranks other peers by proxied control RPCs after connecting.
+		}
 
 		out, err := exec.Command("ping", addr, "-c 3", "-q").Output()
 		if err == nil {
@@ -396,7 +427,7 @@ func (c *Client) findClosest(alive []bool) error {
 		}
 	}
 
-	if c.ClosestId == -1 {
+	if c.ClosestId == -1 && !c.BodegaRouting {
 		min := math.MaxFloat64
 		for i, l := range c.Ping {
 			if l < min {

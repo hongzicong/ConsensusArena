@@ -141,17 +141,38 @@ func (r *Replica) ReadQuorumSize() int {
 }
 
 func (r *Replica) ConnectToPeers() {
+	r.connectToPeers(false)
+}
+
+// ConnectToPeersConcurrent avoids a sum of WAN handshake RTTs before a late-ID
+// replica can start heartbeating. It uses the same replica-ID handshake
+// and still waits for every expected connection before starting listeners.
+func (r *Replica) ConnectToPeersConcurrent() {
+	r.connectToPeers(true)
+}
+
+func (r *Replica) connectToPeers(concurrent bool) {
 	done := make(chan bool)
 
 	go r.waitForPeerConnections(done)
 
-	for i := 0; i < int(r.Id); i++ {
+	connect := func(i int) {
 		r.Peers[i] = r.connectToPeer(i)
 		r.Alive[i] = true
 		r.PeerReaders[i] = bufio.NewReader(r.Peers[i])
 		r.PeerWriters[i] = bufio.NewWriter(r.Peers[i])
 		r.Printf("OUT Connected to %d", i)
 	}
+	var connecting sync.WaitGroup
+	for i := 0; i < int(r.Id); i++ {
+		if concurrent {
+			connecting.Add(1)
+			go func(peer int) { defer connecting.Done(); connect(peer) }(i)
+		} else {
+			connect(i)
+		}
+	}
+	connecting.Wait()
 	<-done
 	r.Printf("Replica %d: done connecting to peers", r.Id)
 	r.Printf("Node list %v", r.PeerAddrList)

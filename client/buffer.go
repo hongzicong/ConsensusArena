@@ -265,6 +265,10 @@ func (c *BufferClient) nextUpdateValue(key int64) state.Value {
 }
 
 func (c *BufferClient) WaitReplies(waitFrom int) {
+	if c.bodega != nil {
+		c.waitBodegaReplies()
+		return
+	}
 	if c.fault != nil {
 		c.waitFaultReplies(waitFrom)
 		return

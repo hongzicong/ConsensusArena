@@ -57,6 +57,11 @@ const (
 type Config struct {
 	Protocol string
 
+	// Bodega: default responders and optional per-key/range overrides by alias.
+	BodegaResponders                                                        string
+	BodegaResponderRanges                                                   string
+	BodegaLease, BodegaMargin, BodegaHeartbeat, BodegaFailure, BodegaUnhold time.Duration
+
 	Alias       string
 	MachineType Machine
 	Port        int
@@ -213,6 +218,27 @@ func Read(filename, alias string) (*Config, error) {
 				ok = true
 			case "protocol":
 				c.Protocol, err = expectString(words)
+				ok = true
+			case "bodegaresponders":
+				c.BodegaResponders, err = expectString(words)
+				ok = true
+			case "bodegaresponderranges":
+				c.BodegaResponderRanges, err = expectString(words)
+				ok = true
+			case "bodegalease":
+				c.BodegaLease, err = expectDuration(words)
+				ok = true
+			case "bodegamargin":
+				c.BodegaMargin, err = expectDuration(words)
+				ok = true
+			case "bodegaheartbeat":
+				c.BodegaHeartbeat, err = expectDuration(words)
+				ok = true
+			case "bodegafailure":
+				c.BodegaFailure, err = expectDuration(words)
+				ok = true
+			case "bodegaunhold":
+				c.BodegaUnhold, err = expectDuration(words)
 				ok = true
 			case "warmup":
 				c.Warmup, err = expectDuration(words)

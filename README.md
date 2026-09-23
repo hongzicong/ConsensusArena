@@ -20,6 +20,7 @@ and [Egalitarian Paxos](https://github.com/otrack/epaxos) codebases.
 | CURP | CURP implemented over N²Paxos. |
 | Fast Paxos | Fast Paxos with uncoordinated collision recovery. |
 | EPaxos | Corrected EPaxos implementation. |
+| Bodega | Roster leases for local reads; crash-stop core prototype. |
 
 ## Requirements
 
@@ -94,6 +95,7 @@ ConsensusArena accepts these case-insensitive protocol values:
 | `N2Paxos` | N²Paxos |
 | `Paxos` | Classic Paxos |
 | `EPaxos` | EPaxos |
+| `Bodega` | Bodega |
 
 For repeated runs, change the default in `slurm/workload.conf`:
 
@@ -110,8 +112,58 @@ sbatch --account=dcl \
 ```
 
 The Slurm launcher writes the override into the generated `cluster.conf` used
-by the master, all five replicas, and all ten clients. Direct participant runs
+by the master, all configured replicas, and all ten clients. Direct participant runs
 can use `-protocol epaxos` on every process instead.
+
+### Bodega
+
+Select `protocol: Bodega` or `-protocol bodega`. Clients use the nearest connected
+responder for each GET key and send PUT/SCAN directly to the known roster leader. Clients refresh
+roster hints through a read-only replica control RPC once per second; stale or
+temporarily unavailable leader hints retain follower forwarding as a fallback.
+`BODEGA_CLIENT_ROUTES` records routing counts. Add optional settings
+before `-- Proxy --`:
+
+```text
+bodegaResponders: all // or leader, or comma-separated replica aliases
+bodegaLease: 2s
+bodegaMargin: 100ms
+bodegaHeartbeat: 100ms
+bodegaFailure: 1200ms
+bodegaUnhold: 250ms
+```
+
+These are defaults. Optional `bodegaResponderRanges: 0..999=r1,r3;1000..1999=r2;2000=leader`
+overrides the default mask on inclusive, nonoverlapping key ranges (or a single key).
+Unlisted keys use `bodegaResponders`; the current leader is always included.
+Writes use 1 ms batches and require a majority plus the union of responders for
+all written keys in the batch. `bodegaUnhold` is now a client GET timer: retry the
+same ID once at the leader and deliver the first reply, without forcing a logged
+read. `BODEGA_CLIENT_HEDGES` reports sends/wins/duplicates/cancellations;
+`BODEGA_CLIENT_DESTINATIONS` counts initial reads. `Batches`, `BatchCommands`,
+`MaxBatchCommands` and `BODEGA_WIRE` expose batch sizes and encoded send attempts
+by message kind. Non-commit messages use versioned typed binary frames; only
+heartbeats carry full rosters. Supports odd fixed
+memberships of 3–63 and `noop: false`.
+Compact CommitNotice frames carry commit positions, not values; lost Accept data
+is repaired in bounded windows. `CommitNotices`, `CommitRepairRequests` and
+`CommitRepairEntries` expose this path. Upgrade all replicas and clients together for the new wire/control format.
+The port uses expiry-based roster changes and per-key committed-value reads
+with majority accepted-prefix evidence; recovered entries use deduplicated execution.
+Stable prepared leaders read committed state without waiting for same-key pending
+writes; follower reads still hold behind them. `StableLeaderReads` and
+`LeaderPendingWriteBypasses` count leader-local completions and pending-write bypasses.
+Bounded clock-rate drift is required. No durable restart, automatic responder
+tuning, log compaction, or early-accept optimization is implemented.
+`BODEGA_STATS` and `BODEGA_ROSTER` record counters and installed rosters;
+`OutOfOrderReads` counts reads served before the target slot executes.
+Bodega establishes peer connections concurrently; roster installation restarts
+peer failure timers without renewing leases.
+Bodega fallback read routing uses proxied control-RPC duration, not ICMP;
+`BODEGA_CLIENT_RTT` / `BODEGA_CLIENT_DESTINATIONS` and
+`BODEGA_TIMER_RESET` / `BODEGA_ROSTER_FILTER` expose routing and timer changes.
+Test with `go test -timeout 3600s ./bodega`; on Linux, set
+`BODEGA_TEST_BINARY="$PWD/consensusarena"` to also run the five-replica crash tests.
 
 ## Workload and network model
 
@@ -192,12 +244,13 @@ latency identities only.
 
 ## SCITAS Jed experiment
 
-The provided Slurm job runs a native Linux binary on two Jed CPU nodes:
+The latency job sequentially tests 5, 9 and 13 replicas on three Jed CPU nodes;
+use `CONSENSUSARENA_REPLICAS=5:9:13` to select sizes:
 
-- 16 Slurm tasks: five replicas, ten clients, and one master.
+- Up to 24 Slurm tasks: thirteen replicas, ten clients, and one master.
 - Eight tasks per node.
 - Eight CPU cores and 1 GiB per allocated core for each task.
-- 128 allocated CPU cores in total.
+- 192 allocated CPU cores in total.
 - `standard` partition and `parallel` QOS.
 
 ### Upload the runtime files
@@ -244,9 +297,8 @@ scancel JOB_ID
 ```
 
 Slurm removes all experiment processes when the allocation ends. The cost
-estimator uses the requested 30-minute wall-time; billing uses the resources
-for the actual allocation duration. Five repetitions normally finish well
-before that limit.
+estimator uses the requested one-hour wall-time; billing uses the resources
+for the actual allocation duration.
 
 ### Results
 

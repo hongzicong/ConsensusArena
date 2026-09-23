@@ -64,6 +64,8 @@ def affected_proxies(rank, slow):
 
 def delay(rank, slow, enable):
     names = affected_proxies(rank, slow)
+    existing = api(rank, '/proxies')
+    names += [name + '-control' for name in names if name + '-control' in existing]
     for name in names:
         for stream in ['upstream', 'downstream']:
             toxic = 'fault-extra-' + stream
@@ -173,6 +175,24 @@ def rank_runner(repo, run, binary, toxi):
     if failed: sys.exit(1)
 
 def choose_target(run, protocol):
+    if protocol == 'bodega':
+        # Bodega elects independently of the advisory master. Require agreement
+        # in the latest installed roster records before choosing its leader.
+        logs = list((run/'logs').glob('*-replica.log'))
+        counts = {}
+        for path in logs:
+            records = re.findall(r'BODEGA_ROSTER replica=\d+ ballot=(\d+) leader=(\d+)',
+                                 path.read_text(errors='replace'))
+            if records:
+                roster = tuple(map(int, records[-1]))
+                counts[roster] = counts.get(roster, 0) + 1
+        agreed = [(ballot, leader, count) for (ballot, leader), count in counts.items()
+                  if count >= len(logs)//2 + 1]
+        if not agreed:
+            raise RuntimeError('no majority installed Bodega roster evidence')
+        ballot, leader, count = max(agreed)
+        return dict(rank=leader, kind='bodega_majority_installed_roster',
+                    ballot=ballot, agreeing_replicas=count, selected_ns=time.time_ns())
     if protocol in ('epaxos','fastpaxos'):
         return dict(rank=3,kind='designated_replica_no_global_leader',selected_ns=time.time_ns())
     if protocol in ('curp','n2paxos'):

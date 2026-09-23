@@ -90,32 +90,47 @@ for _ in $(seq 1 100); do
 done
 curl --fail --silent "http://127.0.0.1:$control_port/version" >/dev/null
 
+traffic_types=(data)
+# Bodega discovers the installed roster on the replica control port. Shape
+# these hints with the same geographic links as its requests, not an oracle.
+if awk 'tolower($1) == "protocol:" && tolower($2) == "bodega" { found=1 } END { exit !found }' "$run_dir/config/cluster.conf"; then
+    traffic_types+=(control)
+fi
 for ((target_index=0; target_index<replica_count; target_index++)); do
     target_logical="0.0.0.$((target_index + 1))"
     target_endpoint=$(lookup_endpoint "$target_logical")
     proxy_port=$((proxy_port_base + target_index))
-    proxy_name="rank-${rank}-replica-${target_index}"
-    listen="127.0.0.1:$proxy_port"
     upstream_ms=$(lookup_rtt_ms "$source_endpoint" "$target_endpoint")
     downstream_ms=$(lookup_rtt_ms "$target_endpoint" "$source_endpoint")
     upstream_ms=$(( (upstream_ms + 1) / 2 ))
     downstream_ms=$(( (downstream_ms + 1) / 2 ))
 
-    post_json /proxies \
-        "{\"name\":\"$proxy_name\",\"listen\":\"$listen\",\"upstream\":\"$target_endpoint\",\"enabled\":true}"
-    if (( upstream_ms > 0 )); then
+    data_endpoint=$target_endpoint
+    for traffic in "${traffic_types[@]}"; do
+        target_endpoint=$data_endpoint
+        proxy_name="rank-${rank}-replica-${target_index}"
+        listen="127.0.0.1:$proxy_port"
+        if [[ "$traffic" == control ]]; then
+            target_endpoint="${data_endpoint%:*}:$(( ${data_endpoint##*:} + 1000 ))"
+            proxy_name+="-control"
+            listen="127.0.0.1:$((proxy_port + 10000))"
+        fi
+        post_json /proxies \
+            "{\"name\":\"$proxy_name\",\"listen\":\"$listen\",\"upstream\":\"$target_endpoint\",\"enabled\":true}"
+        if (( upstream_ms > 0 )); then
+            post_json "/proxies/$proxy_name/toxics" \
+                "{\"name\":\"latency-upstream\",\"type\":\"latency\",\"stream\":\"upstream\",\"toxicity\":1.0,\"attributes\":{\"latency\":$upstream_ms,\"jitter\":$latency_jitter_ms}}"
+        fi
+        if (( downstream_ms > 0 )); then
+            post_json "/proxies/$proxy_name/toxics" \
+                "{\"name\":\"latency-downstream\",\"type\":\"latency\",\"stream\":\"downstream\",\"toxicity\":1.0,\"attributes\":{\"latency\":$downstream_ms,\"jitter\":$latency_jitter_ms}}"
+        fi
         post_json "/proxies/$proxy_name/toxics" \
-            "{\"name\":\"latency-upstream\",\"type\":\"latency\",\"stream\":\"upstream\",\"toxicity\":1.0,\"attributes\":{\"latency\":$upstream_ms,\"jitter\":$latency_jitter_ms}}"
-    fi
-    if (( downstream_ms > 0 )); then
+            "{\"name\":\"bandwidth-upstream\",\"type\":\"bandwidth\",\"stream\":\"upstream\",\"toxicity\":1.0,\"attributes\":{\"rate\":$bandwidth_kbps}}"
         post_json "/proxies/$proxy_name/toxics" \
-            "{\"name\":\"latency-downstream\",\"type\":\"latency\",\"stream\":\"downstream\",\"toxicity\":1.0,\"attributes\":{\"latency\":$downstream_ms,\"jitter\":$latency_jitter_ms}}"
-    fi
-    post_json "/proxies/$proxy_name/toxics" \
-        "{\"name\":\"bandwidth-upstream\",\"type\":\"bandwidth\",\"stream\":\"upstream\",\"toxicity\":1.0,\"attributes\":{\"rate\":$bandwidth_kbps}}"
-    post_json "/proxies/$proxy_name/toxics" \
-        "{\"name\":\"bandwidth-downstream\",\"type\":\"bandwidth\",\"stream\":\"downstream\",\"toxicity\":1.0,\"attributes\":{\"rate\":$bandwidth_kbps}}"
-    printf '%s %s\n' "$target_endpoint" "$listen" >> "$dial_map"
+            "{\"name\":\"bandwidth-downstream\",\"type\":\"bandwidth\",\"stream\":\"downstream\",\"toxicity\":1.0,\"attributes\":{\"rate\":$bandwidth_kbps}}"
+        printf '%s %s\n' "$target_endpoint" "$listen" >> "$dial_map"
+    done
 done
 
 curl --fail --silent "http://127.0.0.1:$control_port/proxies" > "$proxy_snapshot"

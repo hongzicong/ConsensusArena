@@ -118,6 +118,11 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	}
 
 	switch strings.ToLower(c.Protocol) {
+	case "bodega":
+		// Bodega's client routes GET locally and other commands to the roster leader.
+		c.Leaderless = true
+		c.Fast = false
+		c.WaitClosest = true
 	case "swiftpaxos":
 	case "curp":
 	case "fastpaxos":
@@ -137,6 +142,8 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	server := c.Proxy.ProxyOf(c.ClientAddrs[c.Alias])
 	server = c.ReplicaAddrs[server]
 	cl := client.NewClientLog(server, c.MasterAddr, c.MasterPort, c.Fast, c.Leaderless, verbose, l)
+	cl.BodegaUnhold = c.BodegaUnhold
+	cl.BodegaRouting = strings.EqualFold(c.Protocol, "bodega")
 	workloadSeed := client.DeriveWorkloadSeed(int64(c.WorkloadSeed), c.Alias, i)
 	b := client.NewBufferClient(cl, c.CommandSize, c.Writes, c.KeyCount, c.ZipfSkew, workloadSeed)
 	b.PoissonArrivals(c.ArrivalRate)
