@@ -183,6 +183,7 @@ func (r *Replica) handleSync(msg *MSync) {
 	r.status = NORMAL
 	r.ballot = msg.Ballot
 	r.cballot = msg.Ballot
+	r.installRecoveryHashBoundary(msg.Phases)
 	if r.fixedMajority {
 		r.FQ = r.qs.AQ(r.ballot)
 	}
@@ -231,41 +232,8 @@ func (r *Replica) handleSync(msg *MSync) {
 				desc.propose = propose
 			}
 
-			if !r.SQ.Contains(r.Id) {
-				continue
-			}
-
-			// TODO: what if !r.optExec ?
-			if r.Id == r.leader() {
-				fastAck := newFastAck()
-				fastAck.Replica = r.Id
-				fastAck.Ballot = r.ballot
-				fastAck.CmdId = cmdId
-				fastAck.Dep = msg.Deps[cmdId]
-				if fastAck.Dep == nil {
-					fastAck.Dep = NilDepOfCmdId(cmdId)
-				}
-				r.batcher.SendFastAck(copyFastAck(fastAck))
-				if desc != nil {
-					defer r.handleFastAck(fastAck, desc)
-				}
-				reply := &MReply{
-					Replica: r.Id,
-					Ballot:  r.ballot,
-					CmdId:   cmdId,
-				}
-				r.sender.SendToClient(propose.ClientId, reply, r.cs.replyRPC)
-			} else {
-				lightSlowAck := &MLightSlowAck{
-					Replica: r.Id,
-					Ballot:  r.ballot,
-					CmdId:   cmdId,
-				}
-				r.batcher.SendLightSlowAckClient(lightSlowAck, propose.ClientId)
-				if desc != nil {
-					defer r.handleLightSlowAck(lightSlowAck, desc)
-				}
-			}
+			finishAck := r.sendRecoveryAck(cmdId, msg.Deps[cmdId], propose, desc)
+			defer finishAck()
 		}
 	}
 

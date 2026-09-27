@@ -33,6 +33,7 @@ type Replica struct {
 
 	seqnum          int
 	pendingHashUpds map[CommandId]*UpdateEntry
+	recoveryCmds    map[CommandId]int // commands installed by the current Sync
 
 	history      []commandStaticDesc
 	historySize  int
@@ -290,13 +291,7 @@ func (r *Replica) run() {
 
 		case m := <-r.cs.fastAckChan:
 			fastAck := m.(*MFastAck)
-			if fastAck.Replica == r.leader() && r.leader() != r.Id {
-				// TODO: again, think about pipeline.
-				r.recordLeaderHash(fastAck.CmdId, fastAck.Seqnum, fastAck.Checksum)
-			}
-			// This is a simple fix of the FIXME above:
-			r.getCmdDescSeq(fastAck.CmdId, fastAck, nil, nil, r.leader() == r.Id)
-			// r.getCmdDescSeq(fastAck.CmdId, fastAck, nil, nil, false)
+			r.receiveFastAck(fastAck)
 
 		case m := <-r.cs.lightSlowAckChan:
 			lightSlowAck := m.(*MLightSlowAck)
@@ -305,13 +300,7 @@ func (r *Replica) run() {
 		case m := <-r.cs.acksChan:
 			acks := m.(*MAcks)
 			for _, f := range acks.FastAcks {
-				if f.Replica == r.leader() && r.leader() != r.Id {
-					// TODO: again, think about pipeline.
-					r.recordLeaderHash(f.CmdId, f.Seqnum, f.Checksum)
-				}
-				// This is a simple fix of the FIXME above:
-				r.getCmdDescSeq(f.CmdId, copyFastAck(&f), nil, nil, r.leader() == r.Id)
-				// r.getCmdDescSeq(f.CmdId, copyFastAck(&f), nil, nil, false)
+				r.receiveFastAck(copyFastAck(&f))
 			}
 			for _, s := range acks.LightSlowAcks {
 				ls := s
@@ -321,6 +310,15 @@ func (r *Replica) run() {
 		case m := <-r.cs.optAcksChan:
 			optAcks := m.(*MOptAcks)
 			for _, ack := range optAcks.Acks {
+				if optAcks.Ballot != r.ballot {
+					continue
+				}
+				if IsNilDepOfCmdId(ack.CmdId, ack.Dep) && ack.Seqnum != recoveryAckSeqnum {
+					// The batcher's sentinel represents a SlowAck, not hash evidence.
+					ls := &MLightSlowAck{Replica: optAcks.Replica, Ballot: optAcks.Ballot, CmdId: ack.CmdId}
+					r.getCmdDesc(ls.CmdId, ls, nil)
+					continue
+				}
 				fastAck := newFastAck()
 				fastAck.Replica = optAcks.Replica
 				fastAck.Ballot = optAcks.Ballot
@@ -332,13 +330,7 @@ func (r *Replica) run() {
 				} else {
 					fastAck.Dep = nil
 				}
-				if fastAck.Replica == r.leader() && r.leader() != r.Id {
-					// TODO: again, think about pipeline.
-					r.recordLeaderHash(fastAck.CmdId, fastAck.Seqnum, fastAck.Checksum)
-				}
-				// This is a simple fix of the FIXME above:
-				r.getCmdDescSeq(fastAck.CmdId, fastAck, nil, nil, r.leader() == r.Id)
-				// r.getCmdDescSeq(fastAck.CmdId, fastAck, nil, nil, false)
+				r.receiveFastAck(fastAck)
 			}
 
 		case m := <-r.cs.newLeaderChan:
@@ -358,6 +350,17 @@ func (r *Replica) handlePropose(msg *defs.GPropose, desc *commandDesc, cmdId Com
 	}
 
 	desc.propose = msg
+	if _, recovered := r.recoveryCmds[cmdId]; recovered {
+		// Sync can arrive before this replica receives the original proposal.
+		// Keep its installed command/phase/dependencies and use recovery evidence;
+		// a restored descriptor has no normal-case hash proposal to broadcast.
+		finishAck := r.sendRecoveryAck(cmdId, desc.dep, msg, desc)
+		desc.afterPropagate.Recall()
+		if !r.delivered.Has(cmdId.String()) {
+			finishAck()
+		}
+		return
+	}
 	desc.cmd = msg.Command
 
 	if !r.FQ.Contains(r.Id) {
@@ -807,7 +810,8 @@ func (r *Replica) updateLogs(cmd state.Command, cmdId CommandId, s int, hs []SHa
 	keys := keysOf(cmd)
 
 	if len(keys) != len(hs) {
-		r.Fatal("the number of hashes does not match number of objects")
+		r.Fatal("the number of hashes does not match number of objects", " cmd=", cmdId,
+			" ballot=", r.ballot, " seqnum=", s, " objects=", len(keys), " hashes=", len(hs))
 	}
 
 	for i, key := range keys {

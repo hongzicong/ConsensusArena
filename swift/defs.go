@@ -2991,14 +2991,14 @@ func (t *MReply) Unmarshal(rr io.Reader) error {
 	if err != nil {
 		return err
 	}
-	t.Rep = make([]byte, alen3)
-	for i := int64(0); i < alen3; i++ {
-		if _, err := io.ReadAtLeast(wire, bs, 1); err != nil {
-			return err
-		}
-		t.Rep[i] = byte(bs[0])
+	if alen3 < 0 {
+		return fmt.Errorf("negative reply value length: %d", alen3)
 	}
-	return nil
+	t.Rep = make([]byte, alen3)
+	// With an empty Checksum, bs still spans the 16-byte header. Reading
+	// "at least 1" into it consumed bytes from following RPCs during recovery.
+	_, err = io.ReadFull(wire, t.Rep)
+	return err
 }
 
 func (t *MNewLeaderAckN) BinarySize() (nbytes int, sizeKnown bool) {
