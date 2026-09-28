@@ -25,8 +25,8 @@ def main(job):
             rel=p.relative_to(source)
             if rel.parts[0] in ('binary','ranks','logical'): continue
             if 'stdout' in rel.parts or 'logs' in rel.parts: continue
-            if 'status' in rel.parts and p.name not in ('crash-target.json','start-unix-ns'): continue
-            if p.suffix in ('.csv','.json','.jsonl','.conf','.txt') or p.name=='start-unix-ns': tar.add(p,arcname=rel.as_posix())
+            if 'status' in rel.parts and p.name not in ('crash-target.json','max-crash-targets.json','start-unix-ns') and not p.name.startswith('expected-crash-'): continue
+            if p.suffix in ('.csv','.json','.jsonl','.conf','.txt') or p.name=='start-unix-ns' or p.name.startswith('expected-crash-'): tar.add(p,arcname=rel.as_posix())
     print(json.dumps(dict(job=job,portable=str(portable),raw=str(archive))))
 
 if __name__=='__main__': main(sys.argv[1])

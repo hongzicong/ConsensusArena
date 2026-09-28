@@ -31,9 +31,15 @@ type Replica struct {
 	keys map[state.Key]keyInfo
 	hlog map[state.Key]*HashLog
 
-	seqnum          int
-	pendingHashUpds map[CommandId]*UpdateEntry
-	recoveryCmds    map[CommandId]int // commands installed by the current Sync
+	proposalBatches       uint64
+	deferredHashElisions  uint64
+	hashBacklogDeferrals  uint64
+	proposalBatchCommands uint64
+	proposalBatchMax      int
+	proposedInBallot      map[CommandId]struct{}
+	seqnum                int
+	pendingHashUpds       map[CommandId]*UpdateEntry
+	recoveryCmds          map[CommandId]int // commands installed by the current Sync
 
 	history      []commandStaticDesc
 	historySize  int
@@ -65,6 +71,7 @@ type Replica struct {
 }
 
 type commandDesc struct {
+	deferFast  bool
 	phase      int
 	cmd        state.Command
 	dep        Dep
@@ -104,6 +111,8 @@ type readDesc struct {
 	propose *defs.GPropose
 }
 
+type deferredProposal struct{ propose *defs.GPropose }
+
 func New(alias string, rid int, addrs []string, exec, fastRead, optExec, AQreconf bool,
 	pl, f int, conf *config.Config, l *dlog.Logger, slowAddrs []string) *Replica {
 	cmap.SHARD_COUNT = 32768
@@ -118,10 +127,11 @@ func New(alias string, rid int, addrs []string, exec, fastRead, optExec, AQrecon
 		cmdDescs:  cmap.New(),
 		delivered: cmap.New(),
 
-		keys:            make(map[state.Key]keyInfo),
-		hlog:            make(map[state.Key]*HashLog),
-		seqnum:          0,
-		pendingHashUpds: make(map[CommandId]*UpdateEntry),
+		keys:             make(map[state.Key]keyInfo),
+		hlog:             make(map[state.Key]*HashLog),
+		seqnum:           0,
+		proposedInBallot: make(map[CommandId]struct{}),
+		pendingHashUpds:  make(map[CommandId]*UpdateEntry),
 
 		history:      make([]commandStaticDesc, HISTORY_SIZE),
 		historySize:  0,
@@ -237,8 +247,6 @@ func (r *Replica) run() {
 
 	go r.WaitForClientConnections()
 
-	var cmdId CommandId
-
 	for !r.Shutdown {
 		select {
 		case newBallot := <-r.recover:
@@ -273,21 +281,7 @@ func (r *Replica) run() {
 			r.getCmdDesc(cmdId, "deliver", nil)
 
 		case propose := <-r.ProposeChan:
-			cmdId.ClientId = propose.ClientId
-			cmdId.SeqNum = propose.CommandId
-			r.proposes[cmdId] = propose
-			dep, hs := r.getDepAndHashes(propose.Command, cmdId)
-			if upd, exists := r.pendingHashUpds[cmdId]; exists && r.leader() != r.Id {
-				// TODO: when pipelining this can break ordering, disabling fast paths.
-				delete(r.pendingHashUpds, cmdId)
-				r.recordLeaderHash(cmdId, upd.seqnum, upd.hash)
-			}
-			// FIXME: leader can receive fastAck before Propose,
-			//        in this case desc is not seq
-			desc := r.getCmdDescSeq(cmdId, propose, dep, hs, r.leader() == r.Id)
-			if desc == nil {
-				r.Fatal("Got proposal for the delivered command", cmdId)
-			}
+			r.handleProposalBatch(propose)
 
 		case m := <-r.cs.fastAckChan:
 			fastAck := m.(*MFastAck)
@@ -363,7 +357,7 @@ func (r *Replica) handlePropose(msg *defs.GPropose, desc *commandDesc, cmdId Com
 	}
 	desc.cmd = msg.Command
 
-	if !r.FQ.Contains(r.Id) {
+	if !r.FQ.Contains(r.Id) || desc.deferFast {
 		desc.afterPropagate.Recall()
 		return
 	}
@@ -649,6 +643,7 @@ func (r *Replica) newDesc() *commandDesc {
 	desc.phase = START
 	desc.successors = nil
 	desc.slowPath = false
+	desc.deferFast = false
 	desc.seq = (r.routineCount >= MaxDescRoutines)
 	desc.defered = func() {}
 	desc.propose = nil
@@ -729,6 +724,9 @@ func (r *Replica) handleMsg(m interface{}, desc *commandDesc, cmdId CommandId) b
 
 	case *defs.GPropose:
 		r.handlePropose(msg, desc, cmdId)
+	case *deferredProposal:
+		desc.deferFast = true
+		r.handlePropose(msg.propose, desc, cmdId)
 
 	case *MFastAck:
 		if msg.CmdId == cmdId {
@@ -768,11 +766,18 @@ func (r *Replica) leader() int32 {
 }
 
 func (r *Replica) getDepAndHashes(cmd state.Command, cmdId CommandId) (Dep, []SHash) {
+	return r.getDepAndHashesWithUpdate(cmd, cmdId, nil, false)
+}
+
+func (r *Replica) getDepAndHashesWithUpdate(cmd state.Command, cmdId CommandId, update *UpdateEntry, deferHash bool) (Dep, []SHash) {
 	dep := []CommandId{}
 	hashes := []SHash{}
 	keysOfCmd := keysOf(cmd)
+	if update != nil && len(update.hash) != len(keysOfCmd) {
+		r.Fatal("the number of hashes does not match number of objects", " cmd=", cmdId)
+	}
 
-	for _, key := range keysOfCmd {
+	for i, key := range keysOfCmd {
 		info, exists := r.keys[key]
 		if exists {
 			cdep := info.getConflictCmds(cmd)
@@ -786,9 +791,19 @@ func (r *Replica) getDepAndHashes(cmd state.Command, cmdId CommandId) (Dep, []SH
 		l, exists := r.hlog[key]
 		if !exists {
 			l = NewHashLog()
+			l.BeginBallot(r.ballot)
 			r.hlog[key] = l
 		}
-		hashes = append(hashes, l.Append(cmd, cmdId))
+		if update == nil && deferHash {
+			l.AppendDeferred(cmdId)
+		} else if update == nil {
+			hashes = append(hashes, l.Append(cmd, cmdId))
+		} else {
+			l.AppendAndUpdate(cmdId, update.seqnum, update.hash[i])
+		}
+	}
+	if update != nil || deferHash {
+		return dep, nil
 	}
 
 	return dep, hashes
@@ -818,8 +833,89 @@ func (r *Replica) updateLogs(cmd state.Command, cmdId CommandId, s int, hs []SHa
 		l, exists := r.hlog[key]
 		if !exists {
 			l = NewHashLog()
+			l.BeginBallot(r.ballot)
 			r.hlog[key] = l
 		}
 		l.Update(cmdId, s, hs[i])
 	}
+}
+
+// Drain only already-ready proposals, preserving FIFO and bounding the delay
+// before other message classes can run. Never wait to assemble a batch.
+func (r *Replica) handleProposalBatch(first *defs.GPropose) {
+	additional := len(r.ProposeChan)
+	if additional > 255 {
+		additional = 255
+	}
+	r.proposalBatches++
+	r.proposalBatchCommands += uint64(additional + 1)
+	if additional+1 > r.proposalBatchMax {
+		r.proposalBatchMax = additional + 1
+	}
+	r.handleQueuedProposal(first)
+	for i := 0; i < additional; i++ {
+		r.handleQueuedProposal(<-r.ProposeChan)
+	}
+}
+
+func (r *Replica) handleQueuedProposal(propose *defs.GPropose) {
+	var cmdId CommandId
+	cmdId.ClientId = propose.ClientId
+	cmdId.SeqNum = propose.CommandId
+	if _, seen := r.proposedInBallot[cmdId]; seen {
+		return
+	}
+	r.proposedInBallot[cmdId] = struct{}{}
+	r.proposes[cmdId] = propose
+	if _, recovered := r.recoveryCmds[cmdId]; recovered {
+		// Sync already installed this command's dependencies. Do not append
+		// a hash proposal before handlePropose takes the recovery branch.
+		r.getCmdDescSeq(cmdId, propose, nil, nil, r.leader() == r.Id)
+		return
+	}
+	upd, deferred := r.pendingHashUpds[cmdId]
+	var dep Dep
+	var hs []SHash
+	deferFast := !deferred && r.shouldDeferFast(propose.Command)
+	if deferred && r.leader() != r.Id && r.SQ.Contains(r.Id) {
+		// The already-enqueued leader transition will send SlowAck and make
+		// handlePropose return before any local FastAck can consume this hash.
+		dep, hs = r.getDepAndHashesWithUpdate(propose.Command, cmdId, upd, false)
+		delete(r.pendingHashUpds, cmdId)
+		r.deferredHashElisions++
+	} else if deferFast {
+		dep, hs = r.getDepAndHashesWithUpdate(propose.Command, cmdId, nil, true)
+		r.hashBacklogDeferrals++
+	} else {
+		dep, hs = r.getDepAndHashes(propose.Command, cmdId)
+	}
+	if deferred && r.leader() != r.Id && !r.SQ.Contains(r.Id) {
+		// TODO: when pipelining this can break ordering, disabling fast paths.
+		delete(r.pendingHashUpds, cmdId)
+		r.recordLeaderHash(cmdId, upd.seqnum, upd.hash)
+	}
+	// FIXME: leader can receive fastAck before Propose,
+	//        in this case desc is not seq
+	var message interface{} = propose
+	if deferFast {
+		message = &deferredProposal{propose: propose}
+	}
+	desc := r.getCmdDescSeq(cmdId, message, dep, hs, r.leader() == r.Id)
+	if desc == nil {
+		r.Fatal("Got proposal for the delivered command", cmdId)
+	}
+}
+
+func (r *Replica) shouldDeferFast(cmd state.Command) bool {
+	// Optional speculative reads may need the local proxy's execution/reply.
+	// Keep their existing path rather than suppressing that local fast vote.
+	if r.fastRead || r.leader() == r.Id || !r.SQ.Contains(r.Id) {
+		return false
+	}
+	for _, key := range keysOf(cmd) {
+		if l := r.hlog[key]; l != nil && len(l.nodes) >= 1024 {
+			return true
+		}
+	}
+	return false
 }

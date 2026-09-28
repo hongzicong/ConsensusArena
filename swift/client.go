@@ -16,10 +16,11 @@ type Client struct {
 	ballot    int32
 	delivered map[CommandId]struct{}
 
-	SQ        replica.QuorumI
-	FQ        replica.QuorumI
-	slowPathH map[CommandId]*replica.MsgSet
-	fastPathH map[CommandId]*replica.MsgSet
+	SQ         replica.QuorumI
+	FQ         replica.QuorumI
+	slowPathH  map[CommandId]*replica.MsgSet
+	fastPathH  map[CommandId]*replica.MsgSet
+	ackBallots map[CommandId]int32
 
 	fixedMajority bool
 
@@ -41,8 +42,9 @@ func NewClient(b *client.BufferClient, repNum int) *Client {
 		SQ: replica.NewMajorityOf(repNum),
 		FQ: replica.NewThreeQuartersOf(repNum),
 
-		slowPathH: make(map[CommandId]*replica.MsgSet),
-		fastPathH: make(map[CommandId]*replica.MsgSet),
+		slowPathH:  make(map[CommandId]*replica.MsgSet),
+		fastPathH:  make(map[CommandId]*replica.MsgSet),
+		ackBallots: make(map[CommandId]int32),
 
 		fixedMajority: true,
 
@@ -171,7 +173,9 @@ func (c *Client) handleMsgs() {
 					}
 					fastAck.Checksum = nil
 				}
-				c.handleFastAck(fastAck, false)
+				if !c.handleFastAck(fastAck, false) {
+					continue
+				}
 				if _, exists := c.delivered[fastAck.CmdId]; !exists && fastAck.Checksum == nil {
 					fastAck := copyFastAck(fastAck)
 					fastAck.Checksum = nil
@@ -195,6 +199,14 @@ func (c *Client) handleFastAck(f *MFastAck, fromLeader bool) bool {
 	if _, exists := c.delivered[f.CmdId]; exists {
 		return false
 	}
+	if b, exists := c.ackBallots[f.CmdId]; !exists || b != f.Ballot {
+		// Previous-ballot acknowledgements cannot count in this ballot.
+		// Release the maps by dropping ownership, not by returning aliased
+		// messages to pools while another set could still reference them.
+		delete(c.fastPathH, f.CmdId)
+		delete(c.slowPathH, f.CmdId)
+		c.ackBallots[f.CmdId] = f.Ballot
+	}
 
 	c.initMsgSets(f.CmdId)
 	c.fastPathH[f.CmdId].Add(f.Replica, fromLeader, f)
@@ -216,7 +228,9 @@ func (c *Client) handleLightSlowAck(ls *MLightSlowAck) {
 	f.Ballot = ls.Ballot
 	f.CmdId = ls.CmdId
 	f.Checksum = nil
-	c.handleFastAck(f, false)
+	if !c.handleFastAck(f, false) {
+		return
+	}
 	if _, exists := c.delivered[f.CmdId]; !exists {
 		f := copyFastAck(f)
 		f.Checksum = nil
@@ -250,7 +264,9 @@ func (c *Client) handleReply(r *MReply) {
 	f.CmdId = r.CmdId
 	f.Checksum = r.Checksum
 	c.val = r.Rep
-	c.handleFastAck(f, true)
+	if !c.handleFastAck(f, true) {
+		return
+	}
 	if _, exists := c.delivered[f.CmdId]; !exists {
 		f := copyFastAck(f)
 		f.Checksum = nil

@@ -28,17 +28,53 @@ def export(path, rows):
     with Path(path).open('w',newline='') as f:
         w=csv.DictWriter(f,fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
 
+def recovery_window(seconds, start, end, reference, valid):
+    """Completion-window observations; not a claim that new requests committed."""
+    first=sustained=positive=None
+    if valid:
+        positive=next((s-start for s in range(start,end-2)
+                       if all(seconds[t]['completed']>0 for t in range(s,s+3))),None)
+    if valid and reference>0:
+        first=next((s-start for s in range(start,end-2)
+                    if all(seconds[t]['completed']>=.9*reference for t in range(s,s+3))),None)
+        sustained=next((s-start for s in range(start,end-2)
+                        if all(seconds[t]['completed']>=.9*reference for t in range(s,end))),None)
+    return dict(first_s=first,sustained_from_s=sustained,positive_3seconds_s=positive,
+                stays_after_first=(all(seconds[t]['completed']>=.9*reference for t in range(start+first,end)) if first is not None else None))
+
 def summarize(base):
     metadata=json.loads((base/'metadata.json').read_text())
+    if 'replica_counts' in metadata:
+        sizes=[base/('replicas-'+str(n)) for n in metadata['replica_counts']]
+        outcomes=[]
+        combined={name:[] for name in ('phase-summary.csv','timeseries.csv','request-cohorts.csv')}
+        for size in sizes:
+            if not (size/'metadata.json').exists():
+                outcomes.append(dict(replicas=int(size.name.split('-')[1]),valid=False,error='missing size metadata'))
+                continue
+            outcomes.extend(summarize(size))
+            for name,rows in combined.items():
+                if (size/name).exists():
+                    with (size/name).open(newline='') as f: rows.extend(csv.DictReader(f))
+        for name,rows in combined.items(): export(base/name,rows)
+        (base/'validation.json').write_text(json.dumps(outcomes,indent=2)+'\n')
+        return outcomes
     protocol=metadata['protocol']
+    duration=int(metadata.get('measurement_s',100))
+    maximum=metadata.get('max_crash_s')
+    leader_end=maximum if maximum is not None else duration
     summaries=[]; series=[]; cohorts=[]; outcomes=[]
     for run in sorted(base.glob('ycsb-*/repetition-*')):
+        if not (run/'metadata.json').exists() or not (run/'outcome.json').exists():
+            outcomes.append(dict(protocol=protocol,replicas=metadata.get('replicas'),valid=False,run=str(run),error='missing run metadata/outcome'))
+            continue
         outcome=json.loads((run/'outcome.json').read_text())
         meta=json.loads((run/'metadata.json').read_text())
-        identity=dict(protocol=protocol,profile=meta['profile'],repetition=meta['repetition'],valid=outcome['valid'])
+        identity=dict(protocol=protocol,replicas=meta['replicas'],profile=meta['profile'],repetition=meta['repetition'],valid=outcome['valid'])
         seconds=collections.defaultdict(bucket)
         cohort=collections.defaultdict(bucket)
         unresolved=collections.Counter()
+        coverage=collections.defaultdict(set)
         finals=0; accounting_errors=[]; send_errors=0
         for file in sorted((run/'results').glob('*-fault.jsonl')):
             rows=[json.loads(line) for line in file.read_text().splitlines()]
@@ -47,7 +83,8 @@ def summarize(base):
                 # Samples share an absolute measurement epoch. Assign the tiny
                 # scheduling jitter to the nearest one-second interval.
                 sec=math.floor((row['start_s']+row['end_s'])/2)
-                if 0<=sec<100:
+                if 0<=sec<duration:
+                    coverage[sec].add(file.name)
                     b=seconds[sec]; add(b,row['stats']); b['pending']+=row['pending']; b['queue']+=row['queue']
                 if row['type']=='final':
                     finals+=1; send_errors+=row['send_errors']
@@ -58,33 +95,52 @@ def summarize(base):
                     for k,stats in row['cohorts'].items(): add(cohort[k],stats)
                     unresolved.update(row['unresolved'])
         if finals!=10: accounting_errors.append('expected 10 final client records; got '+str(finals))
+        missing_seconds=[s for s in range(duration) if len(coverage[s])!=10]
+        if missing_seconds: accounting_errors.append('incomplete client coverage in seconds '+str(missing_seconds))
         valid=bool(outcome['valid'] and not accounting_errors)
         identity['valid']=valid
         pre=sum(seconds[s]['completed'] for s in range(10,20))/10
         pre_offered=sum(seconds[s]['offered'] for s in range(10,20))/10
         stable=pre_offered>0 and .9*pre_offered<=pre<=1.1*pre_offered
-        recovery=None
-        if valid and stable and pre>0:
-            for s in range(60,98):
-                if all(seconds[t]['completed']>=.9*pre for t in range(s,s+3)):
-                    recovery=s-60; break
+        leader=recovery_window(seconds,60,leader_end,pre,valid and stable)
+        recovery=leader['first_s'];sustained_from=leader['sustained_from_s']
+        maximum_metrics={}
+        if maximum is not None:
+            local_ref=sum(seconds[s]['completed'] for s in range(maximum-10,maximum))/10
+            local_offered=sum(seconds[s]['offered'] for s in range(maximum-10,maximum))/10
+            local_stable=local_offered>0 and .9*local_offered<=local_ref<=1.1*local_offered
+            maximum_metrics=dict(injected=bool(outcome.get('max_crash_injected')),target=outcome.get('max_crash_target'),
+                                 confirmed_crash_ranks=outcome.get('confirmed_crash_ranks'),
+                                 versus_original_reference=recovery_window(seconds,maximum,duration,pre,valid and stable),
+                                 versus_premaximum_reference=recovery_window(seconds,maximum,duration,local_ref,valid and local_stable),
+                                 positive_completion_3seconds_s=recovery_window(seconds,maximum,duration,0,valid)['positive_3seconds_s'],
+                                 premaximum_last10_rps=local_ref,premaximum_stable=local_stable,
+                                 final20_mean_rps=(sum(seconds[s]['completed'] for s in range(duration-20,duration))/20 if valid else None),
+                                 observation_end_s=duration)
         outcomes.append(dict(**identity,accounting_errors=accounting_errors,baseline_last10_rps=pre,baseline_last10_offered_rps=pre_offered,baseline_stable=stable,
                              recovery_90pct_3seconds_s=recovery,send_errors=send_errors,
+                             sustained_recovery=leader['stays_after_first'],
+                             sustained_recovery_from_s=sustained_from,
+                             leader_observation_end_s=leader_end,maximum_failure=maximum_metrics,
                              target=outcome.get('crash_target'),error=outcome.get('error')))
-        for sec in range(100):
+        for sec in range(duration):
             b=seconds[sec]; n=b['completed']
-            series.append(dict(**identity,second=sec,completed=n,offered=b['offered'],issued=b['issued'],dropped=b['dropped'],
+            covered=len(coverage[sec])==10
+            series.append(dict(**identity,second=sec,completed=n if covered else None,offered=b['offered'] if covered else None,issued=b['issued'] if covered else None,dropped=b['dropped'] if covered else None,
                                mean_ms=b['latency_sum_ms']/n if n else None,p99_ms=percentile(b['hist'],.99),pending=b['pending'],queue=b['queue']))
-        for phase,lo,hi in [('normal',0,20),('slow',20,40),('restored',40,60),('crashed',60,100)]:
+        phases=[('normal',0,20),('slow',20,40),('restored',40,60),('crashed',60,leader_end)]
+        if maximum is not None: phases.append(('maximum_crashes',maximum,duration))
+        for phase,lo,hi in phases:
             b=bucket()
             for sec in range(lo,hi):
                 src=seconds[sec]
                 for k in ('completed','offered','issued','dropped','latency_sum_ms','send_latency_sum_ms'): b[k]+=src[k]
                 b['hist'].update(src['hist'])
             n=b['completed']
-            summaries.append(dict(**identity,phase=phase,duration_s=hi-lo,completed=n,completion_rps=n/(hi-lo),
-                                  mean_ms=b['latency_sum_ms']/n if n else None,p99_ms=percentile(b['hist'],.99),
-                                  offered=b['offered'],issued=b['issued'],dropped=b['dropped'],pending_at_end=seconds[hi-1]['pending'],
+            covered=all(len(coverage[s])==10 for s in range(lo,hi))
+            summaries.append(dict(**identity,phase=phase,duration_s=hi-lo,completed=n if covered else None,completion_rps=n/(hi-lo) if covered else None,
+                                  mean_ms=b['latency_sum_ms']/n if n and covered else None,p99_ms=percentile(b['hist'],.99) if covered else None,
+                                  offered=b['offered'] if covered else None,issued=b['issued'] if covered else None,dropped=b['dropped'] if covered else None,pending_at_end=seconds[hi-1]['pending'] if covered else None,
                                   recovery_90pct_3seconds_s=recovery if phase=='crashed' else None))
         for key,b in sorted(cohort.items()):
             phase,operation=key.split('/')

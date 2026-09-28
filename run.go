@@ -53,7 +53,7 @@ func runReplica(c *config.Config, logger *dlog.Logger) {
 		rep := fastpaxos.New(c.Alias, replicaId, nodeList, !c.Noop, f, c, logger)
 		rpc.Register(rep)
 	case "n2paxos":
-		log.Println("Starting N²Paxos replica...")
+		log.Println("Starting N2Paxos replica...")
 		rep := n2paxos.New(c.Alias, replicaId, nodeList, !c.Noop, 1, f, c, logger)
 		rpc.Register(rep)
 	case "paxos":

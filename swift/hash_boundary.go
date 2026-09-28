@@ -23,10 +23,19 @@ func newRecoveryFastAck(replica, ballot int32, cmdId CommandId, dep Dep) *MFastA
 
 func (r *Replica) installRecoveryHashBoundary(phases map[CommandId]int) {
 	log.Printf("swift_recovery_hash_boundary ballot=%d installed_commands=%d discarded_pending_updates=%d", r.ballot, len(phases), len(r.pendingHashUpds))
+	log.Printf("swift_proposal_batches batches=%d commands=%d max=%d", r.proposalBatches, r.proposalBatchCommands, r.proposalBatchMax)
+	log.Printf("swift_deferred_hash_elisions commands=%d", r.deferredHashElisions)
+	log.Printf("swift_hash_backlog_deferrals commands=%d", r.hashBacklogDeferrals)
 	r.recoveryCmds = phases
+	r.proposedInBallot = make(map[CommandId]struct{})
 	// These entries were received in the previous ballot. Their leader/sequence
 	// context must not be applied when a delayed proposal arrives after Sync.
 	r.pendingHashUpds = make(map[CommandId]*UpdateEntry)
+	removed := 0
+	for _, log := range r.hlog {
+		removed += log.BeginBallot(r.ballot)
+	}
+	log.Printf("swift_hash_epoch ballot=%d keys=%d sealed_pending_nodes=%d", r.ballot, len(r.hlog), removed)
 }
 
 func (r *Replica) recordLeaderAck(msg *MFastAck) {
