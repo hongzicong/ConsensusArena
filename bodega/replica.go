@@ -245,7 +245,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 			}
 			r.Printf("BODEGA_WIRE replica=%d encoded_bytes_by_kind=%v frames_by_kind=%v", e.id, bytes, frames)
 			s, _ := json.Marshal(e.stats)
-			r.Printf("BODEGA_STATS replica=%d ballot=%d leader=%d prefix=%d high=%d pending=%d held=%d counters=%s", e.id, e.current.Ballot, e.current.Leader, e.prefix, e.high, len(waiting), len(e.held), s)
+			r.Printf("BODEGA_STATS replica=%d ballot=%d leader=%d prefix=%d high=%d pending=%d held=%d accepted_prefix=%d prepared=%t counters=%s", e.id, e.current.Ballot, e.current.Leader, e.prefix, e.high, len(waiting), len(e.held), e.acceptedPrefix, e.prepared, s)
 		}
 		if e.current.Ballot != lastBallot {
 			lastBallot = e.current.Ballot

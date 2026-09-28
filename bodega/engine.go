@@ -271,34 +271,12 @@ func (e *engine) tick(now time.Time) {
 		if !e.prepared {
 			e.startPrepare(now)
 		} else {
-			// Retry pending slots and catch lagging peers up in bounded batches.
+			// Repair execution gaps independently of current-ballot acceptance.
 			for p := 0; p < e.n; p++ {
 				if p == e.id {
 					continue
 				}
-				// A peer may have learned more old commits than the new leader.
-				// Still solicit its votes for the leader's uncommitted prefix.
-				start := e.progress[p]
-				if e.prefix < start {
-					start = e.prefix
-				}
-				end := start + 64
-				if end > e.next {
-					end = e.next
-				}
-				for s := start + 1; s <= end; s++ {
-					v, ok := e.log[s]
-					if !ok {
-						continue
-					}
-					if e.committed[s] {
-						if s > e.prefix {
-							e.emit(p, message{Kind: commit, CommitSlot: s, CommitPrefix: e.prefix})
-						}
-					} else if e.votes[s]&bit(p) == 0 {
-						e.emit(p, message{Kind: accept, Entry: v})
-					}
-				}
+				e.repairPeer(p)
 			}
 		}
 	}
@@ -523,10 +501,16 @@ func (e *engine) addSnapshot(from, part, parts int, entries []entry, now time.Ti
 		if s > e.prefix {
 			delete(e.committed, s)
 		}
-		e.broadcast(message{Kind: accept, Entry: v})
 		e.stats.RecoveredSlots++
 	}
 	e.reindex()
+	// Do not enqueue the entire history at once. Tick repeats these bounded
+	// windows, including both execution gaps and old-ballot acceptance gaps.
+	for p := 0; p < e.n; p++ {
+		if p != e.id {
+			e.repairPeer(p)
+		}
+	}
 }
 func sameEntry(a, b entry) bool {
 	xs, ys := a.requests(), b.requests()
