@@ -369,6 +369,29 @@ not relabel or truncate historical data. Existing XPaxos figures are not
 redrawn by this command. The recovery reference is the ten
 measurement seconds immediately before the first crash (0–10 seconds).
 
+### Ordered-log recovery and lagging replicas
+
+N2Paxos, CURP's consensus extension, and Paxos use `recoverylog`. An acceptor
+may accept a current-ballot slot even when earlier slots are missing. Its
+vote records that slot's value; execution and client completion still wait
+for a contiguous committed prefix. This lets the surviving majority finish
+leader recovery while a lagging member repairs older, already chosen slots.
+Phase-one value selection, ballot checks, distinct-voter majorities, and
+the leader's recovery-completion boundary are unchanged.
+
+Missing-prefix notifications and leader heartbeats share a 100 ms Fetch
+retry interval, so incoming accepts do not each trigger a duplicate suffix
+transfer. The existing five-second `BASELINE_RECOVERY` status includes
+`gap_accepts`, `fetch_requests`, `fetch_suppressed`, and `recovery_end`.
+Compare these with `accepted`, `executed`, `active`, and `send_drops` to
+distinguish background catch-up from blocked leader recovery. These counters
+add constant-time updates; they do not log every message.
+
+`go test ./recoverylog` checks recovery after two leader crashes with prefix
+repair deliberately delayed, continued service, ordered catch-up, stale-ballot
+rejection, and duplicate-vote handling. This remains an in-memory crash-stop
+prototype; these checks do not establish durable crash-restart recovery.
+
 ## License
 
 See `LICENSE`.

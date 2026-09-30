@@ -84,5 +84,5 @@ func (p *protocolAdapter) Leader() int32 { return p.runtime.Core.Leader }
 
 func (p *protocolAdapter) Status() string {
 	c := p.runtime.Core
-	return fmt.Sprintf("BASELINE_RECOVERY curp=%t classic=%t ballot=%d leader=%d active=%t preparing=%t accepted=%d executed=%d pending=%d witness=%d recoveries=%d", c.CURP, c.Classic, c.Ballot, c.Leader, c.Active, c.Preparing, c.High, c.Executed, len(c.Pending), len(c.Witness), c.Recoveries)
+	return fmt.Sprintf("BASELINE_RECOVERY curp=%t classic=%t ballot=%d leader=%d active=%t preparing=%t accepted=%d executed=%d pending=%d witness=%d recoveries=%d recovery_end=%d gap_accepts=%d fetch_requests=%d fetch_suppressed=%d", c.CURP, c.Classic, c.Ballot, c.Leader, c.Active, c.Preparing, c.High, c.Executed, len(c.Pending), len(c.Witness), c.Recoveries, c.recoveryEnd, c.GapAccepts, c.FetchRequests, c.FetchSuppressed)
 }

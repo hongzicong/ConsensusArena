@@ -213,14 +213,14 @@ func (r *Replica) handleSync(msg *MSync) {
 				if descPrime != nil {
 					descPrime.successors = append(descPrime.successors, cmdId)
 				}
-				go func() {
+				go func(cmdIdPrime CommandId) {
 					r.deliverChan <- cmdIdPrime
-				}()
+				}(cmdIdPrime)
 			}
 
-			go func() {
+			go func(cmdId CommandId) {
 				r.deliverChan <- cmdId
-			}()
+			}(cmdId)
 
 			if desc.phase != COMMIT && desc.phase != ACCEPT {
 				desc.phase = ACCEPT

@@ -39,6 +39,9 @@ type Core struct {
 	Reply                      func(Request, state.Value, bool)
 	RecordReply                func(Request, bool)
 	Recoveries                 uint64
+	GapAccepts                 uint64
+	FetchRequests              uint64
+	FetchSuppressed            uint64
 	witnessIndex, pendingIndex *conflictIndex
 	resume                     []Request
 }
@@ -294,9 +297,8 @@ func (c *Core) Handle(p *Packet) {
 			c.Active = true
 			c.schedulePending()
 		}
-		if p.High > c.Executed && time.Since(c.lastFetch) > 100*time.Millisecond {
-			c.lastFetch = time.Now()
-			c.send(c.Leader, &Packet{Kind: Fetch, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1})
+		if p.High > c.Executed {
+			c.requestFetch(time.Now())
 		}
 	case Fetch:
 		if c.Leader == c.ID {
@@ -490,14 +492,21 @@ func (c *Core) install(r Record) {
 }
 func (c *Core) accept(p *Packet) {
 	accepted := []Record{}
+	gap := false
 	for _, r := range p.Records {
 		if r.Slot > 0 && c.Log[r.Slot-1] == nil {
-			c.send(c.Leader, &Packet{Kind: Fetch, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1})
-			break
+			gap = true
+			c.GapAccepts++
 		}
+		// A Paxos vote is per slot: a missing prefix must not prevent this
+		// acceptor from voting in recovery. execute still requires every
+		// preceding slot to be committed before applying any command.
 		r.Ballot = p.Ballot
 		c.install(r)
 		accepted = append(accepted, Record{Slot: r.Slot})
+	}
+	if gap {
+		c.requestFetch(time.Now())
 	}
 	if len(accepted) == 0 {
 		return
@@ -511,6 +520,22 @@ func (c *Core) accept(p *Packet) {
 	c.broadcast(ack)
 	c.ack(ack)
 }
+
+func (c *Core) requestFetch(now time.Time) {
+	if c.ID == c.Leader {
+		return
+	}
+	// Gap notifications and leader heartbeats share a retry budget. A burst
+	// of later accepts must not enqueue the same suffix for every packet.
+	if now.Sub(c.lastFetch) < 100*time.Millisecond {
+		c.FetchSuppressed++
+		return
+	}
+	c.lastFetch = now
+	c.FetchRequests++
+	c.send(c.Leader, &Packet{Kind: Fetch, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1})
+}
+
 func (c *Core) ack(p *Packet) {
 	if c.Preparing || c.Classic && c.ID != c.Leader {
 		return
