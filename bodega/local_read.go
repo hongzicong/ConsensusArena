@@ -2,7 +2,6 @@ package bodega
 
 import (
 	"container/heap"
-	"math/bits"
 	"slices"
 	"time"
 
@@ -28,9 +27,6 @@ func (e *engine) finishLocalRead(r request, value state.Value) {
 	e.stats.LocalReads++
 	if e.current.Leader == e.id {
 		e.stats.StableLeaderReads++
-		if s := e.latest[r.Proposal.Command.K]; s > 0 && !e.committed[s] {
-			e.stats.LeaderEarlyReads++
-		}
 	}
 	e.finish(r, value)
 }
@@ -47,57 +43,18 @@ func (e *engine) updateReadPrefix() {
 	}
 }
 
+// Read from a chosen slot only. Majority acceptance alone is not enough to
+// expose a write while another leased responder can still serve an older value.
 func (e *engine) readValue(s uint64, r request) (state.Value, bool) {
 	if s <= e.prefix {
 		return e.execute(r.Proposal.Command), true
 	}
 	v, ok := e.log[s]
-	if !ok || !v.ReadFresh || v.Ballot != e.current.Ballot || s > e.readPrefix {
+	if !ok || !e.committed[s] || !v.ReadFresh || v.Ballot != e.current.Ballot || s > e.readPrefix {
 		return nil, false
-	}
-	if !e.committed[s] {
-		mask := e.noteVotes[s]
-		responders := e.current.respondersFor(r.Proposal.Command.K)
-		// Every location that could answer a later read must already know this
-		// write. A bare majority permits read-new/read-old across responders.
-		if bits.OnesCount64(mask) < e.majority || mask&responders != responders {
-			return nil, false
-		}
-		e.stats.EarlyReads++
 	}
 	e.stats.OutOfOrderReads++
 	return v.lastWrite(r.Proposal.Command.K)
-}
-
-// AcceptNote is read evidence only. It never commits or executes a write.
-func (e *engine) notifyAccepted(v entry) {
-	if v.Slot <= e.compacted || v.Ballot != e.current.Ballot {
-		return
-	}
-	mask := uint64(0)
-	for _, r := range v.requests() {
-		if r.Proposal.Command.Op == state.PUT {
-			mask |= e.current.respondersFor(r.Proposal.Command.K)
-		}
-	}
-	for p := 0; p < e.n; p++ {
-		if p != e.id && mask&bit(p) != 0 {
-			e.emit(p, message{Kind: acceptNote, Entry: entry{Slot: v.Slot, Ballot: v.Ballot}, Prefix: e.acceptedPrefix})
-		}
-	}
-	e.updateReadPrefix()
-	e.queueFastSlot(v.Slot)
-}
-
-func (e *engine) receiveAcceptNote(m message) {
-	if m.Entry.Ballot != e.current.Ballot || m.Entry.Slot <= e.compacted {
-		return
-	}
-	e.stats.AcceptNotes++
-	e.noteVotes[m.Entry.Slot] |= bit(m.From)
-	e.acceptedProgress[m.From] = maxSlot(e.acceptedProgress[m.From], m.Prefix)
-	e.updateReadPrefix()
-	e.queueFastSlot(m.Entry.Slot)
 }
 
 func (e *engine) queueFastSlot(s uint64) {

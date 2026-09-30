@@ -153,28 +153,39 @@ Prepare recovery, following Summerset's `bodega-artifact` commit `16c6f352`.
 Promise chunks advance when the network writer frees queue space, independently
 of heartbeat retry intervals. Log GC waits for execution by every fixed member;
 the live state machine and retained deduplication results are the in-memory snapshot.
-Per-key reads use commit or distinct responder-covering majority AcceptNote evidence, with an additional
-fixed-prefix check for deduplicated out-of-order execution. Recovered entries wait
-for execution. Early read replies do not weaken responder-covering write commitment.
-All responders, including the leader, inspect the latest accepted write. Requiring
-responder coverage for early reads and holding leader reads behind unresolved writes
-are conservative deviations from the upstream optimization: they prevent a later
-cross-responder read from returning an older value. `StableLeaderReads` and
-`LeaderEarlyReads` count leader-local completions and completions before write commit.
-Bounded clock-rate drift is required. Durable WAL/checkpoint restart and automatic
-responder tuning remain unimplemented. A crashed member can stop all-member log GC.
-Wire version 3 requires upgrading all Bodega replicas together.
-`BODEGA_STATS` and `BODEGA_ROSTER` record counters and installed rosters;
-`OutOfOrderReads` counts reads served before the target slot executes. `EarlyReads`
-counts majority-accepted reads before commit; `PrepareEntries`/`PrepareNanos`,
-`Revokes`/`RevokeAcks`, and `CompactedSlots` expose recovery and GC costs.
+This port uses Bodega's commit-notification read path with the optional early
+AcceptNote optimization disabled (paper Section 3.2 and Figure 7). A stable leader
+reads the latest committed value for the key, without waiting for a later,
+uncommitted write. Other responders hold reads of an accepted write until commit
+evidence arrives. Out-of-order committed values use the same lookup at leader
+and followers, so an execution gap cannot make the leader return an older value.
+Write commitment still requires a majority plus every responder for written keys.
+
+The disabled optimization matters: with delayed delivery to one leased responder,
+a majority of AcceptNotes can expose a new value before that responder learns the
+write; a subsequent read there can still return the old value. The deterministic
+regression tests cover that schedule. This is evidence against directly enabling
+the optimization in this port, not a complete audit of the authors' system.
+The port retains its fixed-prefix and fresh-entry checks for deduplicated
+out-of-order reads; recovered entries wait for execution. These are explicit
+conservative differences from the artifact. Durable WAL/checkpoint restart and
+automatic responder tuning remain unimplemented. Bounded clock-rate drift is
+required, and a crashed member can stop all-member log GC.
+
+`BODEGA_STATS` and `BODEGA_ROSTER` record counters and installed rosters.
+`StableLeaderReads` counts leader-local completions; `UncommittedReadHolds` counts
+reads held behind uncommitted writes; `OutOfOrderReads` counts reads of committed
+slots before prefix execution. `PrepareEntries`/`PrepareNanos`, `Revokes`/
+`RevokeAcks`, and `CompactedSlots` expose recovery and GC costs. Wire version 3
+retains the reserved AcceptNote kind but ignores its read evidence. All replicas
+must use this read policy together; mixing it with pre-commit readers is unsafe.
 Bodega establishes peer connections concurrently; roster installation restarts
 peer failure timers without renewing leases.
 Bodega fallback read routing uses proxied control-RPC duration, not ICMP;
 `BODEGA_CLIENT_RTT` / `BODEGA_CLIENT_DESTINATIONS` and
 `BODEGA_TIMER_RESET` / `BODEGA_ROSTER_FILTER` expose routing and timer changes.
-Test with `go test -timeout 3600s ./bodega`; on Linux, set
-`BODEGA_TEST_BINARY="$PWD/consensusarena"` to also run the five-replica crash tests.
+Test with `go test -timeout 7200s ./bodega`; run networked fault tests with
+`CONSENSUSARENA_PROTOCOL=bodega` and `slurm/run-fault.sbatch`.
 
 ## Workload and network model
 

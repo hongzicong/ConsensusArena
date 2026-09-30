@@ -130,7 +130,6 @@ func (e *engine) addSnapshot(from int, start uint64, part, parts int, entries []
 	e.reindex()
 	for slot := start; slot <= high; slot++ {
 		e.broadcast(message{Kind: accept, Entry: e.log[slot]})
-		e.notifyAccepted(e.log[slot])
 		if e.committed[slot] {
 			e.broadcast(message{Kind: commit, CommitSlot: slot, CommitPrefix: e.prefix})
 		}

@@ -34,11 +34,11 @@ type statistics struct {
 	LeaseMisses, CoverageWaits, RecoveredSlots, Messages                            uint64
 	RetriedRequests, DroppedMessages                                                uint64
 	OutOfOrderReads                                                                 uint64
-	StableLeaderReads, LeaderEarlyReads                                             uint64
+	StableLeaderReads, UncommittedReadHolds                                         uint64
 	CommitNotices, CommitRepairRequests, CommitRepairEntries                        uint64
 	Batches, BatchCommands, MaxBatchCommands                                        uint64
 	PrepareEntries, PrepareCompleted, PrepareNanos, Revokes, RevokeAcks             uint64
-	AcceptNotes, EarlyReads, CompactedSlots                                         uint64
+	CompactedSlots                                                                  uint64
 }
 
 // engine has no goroutines. All callbacks and transitions are serialized.
@@ -59,7 +59,6 @@ type engine struct {
 	prepareSince                  time.Time
 	compacted                     uint64
 	revoked                       []uint64
-	noteVotes                     map[uint64]uint64
 	noticePrefix                  uint64
 	noticeHigh                    uint64
 	noticeSlots                   map[uint64]bool
@@ -107,7 +106,7 @@ func newEngine(id, n int, opt options, now time.Time) *engine {
 		seen: make([]time.Time, n), progress: make([]uint64, n), held: map[requestID]pendingRead{}, queued: map[requestID]request{},
 		inflight: map[requestID]uint64{}, completed: map[requestID]state.Value{}, holdWaiters: map[uint64][]requestID{}, holdCounts: map[uint64]int{},
 		acceptedProgress: make([]uint64, n), fastQueued: map[uint64]bool{}, noticeSlots: map[uint64]bool{}, batchIDs: map[requestID]bool{},
-		revoked: make([]uint64, n), noteVotes: map[uint64]uint64{}}
+		revoked: make([]uint64, n)}
 	for i := range e.seen {
 		e.seen[i] = now
 	}
@@ -189,7 +188,6 @@ func (e *engine) install(now time.Time) {
 	e.snapshotStart, e.prepareStart = 0, e.prefix+1
 	e.prepareSince = now
 	e.votes = map[uint64]uint64{}
-	e.noteVotes = map[uint64]uint64{}
 	// Executed history is already irrevocable; only the suffix needs a new vote.
 	e.acceptedPrefix, e.readPrefix = e.prefix, e.prefix
 	e.acceptedProgress = make([]uint64, e.n)
@@ -394,7 +392,6 @@ func (e *engine) receive(m message, now time.Time) {
 		if m.From == e.current.Leader && m.Entry.Ballot == e.current.Ballot {
 			e.acceptEntry(m.Entry)
 			e.emit(m.From, message{Kind: accepted, Prefix: e.acceptedPrefix, Entry: entry{Slot: m.Entry.Slot, Ballot: m.Entry.Ballot}})
-			e.notifyAccepted(m.Entry)
 			e.applyNoticedSlot(m.Entry.Slot)
 			e.learnCommitNotice(0, 0, now)
 		}
@@ -417,7 +414,7 @@ func (e *engine) receive(m message, now time.Time) {
 			e.learnCommittedEntry(m.Entry)
 		}
 	case acceptNote:
-		e.receiveAcceptNote(m)
+		// Reserved wire kind: optional pre-commit read notifications are disabled.
 	case repairRequest:
 		if e.id == e.current.Leader && e.prepared {
 			e.sendCommitRepair(m.From, m.RepairStart)
@@ -454,9 +451,6 @@ func (e *engine) acceptEntry(v entry) {
 		panic("bodega: recovery changed a committed value")
 	}
 	e.log[v.Slot] = v
-	if v.Ballot == e.current.Ballot {
-		e.noteVotes[v.Slot] |= bit(e.id)
-	}
 	for {
 		next, ok := e.log[e.acceptedPrefix+1]
 		if !ok || next.Ballot != e.current.Ballot {
@@ -517,13 +511,20 @@ func (e *engine) submit(r request, now time.Time) {
 	if r.Proposal.Command.Op == state.GET && e.current.respondersFor(r.Proposal.Command.K)&bit(e.id) != 0 {
 		if e.localReadAuthority(now) {
 			s := e.latest[r.Proposal.Command.K]
-			// With early reads enabled the leader must also inspect the latest
-			// accepted write: another responder may already have exposed it.
+			if e.current.Leader == e.id {
+				// Figure 7: the stable leader reads the latest committed value.
+				// A commit can precede prefix execution; use the same slot-value
+				// lookup as responders, never an older state-machine value.
+				s = e.latestCommitted[r.Proposal.Command.K]
+			}
 			if value, ok := e.readValue(s, r); ok {
 				e.finishLocalRead(r, value)
 				return
 			}
 			if _, ok := e.held[id]; !ok {
+				if s > e.prefix && !e.committed[s] {
+					e.stats.UncommittedReadHolds++
+				}
 				e.held[id] = pendingRead{r, s, now}
 				if _, exists := e.holdWaiters[s]; !exists {
 					heap.Push(&e.holdSlots, s)

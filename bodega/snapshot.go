@@ -28,7 +28,6 @@ func (e *engine) compactLog() {
 		delete(e.log, slot)
 		delete(e.committed, slot)
 		delete(e.votes, slot)
-		delete(e.noteVotes, slot)
 		delete(e.noticeSlots, slot)
 	}
 	e.stats.CompactedSlots += through - e.compacted
