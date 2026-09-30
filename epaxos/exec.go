@@ -2,6 +2,7 @@ package epaxos
 
 import (
 	"sort"
+	"time"
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
@@ -72,13 +73,18 @@ func (e *Exec) strongconnect(v *Instance, index *int) bool {
 	v.onStack = true
 
 	if v.Cmds == nil {
+		e.r.blockedOn(v.id.replica, v.id.instance, time.Now())
 		return false
 	}
 
 	for q := int32(0); q < int32(e.r.N); q++ {
 		inst := v.Deps[q]
-		for i := e.r.ExecedUpTo[q] + 1; i <= inst; i++ {
+		// Every newly proposed/recovered row instance explicitly depends on
+		// its predecessor. Following the endpoint therefore reaches the full
+		// dependency prefix without rescanning it at every DFS vertex.
+		for i := inst; i > e.r.ExecedUpTo[q]; i = -1 {
 			if e.r.InstanceSpace[q][i] == nil || e.r.InstanceSpace[q][i].Cmds == nil {
+				e.r.blockedOn(q, i, time.Now())
 				return false
 			}
 
@@ -97,6 +103,7 @@ func (e *Exec) strongconnect(v *Instance, index *int) bool {
 			}
 
 			for e.r.InstanceSpace[q][i].Status != COMMITTED {
+				e.r.blockedOn(q, i, time.Now())
 				return false
 			}
 
@@ -131,11 +138,7 @@ func (e *Exec) strongconnect(v *Instance, index *int) bool {
 				} else if shouldRespond {
 					val := w.Cmds[idx].Execute(e.r.State)
 					e.r.ReplyProposeTS(
-						&defs.ProposeReplyTS{
-							TRUE,
-							w.lb.clientProposals[idx].CommandId,
-							val,
-							w.lb.clientProposals[idx].Timestamp},
+						&defs.ProposeReplyTS{OK: TRUE, CommandId: w.lb.clientProposals[idx].CommandId, Value: val, Timestamp: w.lb.clientProposals[idx].Timestamp},
 						w.lb.clientProposals[idx].Reply,
 						w.lb.clientProposals[idx].Mutex)
 					e.r.M.Lock()
@@ -164,7 +167,7 @@ func (na nodeArray) Len() int {
 }
 
 func (na nodeArray) Less(i, j int) bool {
-	return na[i].Seq < na[j].Seq || (na[i].Seq == na[j].Seq && na[i].id.replica < na[j].id.replica) || (na[i].Seq == na[j].Seq && na[i].id.replica == na[j].id.replica && na[i].proposeTime < na[j].proposeTime)
+	return na[i].Seq < na[j].Seq || (na[i].Seq == na[j].Seq && na[i].id.replica < na[j].id.replica) || (na[i].Seq == na[j].Seq && na[i].id.replica == na[j].id.replica && na[i].id.instance < na[j].id.instance)
 }
 
 func (na nodeArray) Swap(i, j int) {

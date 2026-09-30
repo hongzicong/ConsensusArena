@@ -5,7 +5,6 @@ import (
 	"container/heap"
 	"math/bits"
 	"slices"
-	"sort"
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
@@ -35,9 +34,11 @@ type statistics struct {
 	LeaseMisses, CoverageWaits, RecoveredSlots, Messages                            uint64
 	RetriedRequests, DroppedMessages                                                uint64
 	OutOfOrderReads                                                                 uint64
-	StableLeaderReads, LeaderPendingWriteBypasses                                   uint64
+	StableLeaderReads, LeaderEarlyReads                                             uint64
 	CommitNotices, CommitRepairRequests, CommitRepairEntries                        uint64
 	Batches, BatchCommands, MaxBatchCommands                                        uint64
+	PrepareEntries, PrepareCompleted, PrepareNanos, Revokes, RevokeAcks             uint64
+	AcceptNotes, EarlyReads, CompactedSlots                                         uint64
 }
 
 // engine has no goroutines. All callbacks and transitions are serialized.
@@ -54,6 +55,11 @@ type engine struct {
 	acceptedPrefix, readPrefix    uint64
 	acceptedProgress              []uint64
 	prepared                      bool
+	prepareStart, snapshotStart   uint64
+	prepareSince                  time.Time
+	compacted                     uint64
+	revoked                       []uint64
+	noteVotes                     map[uint64]uint64
 	noticePrefix                  uint64
 	noticeHigh                    uint64
 	noticeSlots                   map[uint64]bool
@@ -86,6 +92,7 @@ type engine struct {
 	completed                     map[requestID]state.Value
 	stats                         statistics
 	send                          func(int, message)
+	trySend                       func(int, message) bool
 	reply                         func(request, state.Value)
 	execute                       func(state.Command) state.Value
 	clock                         func() time.Time
@@ -99,7 +106,8 @@ func newEngine(id, n int, opt options, now time.Time) *engine {
 		snapshots:       map[int]*snapshot{}, incoming: map[int]grant{}, outgoing: map[int]time.Time{}, requests: map[uint64]time.Time{},
 		seen: make([]time.Time, n), progress: make([]uint64, n), held: map[requestID]pendingRead{}, queued: map[requestID]request{},
 		inflight: map[requestID]uint64{}, completed: map[requestID]state.Value{}, holdWaiters: map[uint64][]requestID{}, holdCounts: map[uint64]int{},
-		acceptedProgress: make([]uint64, n), fastQueued: map[uint64]bool{}, noticeSlots: map[uint64]bool{}, batchIDs: map[requestID]bool{}}
+		acceptedProgress: make([]uint64, n), fastQueued: map[uint64]bool{}, noticeSlots: map[uint64]bool{}, batchIDs: map[requestID]bool{},
+		revoked: make([]uint64, n), noteVotes: map[uint64]uint64{}}
 	for i := range e.seen {
 		e.seen[i] = now
 	}
@@ -107,7 +115,7 @@ func newEngine(id, n int, opt options, now time.Time) *engine {
 }
 func bit(id int) uint64        { return uint64(1) << uint(id) }
 func (e *engine) active() bool { return e.current.Ballot != 0 && e.pending.Ballot == 0 }
-func (e *engine) emit(to int, m message) {
+func (e *engine) emit(to int, m message) bool {
 	m.From = e.id
 	m.Roster = e.current
 	if e.pending.Ballot > m.Roster.Ballot {
@@ -117,7 +125,11 @@ func (e *engine) emit(to int, m message) {
 		m.ReadPrefix = e.readPrefix
 	}
 	e.stats.Messages++
+	if e.trySend != nil {
+		return e.trySend(to, m)
+	}
 	e.send(to, m)
+	return true
 }
 func (e *engine) broadcast(m message) {
 	for i := 0; i < e.n; i++ {
@@ -146,6 +158,7 @@ func (e *engine) observe(r roster, now time.Time) {
 	e.incoming = map[int]grant{}
 	e.requests = map[uint64]time.Time{}
 	e.prepared = false
+	e.revokeLeases(now)
 	e.install(now)
 }
 func (e *engine) install(now time.Time) {
@@ -173,9 +186,14 @@ func (e *engine) install(now time.Time) {
 	e.snapshotChunks = nil
 	e.snapshotCursor = map[int]int{}
 	e.snapshotTaken = false
+	e.snapshotStart, e.prepareStart = 0, e.prefix+1
+	e.prepareSince = now
 	e.votes = map[uint64]uint64{}
-	e.acceptedPrefix, e.readPrefix = 0, 0
+	e.noteVotes = map[uint64]uint64{}
+	// Executed history is already irrevocable; only the suffix needs a new vote.
+	e.acceptedPrefix, e.readPrefix = e.prefix, e.prefix
 	e.acceptedProgress = make([]uint64, e.n)
+	e.acceptedProgress[e.id] = e.prefix
 	e.noticePrefix = 0
 	e.noticeHigh = 0
 	e.noticeSlots = map[uint64]bool{}
@@ -237,6 +255,7 @@ func (e *engine) tick(now time.Time) {
 	}
 	e.broadcast(hb)
 	if !e.active() {
+		e.revokeLeases(now)
 		return
 	}
 	e.sequence++
@@ -303,6 +322,7 @@ func (e *engine) tick(now time.Time) {
 		e.retryHead = 0
 	}
 	e.release(now)
+	e.compactLog()
 }
 
 func (e *engine) enqueue(r request) {
@@ -317,6 +337,10 @@ func (e *engine) receive(m message, now time.Time) {
 		return
 	}
 	e.seen[m.From] = now
+	// Revocation must work while either party is waiting to install a roster.
+	if e.receiveRevocation(m, now) {
+		return
+	}
 	if m.Kind == commit && m.From != e.current.Leader {
 		return
 	}
@@ -346,7 +370,7 @@ func (e *engine) receive(m message, now time.Time) {
 	}
 	switch m.Kind {
 	case heartbeat:
-		e.progress[m.From] = m.Prefix
+		e.progress[m.From] = maxSlot(e.progress[m.From], m.Prefix)
 		if m.From == e.current.Leader {
 			e.learnCommitNotice(m.CommitPrefix, 0, now)
 		}
@@ -355,21 +379,22 @@ func (e *engine) receive(m message, now time.Time) {
 		e.emit(m.From, message{Kind: leaseReply, Sequence: m.Sequence, Threshold: e.threshold})
 	case leaseReply:
 		until, ok := e.requests[m.Sequence]
-		if ok && now.Before(until) && until.After(e.incoming[m.From].Until) {
+		if ok && m.Roster.Ballot > e.revoked[m.From] && now.Before(until) && until.After(e.incoming[m.From].Until) {
 			e.incoming[m.From] = grant{until, m.Threshold}
 		}
 	case prepare:
 		if m.From == e.current.Leader {
-			e.sendSnapshot(m.From)
+			e.sendSnapshot(m.From, m.PrepareStart)
 		}
 	case promise:
 		if e.id == e.current.Leader && !e.prepared {
-			e.addSnapshot(m.From, m.Part, m.Parts, m.Entries, now)
+			e.addSnapshot(m.From, m.PrepareStart, m.Part, m.Parts, m.Entries, now)
 		}
 	case accept:
 		if m.From == e.current.Leader && m.Entry.Ballot == e.current.Ballot {
 			e.acceptEntry(m.Entry)
 			e.emit(m.From, message{Kind: accepted, Prefix: e.acceptedPrefix, Entry: entry{Slot: m.Entry.Slot, Ballot: m.Entry.Ballot}})
+			e.notifyAccepted(m.Entry)
 			e.applyNoticedSlot(m.Entry.Slot)
 			e.learnCommitNotice(0, 0, now)
 		}
@@ -387,6 +412,12 @@ func (e *engine) receive(m message, now time.Time) {
 	case commit:
 		e.stats.CommitNotices++
 		e.learnCommitNotice(m.CommitPrefix, m.CommitSlot, now)
+	case committedEntry:
+		if m.From == e.current.Leader {
+			e.learnCommittedEntry(m.Entry)
+		}
+	case acceptNote:
+		e.receiveAcceptNote(m)
 	case repairRequest:
 		if e.id == e.current.Leader && e.prepared {
 			e.sendCommitRepair(m.From, m.RepairStart)
@@ -397,120 +428,6 @@ func (e *engine) receive(m message, now time.Time) {
 		}
 	}
 	e.release(now)
-}
-func (e *engine) startPrepare(now time.Time) {
-	e.takeSnapshot()
-	e.addSnapshot(e.id, 0, 1, e.ownSnapshot, now)
-	e.broadcast(message{Kind: prepare})
-}
-func (e *engine) takeSnapshot() {
-	if e.snapshotTaken {
-		return
-	}
-	e.snapshotTaken = true
-	e.ownSnapshot = make([]entry, 0, len(e.log))
-	for _, v := range e.log {
-		e.ownSnapshot = append(e.ownSnapshot, v)
-	}
-	sort.Slice(e.ownSnapshot, func(i, j int) bool { return e.ownSnapshot[i].Slot < e.ownSnapshot[j].Slot })
-	start, size := 0, 0
-	for i, v := range e.ownSnapshot {
-		if i > start && (i-start >= 64 || size+entryBytes(v) > maxBatchBytes) {
-			e.snapshotChunks = append(e.snapshotChunks, e.ownSnapshot[start:i])
-			start, size = i, 0
-		}
-		size += entryBytes(v)
-	}
-	e.snapshotChunks = append(e.snapshotChunks, e.ownSnapshot[start:])
-}
-func (e *engine) sendSnapshot(to int) {
-	e.takeSnapshot()
-	parts := len(e.snapshotChunks)
-	if parts == 0 {
-		parts = 1
-	}
-	// Stream a bounded window per prepare retry, cycling to repair lost chunks.
-	// A full-log burst can otherwise repeatedly overflow a bounded send queue.
-	window := parts
-	if window > 8 {
-		window = 8
-	}
-	for i := 0; i < window; i++ {
-		p := e.snapshotCursor[to] % parts
-		e.snapshotCursor[to]++
-		e.emit(to, message{Kind: promise, Part: p, Parts: parts, Entries: e.snapshotChunks[p]})
-	}
-}
-func (e *engine) addSnapshot(from, part, parts int, entries []entry, now time.Time) {
-	if e.prepared || parts <= 0 || part < 0 || part >= parts {
-		return
-	}
-	s := e.snapshots[from]
-	if s == nil {
-		s = &snapshot{parts, map[int][]entry{}}
-		e.snapshots[from] = s
-	}
-	if s.Parts != parts {
-		return
-	}
-	s.Chunks[part] = entries
-	count := 0
-	for _, s := range e.snapshots {
-		if len(s.Chunks) == s.Parts {
-			count++
-		}
-	}
-	if count < e.majority {
-		return
-	}
-	selected := map[uint64]entry{}
-	high := uint64(0)
-	for _, s := range e.snapshots {
-		if len(s.Chunks) != s.Parts {
-			continue
-		}
-		for _, vs := range s.Chunks {
-			for _, v := range vs {
-				if old, ok := selected[v.Slot]; !ok || v.Ballot > old.Ballot {
-					selected[v.Slot] = v
-				}
-				if v.Slot > high {
-					high = v.Slot
-				}
-			}
-		}
-	}
-	e.next = high
-	e.inflight = map[requestID]uint64{}
-	e.prepared = true
-	for s := uint64(1); s <= high; s++ {
-		v, ok := selected[s]
-		if !ok {
-			v = entry{Slot: s, Request: request{Origin: -1}}
-		}
-		v.Ballot = e.current.Ballot
-		v.ReadFresh = false
-		e.acceptEntry(v)
-		for _, r := range v.requests() {
-			if r.Proposal.Command.Op != state.NONE {
-				e.inflight[r.id()] = s
-			}
-		}
-		e.votes[s] = bit(e.id)
-		// Re-cover even already learned values under the new roster.
-		if s > e.prefix {
-			delete(e.committed, s)
-		}
-		e.stats.RecoveredSlots++
-	}
-	e.reindex()
-	// Do not enqueue the entire history at once. Tick repeats these bounded
-	// windows, including both execution gaps and old-ballot acceptance gaps.
-	for p := 0; p < e.n; p++ {
-		if p != e.id {
-			e.repairPeer(p)
-		}
-	}
 }
 func sameEntry(a, b entry) bool {
 	xs, ys := a.requests(), b.requests()
@@ -526,7 +443,7 @@ func sameEntry(a, b entry) bool {
 	return true
 }
 func (e *engine) acceptEntry(v entry) {
-	if v.Slot == 0 {
+	if v.Slot == 0 || v.Slot <= e.compacted {
 		return
 	}
 	old, ok := e.log[v.Slot]
@@ -537,6 +454,9 @@ func (e *engine) acceptEntry(v entry) {
 		panic("bodega: recovery changed a committed value")
 	}
 	e.log[v.Slot] = v
+	if v.Ballot == e.current.Ballot {
+		e.noteVotes[v.Slot] |= bit(e.id)
+	}
 	for {
 		next, ok := e.log[e.acceptedPrefix+1]
 		if !ok || next.Ballot != e.current.Ballot {
@@ -597,11 +517,8 @@ func (e *engine) submit(r request, now time.Time) {
 	if r.Proposal.Command.Op == state.GET && e.current.respondersFor(r.Proposal.Command.K)&bit(e.id) != 0 {
 		if e.localReadAuthority(now) {
 			s := e.latest[r.Proposal.Command.K]
-			if e.current.Leader == e.id {
-				// A stable leader reads committed state, ignoring concurrent
-				// uncommitted writes. Followers must still inspect accepted writes.
-				s = e.latestCommitted[r.Proposal.Command.K]
-			}
+			// With early reads enabled the leader must also inspect the latest
+			// accepted write: another responder may already have exposed it.
 			if value, ok := e.readValue(s, r); ok {
 				e.finishLocalRead(r, value)
 				return

@@ -142,6 +142,10 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	server := c.Proxy.ProxyOf(c.ClientAddrs[c.Alias])
 	server = c.ReplicaAddrs[server]
 	cl := client.NewClientLog(server, c.MasterAddr, c.MasterPort, c.Fast, c.Leaderless, verbose, l)
+	cl.FastPaxos = strings.EqualFold(c.Protocol, "fastpaxos")
+	cl.Paxos = strings.EqualFold(c.Protocol, "paxos")
+	cl.EPaxos = strings.EqualFold(c.Protocol, "epaxos")
+	cl.RecoverableBroadcast = strings.EqualFold(c.Protocol, "n2paxos") || strings.EqualFold(c.Protocol, "curp")
 	cl.BodegaUnhold = c.BodegaUnhold
 	cl.BodegaRouting = strings.EqualFold(c.Protocol, "bodega")
 	workloadSeed := client.DeriveWorkloadSeed(int64(c.WorkloadSeed), c.Alias, i)

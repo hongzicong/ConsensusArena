@@ -8,14 +8,17 @@ import (
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/dlog"
 	"github.com/hongzicong/ConsensusArena/hook"
+	"github.com/hongzicong/ConsensusArena/recoverylog"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 	"github.com/orcaman/concurrent-map"
 )
 
 type Replica struct {
 	*replica.Replica
+	recovery *recoverylog.Runtime
 
 	ballot  int32
 	cballot int32
@@ -84,47 +87,8 @@ type commandStaticDesc struct {
 
 func New(alias string, rid int, addrs []string, exec bool, pl, f int,
 	opt bool, conf *config.Config, logger *dlog.Logger) *Replica {
-	cmap.SHARD_COUNT = 32768
-
-	r := &Replica{
-		Replica: replica.New(alias, rid, f, addrs, false, exec, false, conf, logger),
-
-		ballot:  0,
-		cballot: 0,
-		status:  NORMAL,
-
-		optimized:      opt,
-		contactClients: false,
-
-		isLeader:    false,
-		lastCmdSlot: 0,
-
-		slots:     make(map[CommandId]int),
-		synced:    cmap.New(),
-		values:    cmap.New(),
-		proposes:  cmap.New(),
-		cmdDescs:  cmap.New(),
-		unsynced:  cmap.New(),
-		executed:  cmap.New(),
-		committed: cmap.New(),
-		delivered: cmap.New(),
-		history:   make([]commandStaticDesc, HISTORY_SIZE),
-
-		deliverChan: make(chan int, defs.CHAN_BUFFER_SIZE),
-
-		poolLevel:    pl,
-		routineCount: 0,
-
-		descPool: sync.Pool{
-			New: func() interface{} {
-				return &commandDesc{}
-			},
-		},
-	}
-
-	r.Q = replica.NewMajorityOf(r.N)
-	r.sender = replica.NewSender(r.Replica)
-	r.batcher = NewBatcher(r, 8)
+	// All live protocol state is owned by the serialized recovery runtime.
+	r := &Replica{Replica: replica.New(alias, rid, f, addrs, false, exec, false, conf, logger)}
 
 	_, leaderIds, err := replica.NewQuorumsFromFile(conf.Quorum, r.Replica)
 	if err == nil && len(leaderIds) != 0 {
@@ -139,19 +103,22 @@ func New(alias string, rid int, addrs []string, exec bool, pl, f int,
 
 	initCs(&r.cs, r.RPC)
 
-	hook.HookUser1(func() {
-		totalNum := 0
-		for i := 0; i < HISTORY_SIZE; i++ {
-			if r.history[i].phase == 0 {
-				continue
-			}
-			totalNum++
+	r.recovery = recoverylog.NewRuntime(r.Replica, r.ballot, true)
+	r.recovery.ReplyMessage = func(req recoverylog.Request, value state.Value, fast bool, ballot int32) (uint8, fastrpc.Serializable) {
+		id := CommandId{ClientId: req.ID.Client, SeqNum: req.ID.Sequence}
+		if fast {
+			return r.cs.replyRPC, &MReply{Replica: r.Id, Ballot: ballot, CmdId: id, Rep: value, Ok: TRUE}
 		}
-
-		r.Printf("Total number of commands: %d\n", totalNum)
-	})
-
-	go r.run()
+		return r.cs.syncReplyRPC, &MSyncReply{Replica: r.Id, Ballot: ballot, CmdId: id, Rep: value}
+	}
+	r.recovery.RecordMessage = func(req recoverylog.Request, positive bool, ballot int32) (uint8, fastrpc.Serializable) {
+		ok := FALSE
+		if positive {
+			ok = TRUE
+		}
+		return r.cs.recordAckRPC, &MRecordAck{Replica: r.Id, Ballot: ballot, CmdId: CommandId{ClientId: req.ID.Client, SeqNum: req.ID.Sequence}, Ok: ok}
+	}
+	go r.recovery.Run()
 
 	return r
 }
@@ -701,4 +668,9 @@ func (r *Replica) handleMsg(m interface{}, desc *commandDesc, slot int, dep int)
 	}
 
 	return false
+}
+
+// Report the protocol coordinator; the master does not bypass Phase 1.
+func (r *Replica) BeTheLeader(_ *defs.BeTheLeaderArgs, reply *defs.BeTheLeaderReply) error {
+	return r.recovery.LeaderHint(reply)
 }

@@ -1,7 +1,6 @@
 package n2paxos
 
 import (
-	"fmt"
 	"log"
 	"strconv"
 	"sync"
@@ -10,6 +9,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/dlog"
 	"github.com/hongzicong/ConsensusArena/hook"
+	"github.com/hongzicong/ConsensusArena/recoverylog"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
@@ -18,6 +18,7 @@ import (
 
 type Replica struct {
 	*replica.Replica
+	recovery *recoverylog.Runtime
 
 	ballot  int32
 	cballot int32
@@ -70,39 +71,8 @@ type commandStaticDesc struct {
 
 func New(alias string, rid int, addrs []string, exec bool, pl, f int,
 	conf *config.Config, logger *dlog.Logger) *Replica {
-	cmap.SHARD_COUNT = 32768
-
-	r := &Replica{
-		Replica: replica.New(alias, rid, f, addrs, false, exec, false, conf, logger),
-
-		ballot:  0,
-		cballot: 0,
-		status:  NORMAL,
-
-		isLeader:    false,
-		lastCmdSlot: 0,
-
-		slots:     cmap.New(),
-		proposes:  cmap.New(),
-		cmdDescs:  cmap.New(),
-		delivered: cmap.New(),
-		history:   make([]commandStaticDesc, HISTORY_SIZE),
-
-		deliverChan: make(chan int, defs.CHAN_BUFFER_SIZE),
-
-		poolLevel:    pl,
-		routineCount: 0,
-
-		descPool: sync.Pool{
-			New: func() interface{} {
-				return &commandDesc{}
-			},
-		},
-	}
-
-	r.sender = replica.NewSender(r.Replica)
-	r.batcher = NewBatcher(r, 16)
-	r.qs = replica.NewQuorumSet(r.N/2+1, r.N)
+	// All live protocol state is owned by the serialized recovery runtime.
+	r := &Replica{Replica: replica.New(alias, rid, f, addrs, false, exec, false, conf, logger)}
 
 	AQs, leaderIds, err := replica.NewQuorumsFromFile(conf.Quorum, r.Replica)
 	if err == nil && len(AQs) != 0 {
@@ -118,19 +88,8 @@ func New(alias string, rid int, addrs []string, exec bool, pl, f int,
 
 	initCs(&r.cs, r.RPC)
 
-	hook.HookUser1(func() {
-		totalNum := 0
-		for i := 0; i < HISTORY_SIZE; i++ {
-			if r.history[i].phase == 0 {
-				continue
-			}
-			totalNum++
-		}
-
-		fmt.Printf("Total number of commands: %d\n", totalNum)
-	})
-
-	go r.run()
+	r.recovery = recoverylog.NewRuntime(r.Replica, r.ballot, false)
+	go r.recovery.Run()
 
 	return r
 }
@@ -424,4 +383,9 @@ func (r *Replica) handleMsg(m interface{}, desc *commandDesc, slot int) bool {
 	}
 
 	return false
+}
+
+// Report the protocol coordinator; the master does not bypass Phase 1.
+func (r *Replica) BeTheLeader(_ *defs.BeTheLeaderArgs, reply *defs.BeTheLeaderReply) error {
+	return r.recovery.LeaderHint(reply)
 }

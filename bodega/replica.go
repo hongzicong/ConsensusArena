@@ -111,15 +111,18 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 	r.ConnectToPeersConcurrent()
 	go r.WaitForClientConnections()
 	// Each peer has one writer. A slow peer never stalls the protocol clock.
-	var wireBytes, wireFrames [11]atomic.Uint64
+	var wireBytes, wireFrames [kindCount]atomic.Uint64
 	queues := make([]chan message, r.N)
 	controlQueues := make([]chan message, r.N)
+	promiseQueues := make([]chan message, r.N)
+	drained := make(chan int, r.N)
 	for i := 0; i < r.N; i++ {
 		if i == int(r.Id) {
 			continue
 		}
 		queues[i] = make(chan message, 4096)
 		controlQueues[i] = make(chan message, 4096)
+		promiseQueues[i] = make(chan message, 32)
 		go func(peer int) {
 			for {
 				var m message
@@ -129,6 +132,13 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 					select {
 					case m = <-controlQueues[peer]:
 					case m = <-queues[peer]:
+					case m = <-promiseQueues[peer]:
+					}
+				}
+				if m.Kind == promise {
+					select {
+					case drained <- peer:
+					default:
 					}
 				}
 				conn, w := r.Peers[peer], r.PeerWriters[peer]
@@ -168,15 +178,21 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 	e.batching = true
 	e.trace = r.Printf
 	e.execute = func(c state.Command) state.Value { return c.Execute(r.State) }
-	e.send = func(to int, m message) {
+	e.trySend = func(to int, m message) bool {
 		q := controlQueues[to]
-		if m.Kind == accept || m.Kind == forward {
+		if m.Kind == accept || m.Kind == forward || m.Kind == committedEntry {
 			q = queues[to]
+		} else if m.Kind == promise {
+			q = promiseQueues[to]
 		}
 		select {
 		case q <- m:
+			return true
 		default:
-			e.stats.DroppedMessages++ // protocol tick repairs dropped messages
+			if m.Kind != promise {
+				e.stats.DroppedMessages++ // protocol tick repairs dropped messages
+			}
+			return false
 		}
 	}
 	e.reply = func(req request, v state.Value) {
@@ -203,6 +219,8 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 		select {
 		case raw := <-inbox:
 			e.receive(*raw.(*message), time.Now())
+		case peer := <-drained:
+			e.flushPromises(peer)
 		case p := <-r.ProposeChan:
 			req := request{Proposal: *p.Propose, Origin: e.id}
 			if p.Command.Op == defs.BodegaCancelRead {
@@ -238,7 +256,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 			}
 			call.done <- leader
 		case <-metrics.C:
-			var bytes, frames [11]uint64
+			var bytes, frames [kindCount]uint64
 			for i := range bytes {
 				bytes[i] = wireBytes[i].Load()
 				frames[i] = wireFrames[i].Load()

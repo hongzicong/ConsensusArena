@@ -1,216 +1,160 @@
 package fastpaxos
 
 import (
-	"sort"
-
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/dlog"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
+	"github.com/hongzicong/ConsensusArena/state"
+	"time"
 )
 
 type Replica struct {
 	*replica.Replica
-
-	next         int
-	cmds         map[CommandId]*defs.GPropose
-	delivered    map[CommandId]struct{}
-	instances    []*instance
-	lastExecuted int
-
-	sender replica.Sender
-	cs     CommunicationSupply
-
-	defaultFastQuorum replica.QuorumI
+	engine         *core
+	inbox          chan fastrpc.Serializable
+	code           uint8
+	proposals      map[CommandId]*defs.GPropose
+	peerQueues     []chan message
+	replyQueues    map[int32]chan replyJob
+	pendingReplies map[CommandId]replyJob
 }
-
-type instance struct {
-	value     CommandId
-	ballot    int32
-	cballot   int32
-	committed bool
-
-	m2bSets map[int32]*replica.MsgSet
+type replyJob struct {
+	proposal *defs.GPropose
+	reply    defs.ProposeReplyTS
 }
-
-const INST_NUM = 1e8
 
 func New(alias string, rid int, addrs []string, exec bool, f int, conf *config.Config, l *dlog.Logger) *Replica {
-	r := &Replica{
-		Replica:      replica.New(alias, rid, f, addrs, false, exec, false, conf, l),
-		next:         0,
-		cmds:         make(map[CommandId]*defs.GPropose),
-		delivered:    make(map[CommandId]struct{}),
-		instances:    make([]*instance, INST_NUM),
-		lastExecuted: -1,
-	}
+	r := &Replica{Replica: replica.New(alias, rid, f, addrs, false, exec, false, conf, l), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[CommandId]*defs.GPropose), replyQueues: make(map[int32]chan replyJob), pendingReplies: make(map[CommandId]replyJob)}
 	qs, _, err := replica.NewQuorumsFromFile(conf.Quorum, r.Replica)
-	if err != nil {
-		r.defaultFastQuorum = replica.NewThreeQuartersOf(r.N)
-	} else {
-		r.defaultFastQuorum = qs[0]
+	mask := uint64(1)<<len(addrs) - 1
+	size := 3*len(addrs)/4 + 1
+	fixed := false
+	if err == nil && len(qs) > 0 {
+		mask = 0
+		for id := range qs[0] {
+			mask |= 1 << id
+		}
+		size = len(qs[0])
+		fixed = true
+	} else if err != replica.NO_QUORUM_FILE && err != replica.THREE_QUARTERS {
+		panic(err)
 	}
-	initCs(&r.cs, r.RPC)
-	r.sender = replica.NewSender(r.Replica)
+	r.engine = newCore(rid, len(addrs), mask, size, fixed)
+	r.engine.execute = func(v record) state.Value {
+		if !r.Exec {
+			return state.NIL()
+		}
+		return v.Command.Execute(r.State)
+	}
+	r.engine.complete = func(id CommandId, result state.Value) {
+		if p := r.proposals[id]; p != nil {
+			job := replyJob{p, defs.ProposeReplyTS{OK: defs.TRUE, CommandId: id.SeqNum, Value: result, Timestamp: p.Timestamp}}
+			r.pendingReplies[id] = job
+		}
+	}
+	r.code = r.RPC.Register(&wireMessage{}, r.inbox)
 	go r.run()
 	return r
 }
-
 func (r *Replica) run() {
 	r.ConnectToPeers()
+	r.peerQueues = make([]chan message, r.N)
+	for i := 0; i < r.N; i++ {
+		if i == int(r.Id) {
+			continue
+		}
+		r.peerQueues[i] = make(chan message, 16384)
+		go r.sendPeer(i)
+	}
 	go r.WaitForClientConnections()
-
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	start := time.Now()
+	lastStats := time.Duration(0)
 	for !r.Shutdown {
 		select {
-		case proposal := <-r.ProposeChan:
-			r.handleProposal(proposal)
-		case m := <-r.cs.m2BChan:
-			r.handleM2B(m.(*M2B))
-		}
-	}
-}
-
-func (r *Replica) handleProposal(proposal *defs.GPropose) {
-	cmdId := CommandId{
-		ClientId: proposal.ClientId,
-		SeqNum:   proposal.CommandId,
-	}
-	r.cmds[cmdId] = proposal
-	i := r.getInstance(r.next)
-	r.next++
-	i.value = cmdId
-
-	m2b := &M2B{
-		CmdId:      i.value,
-		Ballot:     i.ballot,
-		Cballot:    i.cballot,
-		Replica:    r.Id,
-		InstanceId: r.next - 1,
-	}
-	r.sender.SendToAll(m2b, r.cs.m2BRPC)
-	r.handleM2B(m2b)
-}
-
-func (r *Replica) handleM2B(m2b *M2B) {
-	r.getM2bSet(r.getInstance(m2b.InstanceId), m2b.Ballot).Add(m2b.Replica, false, m2b)
-}
-
-func (r *Replica) handleM2Bs(_ interface{}, msgs []interface{}) {
-	var (
-		value  *CommandId
-		commit = true
-	)
-	m2bs := make([]*M2B, len(msgs))
-	for i, m := range msgs {
-		m2bs[i] = m.(*M2B)
-		if value == nil {
-			value = &m2bs[i].CmdId
-		}
-		commit = commit && *value == m2bs[i].CmdId
-	}
-	if commit {
-		r.commit(m2bs[0].InstanceId, *value)
-		// TODO: clean m2bsets for this instance
-	} else {
-		// uncoordinated recovery
-		// use quorum of 2Bs as a quorum of 1Bs
-		// TODO: for now this is correct only for one fixed fast quorum,
-		//       for multiple quorums we must first guarantee that there is no
-		//       agreement in any fast quorum. This is due to the fact that the
-		//       quorum that will be (deterministically) chosen during recovery
-		//       can differ from the one that actually accepts a command.
-		sort.Slice(m2bs, func(i, j int) bool {
-			if m2bs[i].Cballot > m2bs[j].Cballot {
-				return false
+		case p := <-r.ProposeChan:
+			id := CommandId{p.ClientId, p.CommandId}
+			r.proposals[id] = p
+			r.ensureReplyQueue(p.ClientId)
+			r.engine.submit(record{ID: id, Command: p.Command})
+		case msg := <-r.inbox:
+			r.engine.step(msg.(*wireMessage).message)
+		case now := <-ticker.C:
+			t := now.Sub(start)
+			r.engine.tick(t)
+			r.flushReplies()
+			if t-lastStats >= 5*time.Second {
+				e := r.engine
+				r.Printf("FASTPAXOS_PROGRESS replica=%d epoch=%d coordinator=%d preparing=%t active=%t high=%d executed=%d pending=%d fast=%d classic=%d elections=%d repaired=%d window_fallbacks=%d age_fallbacks=%d", r.Id, e.promise, e.owner(), e.preparing, e.active, e.high, e.executed, len(e.pending), e.fastCommits, e.classicCommits, e.elections, e.repaired, e.windowFallbacks, e.ageFallbacks)
+				lastStats = t
 			}
-			return m2bs[i].Cballot < m2bs[j].Cballot || m2bs[i].Replica < m2bs[j].Replica
-		})
-		maxV := m2bs[len(m2bs)-1]
-		if r.instances[maxV.InstanceId].ballot != maxV.Ballot {
-			// A priori I don't know from which quorum I should recover.
-			// Must retry when ballot = maxV.Ballot or completely ignore
-			// (if ballot > maxV.Ballot).
-			// As of now, this branch should be unreachable because of
-			// a fixed fast quorum that is also a collision recovery quorum,
-			// and because there is no recovery from failures.
+		}
+		r.drain()
+	}
+}
+func (r *Replica) drain() {
+	for len(r.engine.out) > 0 {
+		out := r.engine.out
+		r.engine.out = nil
+		for _, e := range out {
+			if e.To == int(r.Id) {
+				r.engine.step(e.Message)
+				continue
+			}
+			select {
+			case r.peerQueues[e.To] <- e.Message:
+			default:
+			}
+			// Retransmission, heartbeat catch-up and stalled-fast recovery repair drops.
+		}
+	}
+}
+func (r *Replica) sendPeer(id int) {
+	for m := range r.peerQueues[id] {
+		conn := r.Peers[id]
+		w := r.PeerWriters[id]
+		if conn == nil || w == nil {
+			continue
+		}
+		// This peer has a dedicated worker. Backpressure may block it without
+		// blocking the protocol or other peers. A short write deadline would
+		// permanently sever a healthy WAN connection during suffix transfer.
+		if err := w.WriteByte(r.code); err != nil {
 			return
 		}
-		r.instances[maxV.InstanceId].value = maxV.CmdId
-		r.advanceBallot(r.instances[maxV.InstanceId], maxV.Ballot+1)
-		m2b := &M2B{
-			CmdId:      r.instances[maxV.InstanceId].value,
-			Ballot:     r.instances[maxV.InstanceId].ballot,
-			Cballot:    r.instances[maxV.InstanceId].cballot,
-			Replica:    r.Id,
-			InstanceId: maxV.InstanceId,
+		(&wireMessage{m}).Marshal(w)
+		if err := w.Flush(); err != nil {
+			_ = conn.Close()
+			return
 		}
-		r.sender.SendToAll(m2b, r.cs.m2BRPC)
-		r.handleM2B(m2b)
 	}
 }
 
-func (r *Replica) getInstance(instanceId int) *instance {
-	if instanceId < len(r.instances) {
-		if r.instances[instanceId] == nil {
-			i := &instance{
-				ballot:    0,
-				cballot:   0,
-				committed: false,
-				m2bSets:   make(map[int32]*replica.MsgSet),
-			}
-			r.instances[instanceId] = i
+// A full per-client queue retains replies for retry instead of losing completion.
+func (r *Replica) ensureReplyQueue(id int32) {
+	if r.replyQueues[id] != nil {
+		return
+	}
+	q := make(chan replyJob, 8192)
+	r.replyQueues[id] = q
+	go func() {
+		for j := range q {
+			j.proposal.Mutex.Lock()
+			j.reply.Marshal(j.proposal.Reply)
+			j.proposal.Reply.Flush()
+			j.proposal.Mutex.Unlock()
 		}
-		return r.instances[instanceId]
-	}
-	is := make([]*instance, instanceId+1)
-	copy(is, r.instances)
-	return r.getInstance(instanceId)
+	}()
 }
-
-func (r *Replica) getM2bSet(i *instance, ballot int32) *replica.MsgSet {
-	s, exists := i.m2bSets[ballot]
-	if !exists || s == nil {
-		s = replica.NewMsgSet(r.defaultFastQuorum, func(_, _ interface{}) bool {
-			return true
-		}, func(interface{}) {}, r.handleM2Bs)
-		i.m2bSets[ballot] = s
-	}
-	return s
-}
-
-func (r *Replica) advanceBallot(i *instance, ballot int32) {
-	if ballot > i.ballot {
-		i.ballot = ballot
-		i.cballot = ballot
-	}
-}
-
-func (r *Replica) commit(id int, v CommandId) {
-	// FIXME: this can be called before the proposal is handled
-
-	r.getInstance(id).value = v
-	r.getInstance(id).committed = true
-
-	i := r.getInstance(r.lastExecuted + 1)
-	for i.committed {
-		v = i.value
-		if _, exists := r.delivered[v]; !exists {
-			// Should check whether v is already delivered or not,
-			// this is because v can be committed at more than one instances
-			// (tho this is impossible without failure recovery and with a
-			// single fast quorum)
-			r.delivered[v] = struct{}{}
-			res := &defs.ProposeReplyTS{
-				OK:        defs.TRUE,
-				Value:     r.cmds[v].Command.Execute(r.State),
-				CommandId: r.cmds[v].CommandId,
-				Timestamp: r.cmds[v].Timestamp,
-			}
-			if r.cmds[v].Proxy {
-				r.ReplyProposeTS(res, r.cmds[v].Reply, r.cmds[v].Mutex)
-			}
+func (r *Replica) flushReplies() {
+	for id, job := range r.pendingReplies {
+		select {
+		case r.replyQueues[id.ClientId] <- job:
+			delete(r.pendingReplies, id)
+		default:
 		}
-		r.lastExecuted++
-		i = r.getInstance(r.lastExecuted + 1)
 	}
 }

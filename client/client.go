@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +25,13 @@ import (
 )
 
 type Client struct {
+	// FastPaxos accepts an executed result from any surviving replica.
+	FastPaxos            bool
+	EPaxos               bool
+	Paxos                bool
+	paxosLookup          time.Time // owned by the proposal sender
+	RecoverableBroadcast bool      // N2Paxos and CURP: broadcast past failed sockets.
+	fastPaxosDead        []atomic.Bool
 	// Optional protocol interception; configured before the workload starts.
 	ProposalHook func(defs.Propose) bool
 	// BodegaRouting selects local GETs and direct-to-roster-leader writes.
@@ -154,6 +162,9 @@ func (c *Client) Connect() error {
 			return err
 		}
 	}
+	if c.FastPaxos || c.EPaxos || c.RecoverableBroadcast || c.Paxos {
+		c.fastPaxosDead = make([]atomic.Bool, len(c.servers))
+	}
 	return nil
 }
 
@@ -204,6 +215,18 @@ func (c *Client) Reconnect() error {
 }
 
 func (c *Client) SendProposal(cmd defs.Propose) {
+	if c.Paxos {
+		c.sendPaxos(cmd)
+		return
+	}
+	if c.EPaxos {
+		c.sendEPaxos(cmd)
+		return
+	}
+	if c.FastPaxos || c.RecoverableBroadcast {
+		c.sendFastPaxos(cmd)
+		return
+	}
 	if c.ProposalHook != nil && c.ProposalHook(cmd) {
 		return
 	}
@@ -312,6 +335,9 @@ func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
 					err     error
 				)
 				if msgType, err = reader.ReadByte(); err != nil {
+					if c.RecoverableBroadcast {
+						c.fastPaxosDead[i].Store(true)
+					}
 					c.markFaultPeer(i)
 					break
 				}
@@ -322,6 +348,9 @@ func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
 				}
 				obj := p.Obj.New()
 				if err = obj.Unmarshal(reader); err != nil {
+					if c.RecoverableBroadcast {
+						c.fastPaxosDead[i].Store(true)
+					}
 					c.markFaultPeer(i)
 					break
 				}

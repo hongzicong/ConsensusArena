@@ -60,8 +60,11 @@ def summarize(base):
         (base/'validation.json').write_text(json.dumps(outcomes,indent=2)+'\n')
         return outcomes
     protocol=metadata['protocol']
-    duration=int(metadata.get('measurement_s',100))
-    maximum=metadata.get('max_crash_s')
+    duration=int(metadata.get('measurement_s',60))
+    maximum=metadata.get('max_crash_s',35)
+    first=int(metadata.get('crash_s',10))
+    if (first,maximum,duration)!=(10,35,60):
+        raise ValueError('expected crash-only schedule 10/35/60; historical runs require their original summarizer')
     leader_end=maximum if maximum is not None else duration
     summaries=[]; series=[]; cohorts=[]; outcomes=[]
     for run in sorted(base.glob('ycsb-*/repetition-*')):
@@ -70,6 +73,8 @@ def summarize(base):
             continue
         outcome=json.loads((run/'outcome.json').read_text())
         meta=json.loads((run/'metadata.json').read_text())
+        if (meta.get('crash_s',first),meta.get('max_crash_s',maximum),meta.get('measurement_s',duration))!=(first,maximum,duration):
+            raise ValueError('run schedule differs from experiment metadata: '+str(run))
         identity=dict(protocol=protocol,replicas=meta['replicas'],profile=meta['profile'],repetition=meta['repetition'],valid=outcome['valid'])
         seconds=collections.defaultdict(bucket)
         cohort=collections.defaultdict(bucket)
@@ -99,10 +104,10 @@ def summarize(base):
         if missing_seconds: accounting_errors.append('incomplete client coverage in seconds '+str(missing_seconds))
         valid=bool(outcome['valid'] and not accounting_errors)
         identity['valid']=valid
-        pre=sum(seconds[s]['completed'] for s in range(10,20))/10
-        pre_offered=sum(seconds[s]['offered'] for s in range(10,20))/10
+        pre=sum(seconds[s]['completed'] for s in range(first-10,first))/10
+        pre_offered=sum(seconds[s]['offered'] for s in range(first-10,first))/10
         stable=pre_offered>0 and .9*pre_offered<=pre<=1.1*pre_offered
-        leader=recovery_window(seconds,60,leader_end,pre,valid and stable)
+        leader=recovery_window(seconds,first,leader_end,pre,valid and stable)
         recovery=leader['first_s'];sustained_from=leader['sustained_from_s']
         maximum_metrics={}
         if maximum is not None:
@@ -128,7 +133,7 @@ def summarize(base):
             covered=len(coverage[sec])==10
             series.append(dict(**identity,second=sec,completed=n if covered else None,offered=b['offered'] if covered else None,issued=b['issued'] if covered else None,dropped=b['dropped'] if covered else None,
                                mean_ms=b['latency_sum_ms']/n if n else None,p99_ms=percentile(b['hist'],.99),pending=b['pending'],queue=b['queue']))
-        phases=[('normal',0,20),('slow',20,40),('restored',40,60),('crashed',60,leader_end)]
+        phases=[('normal',0,first),('crashed',first,leader_end)]
         if maximum is not None: phases.append(('maximum_crashes',maximum,duration))
         for phase,lo,hi in phases:
             b=bucket()

@@ -3,8 +3,8 @@
 
 All controls run on the allocated compute nodes. Loopback Toxiproxy APIs are
 accessed by their owning Slurm rank; no SSH from compute nodes is required.
-After 10 s warmup: slow at 20 s, restore at 40 s, first crash at 60 s,
-cumulative f crashes at 120 s, and observation ends at 180 s.
+After 10 s warmup: first crash at 10 s, cumulative f crashes at 35 s,
+and observation ends at 60 s. The configured WAN latency stays unchanged.
 """
 import hashlib
 import json
@@ -16,7 +16,6 @@ import signal
 import subprocess
 import sys
 import time
-import urllib.request
 
 REPLICA_COUNT = int(os.environ.get('CONSENSUSARENA_REPLICAS', '5').split(':')[0])
 if REPLICA_COUNT not in (5, 9, 13):
@@ -32,8 +31,9 @@ NODES = (TASKS + 7) // 8
 TASKS_PER_NODE = (TASKS + NODES - 1) // NODES
 TOXI_HASH = '556d891134a3c582dc1e1a3f7335fd55142e5965769855a00b944e13e48302fc'
 
-MEASUREMENT_S = 180
-MAX_CRASH_S = 120
+FIRST_CRASH_S = 10
+MAX_CRASH_S = 35
+MEASUREMENT_S = 60
 
 def additional_crash_ranks(count, first, latest=None, policy='leader-first'):
     """Keep the cumulative injected failure count at f, never add f new failures."""
@@ -72,41 +72,6 @@ def amend(text, values):
         text, n = re.subn(r'^' + re.escape(key) + r':.*$', key + ': ' + str(value), text, flags=re.M)
         if n != 1: raise ValueError('missing/nonunique config field ' + key)
     return text
-
-def api(rank, path='', data=None, method=None):
-    body = None if data is None else json.dumps(data).encode()
-    request = urllib.request.Request('http://127.0.0.1:%d%s' % (18000+rank, path),
-                                     data=body, method=method,
-                                     headers={'Content-Type':'application/json'})
-    with urllib.request.urlopen(request, timeout=3) as response:
-        raw = response.read()
-        return json.loads(raw) if raw else None
-
-def affected_proxies(rank, slow):
-    source_site = REPLICAS[rank] if rank < REPLICA_COUNT else CLIENTS[rank-REPLICA_COUNT]
-    return ['rank-%d-replica-%d' % (rank, target) for target in range(REPLICA_COUNT)
-            if source_site != REPLICAS[target]
-            and (source_site == REPLICAS[slow] or target == slow)]
-
-def delay(rank, slow, enable):
-    names = affected_proxies(rank, slow)
-    existing = api(rank, '/proxies')
-    names += [name + '-control' for name in names if name + '-control' in existing]
-    for name in names:
-        for stream in ['upstream', 'downstream']:
-            toxic = 'fault-extra-' + stream
-            path = '/proxies/' + name + '/toxics'
-            if enable:
-                api(rank, path, {'name':toxic, 'type':'latency', 'stream':stream,
-                                'toxicity':1.0, 'attributes':{'latency':100, 'jitter':0}})
-            else:
-                api(rank, path+'/'+toxic, method='DELETE')
-    snapshot = api(rank, '/proxies')
-    for name in names:
-        present = {t['name'] for t in snapshot[name]['toxics']}
-        assert ('fault-extra-upstream' in present) == enable
-        assert ('fault-extra-downstream' in present) == enable
-    return names, snapshot
 
 def rank_runner(repo, run, binary, toxi):
     rank = int(os.environ['SLURM_PROCID'])
@@ -148,26 +113,12 @@ def rank_runner(repo, run, binary, toxi):
             if app.poll() is not None: raise RuntimeError('master exited')
             (status/'master.ready').touch()
         start = None
-        applied = removed = False
-        slow = int(os.environ.get('FAULT_SLOW_REPLICA','1'))
         warmup = float(fields(run/'config/cluster.conf')['warmup'].rstrip('s'))
         while not (status/'stop').exists():
             if start is None and (status/'start-unix-ns').exists():
                 start = int((status/'start-unix-ns').read_text())/1e9 + warmup
             elapsed = time.time()-start if start else -999
-            if rank != MASTER and elapsed >= 20 and not applied:
-                begin = time.time_ns()
-                names,snapshot = delay(rank,slow,True)
-                write_json(run/'config'/('slow-proxies-%d.json'%rank),snapshot)
-                event('delay_on', requested_s=20, started_ns=begin, proxies=names, extra_rtt_ms=200)
-                applied = True
-            if rank != MASTER and elapsed >= 40 and not removed:
-                begin = time.time_ns()
-                names,snapshot = delay(rank,slow,False)
-                write_json(run/'config'/('restored-proxies-%d.json'%rank),snapshot)
-                event('delay_off', requested_s=40, started_ns=begin, proxies=names)
-                removed = True
-            if rank < REPLICA_COUNT and elapsed >= 60 and not killed and (status/'crash-target.json').exists():
+            if rank < REPLICA_COUNT and elapsed >= FIRST_CRASH_S and not killed and (status/'crash-target.json').exists():
                 target = json.loads((status/'crash-target.json').read_text())
                 if target['rank'] == rank:
                     if app.poll() is not None: raise RuntimeError('target died before injection')
@@ -258,7 +209,7 @@ def run_one(repo, base, config_dir, protocol, profile, repetition, binary, toxi,
         if p.is_file(): shutil.copy2(p,run/'config'/p.name)
     workload = amend((run/'config/cluster.conf').read_text(),dict(protocol=protocol,writes={'A':50,'B':5,'C':0}[profile],warmup='10s',duration=str(MEASUREMENT_S)+'s',repetitions=1,**options))
     (run/'config/cluster.conf').write_text(workload)
-    write_json(run/'metadata.json',dict(protocol=protocol,profile=profile,repetition=repetition,replicas=REPLICA_COUNT,binary_sha256=sha(binary),options=options,measurement_s=MEASUREMENT_S,max_crash_s=MAX_CRASH_S))
+    write_json(run/'metadata.json',dict(protocol=protocol,profile=profile,repetition=repetition,replicas=REPLICA_COUNT,binary_sha256=sha(binary),options=options,measurement_s=MEASUREMENT_S,crash_s=FIRST_CRASH_S,max_crash_s=MAX_CRASH_S))
     args = step_args() + ['--kill-on-bad-exit=1',
             'python3',str(repo/'slurm/fault-harness.py'),'rank',str(repo),str(run),str(binary),str(toxi)]
     with open(run/'stdout/srun.out','w') as out: runner = subprocess.Popen(args,stdout=out,stderr=subprocess.STDOUT)
@@ -286,7 +237,7 @@ def run_one(repo, base, config_dir, protocol, profile, repetition, binary, toxi,
             if (run/'status/node-failed').exists(): raise RuntimeError((run/'status/node-failed').read_text())
             if runner.poll() is not None: raise RuntimeError('srun exited unexpectedly')
             elapsed=time.time()-measurement
-            if elapsed>=59 and target is None:
+            if elapsed>=FIRST_CRASH_S-1 and target is None:
                 target=choose_target(run,protocol); write_json(run/'status/crash-target.json',target)
                 result['crash_target']=target
             if elapsed>=MAX_CRASH_S-1 and maximum_target is None:
@@ -318,7 +269,9 @@ def run_one(repo, base, config_dir, protocol, profile, repetition, binary, toxi,
             if not records or records[-1]['type']!='final': raise RuntimeError('missing client final record')
         for rank in range(MASTER):
             events=[json.loads(s) for s in (run/'results'/('events-rank-%d.jsonl'%rank)).read_text().splitlines()]
-            if not {'delay_on','delay_off'} <= {e['type'] for e in events}: raise RuntimeError('missing network phase event')
+            kinds={e['type'] for e in events}
+            if rank == target['rank'] and 'crash_confirmed' not in kinds: raise RuntimeError('missing first crash event')
+            if rank in maximum_target['additional_ranks'] and 'max_crash_confirmed' not in kinds: raise RuntimeError('missing additional crash event')
         result.update(valid=True,crash_target=target,completed_ns=time.time_ns())
     except Exception as exc:
         result['error']=repr(exc)
@@ -354,7 +307,7 @@ def coordinator_one(repo):
     for src,dst in [('workload.conf','cluster.conf'),('latency.conf','latency.conf')]:
         with open(base/'config'/dst,'w') as out: subprocess.run(['awk','-f',str(repo/'slurm/remap-addresses.awk'),str(address),str(base/'logical'/src)],stdout=out,check=True)
     # Otherwise the legacy master chooses Paxos' initial leader by tiny physical
-    # cluster ICMP differences, changing which logical WAN role is slowed.
+    # cluster ICMP differences, changing which logical WAN role is the leader.
     config_path=base/'config/cluster.conf'
     config_text=config_path.read_text()
     config_text=re.sub(r'^(protocol:.*)$',r'\1\nleader: '+ips[3]+':7073',config_text,flags=re.M)
@@ -366,9 +319,9 @@ def coordinator_one(repo):
     repetitions=int(os.environ.get('FAULT_REPETITIONS','3'))
     profiles=os.environ.get('CONSENSUSARENA_YCSB_PROFILES','A:B:C').split(':')
     write_json(base/'metadata.json',dict(job_id=os.environ['SLURM_JOB_ID'],protocol=protocol,binary_sha256=sha(binary),toxiproxy_sha256=sha(toxi),
-             replicas=REPLICA_COUNT,profiles=profiles,repetitions=repetitions,slow_site=REPLICAS[int(os.environ.get('FAULT_SLOW_REPLICA','1'))],
+             replicas=REPLICA_COUNT,profiles=profiles,repetitions=repetitions,
              initial_leader_site='us-west-1',
-             extra_rtt_ms=200,extra_one_way_ms=100,warmup_s=10,delay_on_s=20,delay_off_s=40,crash_s=60,measurement_s=MEASUREMENT_S,
+             warmup_s=10,crash_s=FIRST_CRASH_S,measurement_s=MEASUREMENT_S,
              max_crash_s=MAX_CRASH_S,max_total_failures=(REPLICA_COUNT-1)//2,
              max_target_policy=os.environ.get('FAULT_MAX_TARGET_POLICY','leader-first'),
              cpus_per_task=8,mem_per_cpu='1G',client_retry='none; unresolved retained in counts',options=options))
@@ -390,7 +343,7 @@ def coordinator(repo):
         raise RuntimeError('insufficient Slurm allocation for requested fault sweep')
     base=Path(os.environ.get('CONSENSUSARENA_RUN_DIR','/scratch/%s/consensusarena-fault-%s'%(os.environ['USER'],os.environ['SLURM_JOB_ID'])))
     base.mkdir(parents=True,exist_ok=False)
-    write_json(base/'metadata.json',dict(job_id=os.environ['SLURM_JOB_ID'],protocol=os.environ['CONSENSUSARENA_PROTOCOL'].lower(),replica_counts=counts))
+    write_json(base/'metadata.json',dict(job_id=os.environ['SLURM_JOB_ID'],protocol=os.environ['CONSENSUSARENA_PROTOCOL'].lower(),replica_counts=counts,crash_s=FIRST_CRASH_S,max_crash_s=MAX_CRASH_S,measurement_s=MEASUREMENT_S))
     outcomes=[]
     for count in counts:
         env=dict(os.environ,CONSENSUSARENA_REPLICAS=str(count),CONSENSUSARENA_RUN_DIR=str(base/('replicas-'+str(count))))

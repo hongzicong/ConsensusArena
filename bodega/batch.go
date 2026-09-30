@@ -96,6 +96,7 @@ func (e *engine) proposeBatch(rs []request, now time.Time) {
 	e.acceptEntry(v)
 	e.votes[v.Slot] = bit(e.id)
 	e.broadcast(message{Kind: accept, Entry: v})
+	e.notifyAccepted(v)
 	e.tryCommit(v.Slot, now)
 }
 

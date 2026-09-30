@@ -148,15 +148,26 @@ memberships of 3–63 and `noop: false`.
 Compact CommitNotice frames carry commit positions, not values; lost Accept data
 is repaired in bounded windows. `CommitNotices`, `CommitRepairRequests` and
 `CommitRepairEntries` expose this path. Upgrade all replicas and clients together for the new wire/control format.
-The port uses expiry-based roster changes and per-key committed-value reads
-with majority accepted-prefix evidence; recovered entries use deduplicated execution.
-Stable prepared leaders read committed state without waiting for same-key pending
-writes; follower reads still hold behind them. `StableLeaderReads` and
-`LeaderPendingWriteBypasses` count leader-local completions and pending-write bypasses.
-Bounded clock-rate drift is required. No durable restart, automatic responder
-tuning, log compaction, or early-accept optimization is implemented.
+The port uses acknowledged lease revocation with expiry fallback and suffix-only
+Prepare recovery, following Summerset's `bodega-artifact` commit `16c6f352`.
+Promise chunks advance when the network writer frees queue space, independently
+of heartbeat retry intervals. Log GC waits for execution by every fixed member;
+the live state machine and retained deduplication results are the in-memory snapshot.
+Per-key reads use commit or distinct responder-covering majority AcceptNote evidence, with an additional
+fixed-prefix check for deduplicated out-of-order execution. Recovered entries wait
+for execution. Early read replies do not weaken responder-covering write commitment.
+All responders, including the leader, inspect the latest accepted write. Requiring
+responder coverage for early reads and holding leader reads behind unresolved writes
+are conservative deviations from the upstream optimization: they prevent a later
+cross-responder read from returning an older value. `StableLeaderReads` and
+`LeaderEarlyReads` count leader-local completions and completions before write commit.
+Bounded clock-rate drift is required. Durable WAL/checkpoint restart and automatic
+responder tuning remain unimplemented. A crashed member can stop all-member log GC.
+Wire version 3 requires upgrading all Bodega replicas together.
 `BODEGA_STATS` and `BODEGA_ROSTER` record counters and installed rosters;
-`OutOfOrderReads` counts reads served before the target slot executes.
+`OutOfOrderReads` counts reads served before the target slot executes. `EarlyReads`
+counts majority-accepted reads before commit; `PrepareEntries`/`PrepareNanos`,
+`Revokes`/`RevokeAcks`, and `CompactedSlots` expose recovery and GC costs.
 Bodega establishes peer connections concurrently; roster installation restarts
 peer failure timers without renewing leases.
 Bodega fallback read routing uses proxied control-RPC duration, not ICMP;
@@ -338,6 +349,25 @@ sbatch --account=dcl \
   --export=ALL,CONSENSUSARENA_BINARY=$HOME/bin/consensusarena,CONSENSUSARENA_RUN_DIR=/scratch/zihong/custom-run,CONSENSUSARENA_YCSB_PROFILES=A:B:C,CONSENSUSARENA_WORKLOAD_SEED=1,CLIENT_TIMEOUT_SECONDS=300 \
   slurm/run-latency.sbatch
 ```
+
+## Crash recovery experiment
+
+`slurm/run-fault.sbatch` now runs a crash-only fault schedule. After 10 seconds
+of warmup, measure for 60 seconds: normal operation at 0–10 seconds, kill the
+protocol-specific target at 10 seconds, then kill additional replicas at
+35 seconds to reach a cumulative `f = (n - 1) / 2` crashes. Keep observing
+through 60 seconds. 
+
+Rebuild the executable before running this schedule so client request cohorts
+use the matching `normal`, `crashed`, and `maximum_crashes` phases. The
+summarizer accepts only the 10/35/60-second schedule.
+
+Existing recovery figures describe historical experiments and remain unchanged.
+After replacing their data with new 60-second measurements, render with
+`python report/plot_recovery.py --baselines-only` from the parent repository. The plotter does
+not relabel or truncate historical data. Existing XPaxos figures are not
+redrawn by this command. The recovery reference is the ten
+measurement seconds immediately before the first crash (0–10 seconds).
 
 ## License
 

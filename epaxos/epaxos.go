@@ -21,12 +21,17 @@ const TRUE = uint8(1)
 const FALSE = uint8(0)
 const ADAPT_TIME_SEC = 10
 
-const COMMIT_GRACE_PERIOD = 10 * time.Second
+const COMMIT_GRACE_PERIOD = 3 * time.Second
 
 const MAX_BATCH = 1000
 
-const INITIAL_RECOVERY_BACKOFF = 10 * time.Second
-const MAX_RECOVERY_BACKOFF = time.Minute
+// Bound the unexecuted local suffix. With compressed dependencies, an
+// unlimited proposal stream can keep extending an open SCC faster than its
+// last dependencies commit. Backpressure lets that component close.
+const MAX_INFLIGHT_INSTANCES = 32
+
+const INITIAL_RECOVERY_BACKOFF = 3 * time.Second
+const MAX_RECOVERY_BACKOFF = 6 * time.Second
 
 const BF_K = 4
 const BF_M_N = 32.0
@@ -90,6 +95,7 @@ type Replica struct {
 	transconf        bool
 	recoveryMu       sync.Mutex
 	recoveryAttempts map[uint64]recoveryAttempt
+	*repairState
 }
 
 type recoveryAttempt struct {
@@ -122,26 +128,28 @@ type instanceId struct {
 }
 
 type LeaderBookkeeping struct {
-	clientProposals   []*defs.GPropose
-	ballot            int32
-	allEqual          bool
-	preAcceptOKs      int
-	acceptOKs         int
-	nacks             int
-	originalDeps      []int32
-	committedDeps     []int32
-	prepareReplies    []*PrepareReply
-	preparing         bool
-	tryingToPreAccept bool
-	possibleQuorum    []bool
-	tpaReps           int
-	tpaAccepted       bool
-	lastTriedBallot   int32
-	cmds              []state.Command
-	status            int8
-	seq               int32
-	deps              []int32
-	leaderResponded   bool
+	clientProposals                        []*defs.GPropose
+	ballot                                 int32
+	allEqual                               bool
+	preAcceptOKs                           int
+	acceptOKs                              int
+	nacks                                  int
+	originalDeps                           []int32
+	committedDeps                          []int32
+	prepareReplies                         []*PrepareReply
+	preparing                              bool
+	tryingToPreAccept                      bool
+	possibleQuorum                         []bool
+	tpaReps                                int
+	tpaAccepted                            bool
+	lastTriedBallot                        int32
+	cmds                                   []state.Command
+	status                                 int8
+	seq                                    int32
+	deps                                   []int32
+	leaderResponded                        bool
+	preVoters, acceptVoters, prepareVoters map[int32]bool
+	phaseStarted                           time.Time
 }
 
 func New(alias string, id int, peerAddrList []string, exec, beacon, durable bool, batchWait int, transconf bool, failures int, conf *config.Config, logger *dlog.Logger) *Replica {
@@ -176,9 +184,10 @@ func New(alias string, id int, peerAddrList []string, exec, beacon, durable bool
 		transconf,
 		sync.Mutex{},
 		make(map[uint64]recoveryAttempt),
+		newRepairState(),
 	}
 
-	r.Beacon = beacon
+	r.Beacon = false // peer ordering is static; avoid concurrent writes from legacy beacon code
 	r.Durable = durable
 
 	for i := 0; i < r.N; i++ {
@@ -209,6 +218,7 @@ func New(alias string, id int, peerAddrList []string, exec, beacon, durable bool
 	r.Stats.M["recoveryScheduled"], r.Stats.M["recoverySuppressed"], r.Stats.M["recoveryQueueFull"] = 0, 0, 0
 	r.Stats.M["executedCommands"], r.Stats.M["clientReplies"] = 0, 0
 
+	r.requestRPC = r.RPC.Register(new(repairRequest), r.requestChan)
 	go r.run()
 
 	return r
@@ -363,16 +373,27 @@ func (r *Replica) logProgress() {
 	r.M.Unlock()
 	r.Printf("EPAXOS_PROGRESS proposed=%d batches=%d max_batch=%d max_proposal_queue=%d fast=%d slow=%d executed=%d replies=%d recovery_scheduled=%d recovery_suppressed=%d recovery_queue=%d",
 		proposed, batches, maxBatch, maxProposalQueue, fast, slow, executed, replies, recoveryScheduled, recoverySuppressed, len(r.instancesToRecover))
+	r.Printf("EPAXOS_REPAIR active=%d blocked=%d send_drops=%d executed_prefix=%v known_prefix=%v", len(r.active), len(r.blocked), r.Stats.M["sendQueueDrops"], r.ExecedUpTo, r.crtInstance)
+	for q := int32(0); q < int32(r.N); q++ {
+		slot := r.ExecedUpTo[q] + 1
+		if slot > r.crtInstance[q] {
+			continue
+		}
+		inst := r.InstanceSpace[q][slot]
+		if inst != nil {
+			r.Printf("EPAXOS_HEAD owner=%d slot=%d status=%d promise=%d value_ballot=%d deps=%v", q, slot, inst.Status, inst.bal, inst.vbal, inst.Deps)
+		}
+	}
 }
 
 func (r *Replica) run() {
 	r.ConnectToPeers()
+	r.startSenders()
 
 	r.ComputeClosestPeers()
 
-	if r.Exec {
-		go r.executeCommands()
-	}
+	execTicker := time.NewTicker(2 * time.Millisecond)
+	defer execTicker.Stop()
 
 	slowClockChan = make(chan bool, 1)
 	fastClockChan = make(chan bool, 1)
@@ -398,13 +419,15 @@ func (r *Replica) run() {
 
 		case propose := <-onOffProposeChan:
 			r.handlePropose(propose)
-			if r.BatchingEnabled() {
+			if r.BatchingEnabled() || r.crtInstance[r.Id]-r.ExecedUpTo[r.Id] >= MAX_INFLIGHT_INSTANCES {
 				onOffProposeChan = nil
 			}
 			break
 
 		case <-fastClockChan:
-			onOffProposeChan = r.ProposeChan
+			if r.crtInstance[r.Id]-r.ExecedUpTo[r.Id] < MAX_INFLIGHT_INSTANCES {
+				onOffProposeChan = r.ProposeChan
+			}
 			break
 
 		case prepareS := <-r.prepareChan:
@@ -468,58 +491,26 @@ func (r *Replica) run() {
 			}
 			break
 
+		case now := <-execTicker.C:
+			r.repairTick(now)
+			if r.Exec {
+				r.executeReady(now)
+			}
+			if r.crtInstance[r.Id]-r.ExecedUpTo[r.Id] >= MAX_INFLIGHT_INSTANCES {
+				onOffProposeChan = nil
+			} else if !r.BatchingEnabled() {
+				onOffProposeChan = r.ProposeChan
+			}
+
 		case <-progressTicker.C:
 			r.logProgress()
 			break
 
+		case req := <-r.requestChan:
+			r.handleRepairRequest(req.(*repairRequest))
+
 		case iid := <-r.instancesToRecover:
 			r.startRecoveryForInstance(iid.replica, iid.instance)
-		}
-	}
-}
-
-func (r *Replica) executeCommands() {
-	const SLEEP_TIME_NS = 1e6
-	problemInstance := make([]int32, r.N)
-	blockedSince := make([]time.Time, r.N)
-	for q := 0; q < r.N; q++ {
-		problemInstance[q] = -1
-	}
-
-	for !r.Shutdown {
-		executed := false
-		for q := int32(0); q < int32(r.N); q++ {
-			for inst := r.ExecedUpTo[q] + 1; inst <= r.crtInstance[q]; inst++ {
-				if r.InstanceSpace[q][inst] != nil && r.InstanceSpace[q][inst].Status == EXECUTED {
-					if inst == r.ExecedUpTo[q]+1 {
-						r.ExecedUpTo[q] = inst
-					}
-					continue
-				}
-				if r.InstanceSpace[q][inst] == nil || r.InstanceSpace[q][inst].Status < COMMITTED || r.InstanceSpace[q][inst].Cmds == nil {
-					now := time.Now()
-					if inst == problemInstance[q] {
-						if now.Sub(blockedSince[q]) >= COMMIT_GRACE_PERIOD {
-							r.scheduleRecovery(q, problemInstance[q], now)
-						}
-					} else {
-						problemInstance[q] = inst
-						blockedSince[q] = now
-					}
-					break
-				}
-				if ok := r.exec.executeCommand(int32(q), inst); ok {
-					executed = true
-					if inst == r.ExecedUpTo[q]+1 {
-						r.ExecedUpTo[q] = inst
-					}
-				}
-			}
-		}
-		if !executed {
-			r.M.Lock()
-			r.M.Unlock() // FIXME for cache coherence
-			time.Sleep(SLEEP_TIME_NS)
 		}
 	}
 }
@@ -529,17 +520,12 @@ func isInitialBallot(ballot int32, replica int32, instance int32) bool {
 }
 
 func (r *Replica) makeBallot(replica int32, instance int32) {
-	lb := r.InstanceSpace[replica][instance].lb
-	n := r.Id
-	if r.Id != replica {
-		n += int32(r.N)
+	inst := r.InstanceSpace[replica][instance]
+	high := inst.bal
+	if r.maxRecvBallot > high {
+		high = r.maxRecvBallot
 	}
-	if r.IsLeader {
-		for n < r.maxRecvBallot {
-			n += int32(r.N)
-		}
-	}
-	lb.lastTriedBallot = n
+	inst.lb.lastTriedBallot = (high/int32(r.N)+1)*int32(r.N) + r.Id
 }
 
 func (r *Replica) replyPrepare(replicaId int32, reply *PrepareReply) {
@@ -574,7 +560,7 @@ func (r *Replica) bcastPrepare(replica int32, instance int32) {
 		if q == r.Id {
 			break
 		}
-		if !r.Alive[q] {
+		if !r.peerAlive(q) {
 			continue
 		}
 		r.SendMsg(q, r.prepareRPC, args)
@@ -606,7 +592,7 @@ func (r *Replica) bcastPreAccept(replica int32, instance int32) {
 
 	sent := 0
 	for q := 0; q < r.N-1; q++ {
-		if !r.Alive[r.PreferredPeerOrder[q]] {
+		if !r.peerAlive(r.PreferredPeerOrder[q]) {
 			continue
 		}
 		r.SendMsg(r.PreferredPeerOrder[q], r.preAcceptRPC, pa)
@@ -637,7 +623,7 @@ func (r *Replica) bcastTryPreAccept(replica int32, instance int32) {
 		if q == r.Id {
 			continue
 		}
-		if !r.Alive[q] {
+		if !r.peerAlive(q) {
 			continue
 		}
 		r.SendMsg(q, r.tryPreAcceptRPC, tpa)
@@ -659,6 +645,7 @@ func (r *Replica) bcastAccept(replica int32, instance int32) {
 	ea.Ballot = lb.lastTriedBallot
 	ea.Seq = lb.seq
 	ea.Deps = lb.deps
+	ea.Command = lb.cmds
 
 	n := r.N - 1
 	if r.Thrifty {
@@ -667,7 +654,7 @@ func (r *Replica) bcastAccept(replica int32, instance int32) {
 
 	sent := 0
 	for q := 0; q < r.N-1; q++ {
-		if !r.Alive[r.PreferredPeerOrder[q]] {
+		if !r.peerAlive(r.PreferredPeerOrder[q]) {
 			continue
 		}
 		r.SendMsg(r.PreferredPeerOrder[q], r.acceptRPC, ea)
@@ -695,7 +682,7 @@ func (r *Replica) bcastCommit(replica int32, instance int32) {
 	ec.Ballot = lb.ballot
 
 	for q := 0; q < r.N-1; q++ {
-		if !r.Alive[r.PreferredPeerOrder[q]] {
+		if !r.peerAlive(r.PreferredPeerOrder[q]) {
 			continue
 		}
 		r.SendMsg(r.PreferredPeerOrder[q], r.commitRPC, ec)
@@ -758,6 +745,9 @@ func (r *Replica) updateAttributes(cmds []state.Command, seq int32, deps []int32
 				if cmds[i].Op != state.GET {
 					d = dpair.last
 				}
+				if int32(q) == replica && d >= instance {
+					continue
+				}
 
 				if d > deps[q] {
 					deps[q] = d
@@ -791,9 +781,6 @@ func (r *Replica) mergeAttributes(seq1 int32, deps1 []int32, seq2 int32, deps2 [
 		}
 	}
 	for q := 0; q < r.N; q++ {
-		if int32(q) == r.Id {
-			continue
-		}
 		if deps1[q] != deps2[q] {
 			equal = false
 			if deps2[q] > deps1[q] {
@@ -805,6 +792,9 @@ func (r *Replica) mergeAttributes(seq1 int32, deps1 []int32, seq2 int32, deps2 [
 }
 
 func equal(deps1 []int32, deps2 []int32) bool {
+	if len(deps1) != len(deps2) {
+		return false
+	}
 	for i := 0; i < len(deps1); i++ {
 		if deps1[i] != deps2[i] {
 			return false
@@ -852,12 +842,17 @@ func (r *Replica) handlePropose(propose *defs.GPropose) {
 }
 
 func (r *Replica) startPhase1(cmds []state.Command, replica int32, instance int32, ballot int32, proposals []*defs.GPropose) {
+	r.active[instanceId{replica, instance}] = true
+	if instance > r.crtInstance[replica] {
+		r.crtInstance[replica] = instance
+	}
 	// init command attributes
 	seq := int32(0)
 	deps := make([]int32, r.N)
 	for q := 0; q < r.N; q++ {
 		deps[q] = -1
 	}
+	deps[replica] = instance - 1
 	seq, deps, _ = r.updateAttributes(cmds, seq, deps, replica, instance)
 	comDeps := make([]int32, r.N)
 	for i := 0; i < r.N; i++ {
@@ -865,8 +860,9 @@ func (r *Replica) startPhase1(cmds []state.Command, replica int32, instance int3
 	}
 
 	inst := r.newInstance(replica, instance, cmds, ballot, ballot, PREACCEPTED, seq, deps)
-	inst.lb = r.newLeaderBookkeeping(proposals, deps, comDeps, deps, ballot, cmds, PREACCEPTED, -1)
+	inst.lb = r.newLeaderBookkeeping(proposals, append([]int32(nil), deps...), comDeps, append([]int32(nil), deps...), ballot, cmds, PREACCEPTED, seq)
 	r.InstanceSpace[replica][instance] = inst
+	inst.lb.preparing = false
 
 	r.updateConflicts(cmds, replica, instance, seq)
 
@@ -874,7 +870,7 @@ func (r *Replica) startPhase1(cmds []state.Command, replica int32, instance int3
 		r.maxSeq = seq
 	}
 
-	r.recordInstanceMetadata(r.InstanceSpace[r.Id][instance])
+	r.recordInstanceMetadata(r.InstanceSpace[replica][instance])
 	r.recordCommands(cmds)
 	r.sync()
 
@@ -909,13 +905,13 @@ func (r *Replica) handlePreAccept(preAccept *PreAccept) {
 
 	if inst.Status >= ACCEPTED {
 		if inst.Cmds == nil {
-			r.InstanceSpace[preAccept.LeaderId][preAccept.Instance].Cmds = preAccept.Command
+			r.InstanceSpace[preAccept.Replica][preAccept.Instance].Cmds = preAccept.Command
 			r.updateConflicts(preAccept.Command, preAccept.Replica, preAccept.Instance, preAccept.Seq)
 			r.recordCommands(preAccept.Command)
 			r.sync()
 		}
 
-	} else {
+	} else if inst.vbal != preAccept.Ballot || inst.Status == NONE {
 		seq, deps, changed := r.updateAttributes(preAccept.Command, preAccept.Seq, preAccept.Deps, preAccept.Replica, preAccept.Instance)
 		status := PREACCEPTED_EQ
 		if changed {
@@ -943,13 +939,19 @@ func (r *Replica) handlePreAccept(preAccept *PreAccept) {
 		inst.Seq,
 		inst.Deps,
 		r.CommittedUpTo,
-		inst.Status}
+		inst.Status, r.Id}
 	r.replyPreAccept(preAccept.LeaderId, reply)
 }
 
 func (r *Replica) handlePreAcceptReply(pareply *PreAcceptReply) {
 	inst := r.InstanceSpace[pareply.Replica][pareply.Instance]
+	if inst == nil || inst.lb == nil {
+		return
+	}
 	lb := inst.lb
+	if lb.preparing || lb.tryingToPreAccept || inst.bal != lb.lastTriedBallot {
+		return
+	}
 
 	if pareply.Ballot > r.maxRecvBallot {
 		r.maxRecvBallot = pareply.Ballot
@@ -974,6 +976,10 @@ func (r *Replica) handlePreAcceptReply(pareply *PreAcceptReply) {
 		return
 	}
 
+	if pareply.AcceptorId < 0 || pareply.AcceptorId >= int32(r.N) || lb.preVoters[pareply.AcceptorId] {
+		return
+	}
+	lb.preVoters[pareply.AcceptorId] = true
 	inst.lb.preAcceptOKs++
 
 	if pareply.VBallot > lb.ballot {
@@ -1035,11 +1041,7 @@ func (r *Replica) handlePreAcceptReply(pareply *PreAcceptReply) {
 		if inst.lb.clientProposals != nil && !r.Dreply {
 			for i := 0; i < len(inst.lb.clientProposals); i++ {
 				r.ReplyProposeTS(
-					&defs.ProposeReplyTS{
-						TRUE,
-						inst.lb.clientProposals[i].CommandId,
-						state.NIL(),
-						inst.lb.clientProposals[i].Timestamp},
+					&defs.ProposeReplyTS{OK: TRUE, CommandId: inst.lb.clientProposals[i].CommandId, Value: state.NIL(), Timestamp: inst.lb.clientProposals[i].Timestamp},
 					inst.lb.clientProposals[i].Reply,
 					inst.lb.clientProposals[i].Mutex)
 				r.M.Lock()
@@ -1056,7 +1058,7 @@ func (r *Replica) handlePreAcceptReply(pareply *PreAcceptReply) {
 			r.Stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
 		}
 		r.M.Unlock()
-	} else if inst.lb.preAcceptOKs >= r.Replica.FastQuorumSize()-1 {
+	} else if inst.lb.preAcceptOKs >= r.N/2 && (!precondition || !r.fastQuorumAvailable()) {
 		lb.status = ACCEPTED
 
 		inst.Status = lb.status
@@ -1103,18 +1105,27 @@ func (r *Replica) handleAccept(accept *Accept) {
 		inst.Seq = accept.Seq
 		inst.bal = accept.Ballot
 		inst.vbal = accept.Ballot
+		inst.Status = ACCEPTED
+		inst.Cmds = accept.Command
+		r.updateConflicts(inst.Cmds, accept.Replica, accept.Instance, inst.Seq)
 		r.recordInstanceMetadata(r.InstanceSpace[accept.Replica][accept.Instance])
 		r.sync()
 	}
 
-	reply := &AcceptReply{accept.Replica, accept.Instance, inst.bal}
+	reply := &AcceptReply{accept.Replica, accept.Instance, inst.bal, r.Id}
 	r.replyAccept(accept.LeaderId, reply)
 
 }
 
 func (r *Replica) handleAcceptReply(areply *AcceptReply) {
 	inst := r.InstanceSpace[areply.Replica][areply.Instance]
+	if inst == nil || inst.lb == nil {
+		return
+	}
 	lb := inst.lb
+	if lb.preparing || inst.bal != lb.lastTriedBallot {
+		return
+	}
 
 	if areply.Ballot > r.maxRecvBallot {
 		r.maxRecvBallot = areply.Ballot
@@ -1139,6 +1150,10 @@ func (r *Replica) handleAcceptReply(areply *AcceptReply) {
 		return
 	}
 
+	if areply.AcceptorId < 0 || areply.AcceptorId >= int32(r.N) || lb.acceptVoters[areply.AcceptorId] {
+		return
+	}
+	lb.acceptVoters[areply.AcceptorId] = true
 	inst.lb.acceptOKs++
 
 	if inst.lb.acceptOKs+1 > r.N/2 {
@@ -1152,11 +1167,7 @@ func (r *Replica) handleAcceptReply(areply *AcceptReply) {
 		if inst.lb.clientProposals != nil && !r.Dreply {
 			for i := 0; i < len(inst.lb.clientProposals); i++ {
 				r.ReplyProposeTS(
-					&defs.ProposeReplyTS{
-						TRUE,
-						inst.lb.clientProposals[i].CommandId,
-						state.NIL(),
-						inst.lb.clientProposals[i].Timestamp},
+					&defs.ProposeReplyTS{OK: TRUE, CommandId: inst.lb.clientProposals[i].CommandId, Value: state.NIL(), Timestamp: inst.lb.clientProposals[i].Timestamp},
 					inst.lb.clientProposals[i].Reply,
 					inst.lb.clientProposals[i].Mutex)
 				r.M.Lock()
@@ -1194,13 +1205,9 @@ func (r *Replica) handleCommit(commit *Commit) {
 		return
 	}
 
-	if commit.Ballot < inst.bal {
-		return
-	}
-
 	// FIXME timeout on client side?
 	if commit.Replica == r.Id {
-		if len(commit.Command) == 1 && commit.Command[0].Op == state.NONE && inst.lb.clientProposals != nil {
+		if len(commit.Command) == 1 && commit.Command[0].Op == state.NONE && inst.lb != nil && inst.lb.clientProposals != nil {
 			for _, p := range inst.lb.clientProposals {
 				r.Printf("In %d.%d, re-proposing %s \n", commit.Replica, commit.Instance, p.Command.String())
 				r.ProposeChan <- p
@@ -1209,7 +1216,9 @@ func (r *Replica) handleCommit(commit *Commit) {
 		}
 	}
 
-	inst.bal = commit.Ballot
+	if inst.bal < commit.Ballot {
+		inst.bal = commit.Ballot
+	}
 	inst.vbal = commit.Ballot
 	inst.Cmds = commit.Command
 	inst.Seq = commit.Seq
@@ -1237,6 +1246,7 @@ func (r *Replica) BeTheLeader(args *defs.BeTheLeaderArgs, reply *defs.BeTheLeade
 }
 
 func (r *Replica) startRecoveryForInstance(replica int32, instance int32) {
+	r.active[instanceId{replica, instance}] = true
 	inst := r.InstanceSpace[replica][instance]
 	if inst == nil {
 		inst = r.newInstanceDefault(replica, instance)
@@ -1263,7 +1273,6 @@ func (r *Replica) startRecoveryForInstance(replica int32, instance int32) {
 	r.makeBallot(replica, instance)
 
 	inst.bal = lb.lastTriedBallot
-	inst.vbal = lb.lastTriedBallot
 	preply := &PrepareReply{
 		r.Id,
 		replica,
@@ -1275,6 +1284,7 @@ func (r *Replica) startRecoveryForInstance(replica int32, instance int32) {
 		inst.Seq,
 		inst.Deps}
 
+	lb.prepareVoters[r.Id] = true
 	lb.prepareReplies = append(lb.prepareReplies, preply)
 	lb.leaderResponded = r.Id == replica
 
@@ -1316,7 +1326,13 @@ func (r *Replica) handlePrepare(prepare *Prepare) {
 
 func (r *Replica) handlePrepareReply(preply *PrepareReply) {
 	inst := r.InstanceSpace[preply.Replica][preply.Instance]
+	if inst == nil || inst.lb == nil {
+		return
+	}
 	lb := inst.lb
+	if inst.bal != lb.lastTriedBallot {
+		return
+	}
 
 	if preply.Ballot > r.maxRecvBallot {
 		r.maxRecvBallot = preply.Ballot
@@ -1331,6 +1347,10 @@ func (r *Replica) handlePrepareReply(preply *PrepareReply) {
 		return
 	}
 
+	if preply.AcceptorId < 0 || preply.AcceptorId >= int32(r.N) || lb.prepareVoters[preply.AcceptorId] {
+		return
+	}
+	lb.prepareVoters[preply.AcceptorId] = true
 	lb.prepareReplies = append(lb.prepareReplies, preply)
 	if len(lb.prepareReplies) < r.Replica.SlowQuorumSize() {
 		return
@@ -1338,91 +1358,69 @@ func (r *Replica) handlePrepareReply(preply *PrepareReply) {
 
 	lb.preparing = false
 
-	// Deal with each sub-cases in order of the (corrected) TLA specification
-	// only replies from the highest ballot are taken into account
-	// 1 -> committed/executed
-	// 2 -> accepted
-	// 3 -> pre-accepted > f (not including the leader) and allEqual
-	// 4 -> pre-accepted >= f/2 (not including the leader) and allEqual
-	// 5 -> pre-accepted > 0 and (disagreeing or leader replied or pre-accepted < f/2)
-	// 6 -> none of the above
-	preAcceptCount := 0
-	subCase := 0
-	allEqual := true
-	for _, element := range lb.prepareReplies {
-		if element.VBallot >= lb.ballot {
-			lb.ballot = element.VBallot
-			lb.cmds = element.Command
-			lb.seq = element.Seq
-			lb.deps = element.Deps
-			lb.status = element.Status
-		}
-		if element.AcceptorId == element.Replica {
+	// A promise is not an accepted value. Select the strongest returned
+	// evidence independently of the new recovery ballot.
+	var chosen *PrepareReply
+	for _, reply := range lb.prepareReplies {
+		if reply.AcceptorId == preply.Replica {
 			lb.leaderResponded = true
 		}
-		if element.Status == PREACCEPTED_EQ || element.Status == PREACCEPTED {
-			preAcceptCount++
+		if reply.Status >= COMMITTED {
+			chosen = reply
+			break
+		}
+		if reply.Status == NONE {
+			continue
+		}
+		if chosen == nil || reply.VBallot > chosen.VBallot ||
+			(reply.VBallot == chosen.VBallot && reply.Status > chosen.Status) {
+			chosen = reply
 		}
 	}
-
-	if lb.status >= COMMITTED { // 1
-		subCase = 1
-	} else if lb.status == ACCEPTED { // 2
-		subCase = 2
-	} else if lb.status == PREACCEPTED || lb.status == PREACCEPTED_EQ {
-		for _, element := range lb.prepareReplies {
-			if element.VBallot == lb.ballot && element.Status >= PREACCEPTED {
-				_, _, equal := r.mergeAttributes(lb.seq, lb.deps, element.Seq, element.Deps)
-				if !equal {
-					allEqual = false
-					break
-				}
+	if chosen == nil {
+		r.startPhase1(state.NOOP(), preply.Replica, preply.Instance, lb.lastTriedBallot, lb.clientProposals)
+		return
+	}
+	lb.ballot, lb.cmds, lb.seq, lb.status = chosen.VBallot, chosen.Command, chosen.Seq, chosen.Status
+	lb.deps = append([]int32(nil), chosen.Deps...)
+	if chosen.Status >= COMMITTED {
+		r.handleCommit(&Commit{r.Id, preply.Replica, preply.Instance, chosen.VBallot, chosen.Command, chosen.Seq, chosen.Deps})
+		for q := int32(0); q < int32(r.N); q++ {
+			if q != r.Id {
+				r.SendMsg(q, r.commitRPC, &Commit{r.Id, preply.Replica, preply.Instance, chosen.VBallot, chosen.Command, chosen.Seq, chosen.Deps})
 			}
 		}
-		if preAcceptCount >= r.Replica.SlowQuorumSize()-1 && !lb.leaderResponded && allEqual {
-			subCase = 3
-		} else if preAcceptCount >= r.Replica.SlowQuorumSize()-1 && !lb.leaderResponded && allEqual {
-			subCase = 4
-		} else if preAcceptCount > 0 && (lb.leaderResponded || !allEqual || preAcceptCount < r.Replica.SlowQuorumSize()-1) {
-			subCase = 5
-		} else {
-			panic("Cannot occur")
-		}
-	} else if lb.status == NONE {
-		subCase = 6
-	} else {
-		panic("Status unknown")
+		return
 	}
-
-	// if subCase != 5 {
-	// 	dlog.Printf("In %d.%d, sub-case %d\n", preply.Replica, preply.Instance, subCase)
-	// } else {
-	// 	dlog.Printf("In %d.%d, sub-case %d with (leaderResponded=%t, allEqual=%t, enough=%t)\n",
-	// 		preply.Replica, preply.Instance, subCase, lb.leaderResponded, allEqual, preAcceptCount < r.Replica.SlowQuorumSize()-1)
-	// }
-
-	inst.Cmds = lb.cmds
-	inst.bal = lb.lastTriedBallot
-	inst.vbal = lb.lastTriedBallot
-	inst.Seq = lb.seq
-	inst.Deps = lb.deps
-	inst.Status = lb.status
-
-	if subCase == 1 {
-		// nothing to do
-	} else if subCase == 2 || subCase == 3 {
-		inst.Status = ACCEPTED
-		lb.status = ACCEPTED
-		r.bcastAccept(preply.Replica, preply.Instance)
-	} else if subCase == 4 {
-		lb.tryingToPreAccept = true
-		r.bcastTryPreAccept(preply.Replica, preply.Instance)
-	} else { // subCase 5 and 6
-		cmd := state.NOOP()
-		if inst.lb.cmds != nil {
-			cmd = inst.lb.cmds
+	matching := 0
+	allEqual := true
+	for _, reply := range lb.prepareReplies {
+		if reply.Status != PREACCEPTED && reply.Status != PREACCEPTED_EQ {
+			continue
 		}
-		r.startPhase1(cmd, preply.Replica, preply.Instance, lb.lastTriedBallot, lb.clientProposals)
+		if reply.VBallot != chosen.VBallot || reply.Seq != chosen.Seq || !equal(reply.Deps, chosen.Deps) || !sameCommands(reply.Command, chosen.Command) {
+			allEqual = false
+		} else if reply.AcceptorId != preply.Replica {
+			matching++
+		}
+	}
+	inst.Cmds, inst.Seq, inst.Deps = lb.cmds, lb.seq, append([]int32(nil), lb.deps...)
+	inst.Status, inst.vbal = chosen.Status, chosen.VBallot
+	initial := isInitialBallot(chosen.VBallot, preply.Replica, preply.Instance)
+	if chosen.Status == ACCEPTED || (initial && allEqual && !lb.leaderResponded && matching >= r.N/2) {
+		inst.Status, lb.status = ACCEPTED, ACCEPTED
+		inst.vbal, lb.ballot = lb.lastTriedBallot, lb.lastTriedBallot
+		r.bcastAccept(preply.Replica, preply.Instance)
+	} else if initial && allEqual && !lb.leaderResponded && matching >= (r.F+1)/2 {
+		// Original optimized recovery (TentativePreAccept), including its
+		// published limitations; this is not the EPaxos* recovery algorithm.
+		lb.tryingToPreAccept = true
+		lb.preAcceptOKs, lb.tpaReps = 0, 0
+		lb.preVoters = make(map[int32]bool)
+		r.bcastTryPreAccept(preply.Replica, preply.Instance)
+		r.handleTryPreAccept(&TryPreAccept{r.Id, preply.Replica, preply.Instance, lb.lastTriedBallot, lb.cmds, lb.seq, lb.deps})
+	} else {
+		r.startPhase1(lb.cmds, preply.Replica, preply.Instance, lb.lastTriedBallot, lb.clientProposals)
 	}
 }
 
@@ -1434,33 +1432,28 @@ func (r *Replica) handleTryPreAccept(tpa *TryPreAccept) {
 		inst = r.InstanceSpace[tpa.Replica][tpa.Instance]
 	}
 
-	if inst.bal > tpa.Ballot {
-		r.Printf("Smaller ballot %d < %d\n", tpa.Ballot, inst.bal)
-		return
-	}
-	inst.bal = tpa.Ballot
-
-	confRep := int32(0)
-	confInst := int32(0)
-	confStatus := NONE
-	if inst.Status == NONE { // missing in TLA spec.
+	confRep, confInst := int32(-1), int32(-1)
+	confStatus := int8(NONE)
+	if inst.bal <= tpa.Ballot {
+		inst.bal = tpa.Ballot
 		if conflict, cr, ci := r.findPreAcceptConflicts(tpa.Command, tpa.Replica, tpa.Instance, tpa.Seq, tpa.Deps); conflict {
-			confRep = cr
-			confInst = ci
+			confRep, confInst = cr, ci
+			confStatus = r.InstanceSpace[cr][ci].Status
 		} else {
 			if tpa.Instance > r.crtInstance[tpa.Replica] {
 				r.crtInstance[tpa.Replica] = tpa.Instance
 			}
-			inst.Cmds = tpa.Command
-			inst.Seq = tpa.Seq
-			inst.Deps = tpa.Deps
-			inst.Status = PREACCEPTED
+			inst.Cmds, inst.Seq, inst.Deps = tpa.Command, tpa.Seq, append([]int32(nil), tpa.Deps...)
+			inst.Status, inst.vbal = PREACCEPTED, tpa.Ballot
+			r.updateConflicts(inst.Cmds, tpa.Replica, tpa.Instance, inst.Seq)
 		}
 	}
-
-	rtpa := &TryPreAcceptReply{r.Id, tpa.Replica, tpa.Instance, inst.bal, inst.vbal, confRep, confInst, confStatus}
-
-	r.replyTryPreAccept(tpa.LeaderId, rtpa)
+	reply := &TryPreAcceptReply{r.Id, tpa.Replica, tpa.Instance, inst.bal, inst.vbal, confRep, confInst, confStatus}
+	if tpa.LeaderId == r.Id {
+		r.handleTryPreAcceptReply(reply)
+	} else {
+		r.replyTryPreAccept(tpa.LeaderId, reply)
+	}
 
 }
 
@@ -1533,11 +1526,15 @@ func (r *Replica) handleTryPreAcceptReply(tpar *TryPreAcceptReply) {
 		return
 	}
 
+	if tpar.AcceptorId < 0 || tpar.AcceptorId >= int32(r.N) || lb.preVoters[tpar.AcceptorId] {
+		return
+	}
+	lb.preVoters[tpar.AcceptorId] = true
 	lb.tpaReps++
 
-	if tpar.VBallot == lb.lastTriedBallot {
+	if tpar.VBallot == lb.lastTriedBallot && tpar.ConflictReplica < 0 {
 		lb.preAcceptOKs++
-		if lb.preAcceptOKs >= r.N/2 {
+		if lb.preAcceptOKs >= r.Replica.SlowQuorumSize() {
 			//it's safe to start Accept phase
 			lb.status = ACCEPTED
 			lb.tryingToPreAccept = false
@@ -1556,7 +1553,9 @@ func (r *Replica) handleTryPreAcceptReply(tpar *TryPreAcceptReply) {
 	} else {
 		lb.nacks++
 		lb.possibleQuorum[tpar.AcceptorId] = false
-		lb.possibleQuorum[tpar.ConflictReplica] = false
+		if tpar.ConflictReplica >= 0 && tpar.ConflictReplica < int32(r.N) {
+			lb.possibleQuorum[tpar.ConflictReplica] = false
+		}
 	}
 
 	lb.tpaAccepted = lb.tpaAccepted || (tpar.ConflictStatus >= ACCEPTED) // TLA spec. (page 39)
@@ -1571,7 +1570,7 @@ func (r *Replica) handleTryPreAcceptReply(tpar *TryPreAcceptReply) {
 	// the code below is not checked in TLA (liveness)
 	notInQuorum := 0
 	for q := 0; q < r.N; q++ {
-		if !lb.possibleQuorum[tpar.AcceptorId] {
+		if !lb.possibleQuorum[q] {
 			notInQuorum++
 		}
 	}
@@ -1590,7 +1589,7 @@ func (r *Replica) handleTryPreAcceptReply(tpar *TryPreAcceptReply) {
 		}
 	}
 
-	if lb.tpaReps >= r.N/2 {
+	if lb.tpaReps >= r.Replica.SlowQuorumSize() && tpar.ConflictReplica >= 0 {
 		//defer recovery and update deferred information
 		updateDeferred(tpar.Replica, tpar.Instance, tpar.ConflictReplica, tpar.ConflictInstance)
 		lb.tryingToPreAccept = false
@@ -1631,7 +1630,7 @@ func (r *Replica) newLeaderBookkeepingDefault() *LeaderBookkeeping {
 }
 
 func (r *Replica) newLeaderBookkeeping(p []*defs.GPropose, originalDeps []int32, committedDeps []int32, deps []int32, lastTriedBallot int32, cmds []state.Command, status int8, seq int32) *LeaderBookkeeping {
-	return &LeaderBookkeeping{p, -1, true, 0, 0, 0, originalDeps, committedDeps, nil, true, false, make([]bool, r.N), 0, false, lastTriedBallot, cmds, status, seq, deps, false}
+	return &LeaderBookkeeping{clientProposals: p, ballot: lastTriedBallot, allEqual: true, originalDeps: originalDeps, committedDeps: committedDeps, preparing: true, possibleQuorum: allPossible(r.N), lastTriedBallot: lastTriedBallot, cmds: cmds, status: status, seq: seq, deps: deps, preVoters: map[int32]bool{r.Id: true}, acceptVoters: map[int32]bool{r.Id: true}, prepareVoters: make(map[int32]bool), phaseStarted: time.Now()}
 }
 
 func (r *Replica) newNilDeps() []int32 {

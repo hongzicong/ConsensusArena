@@ -105,7 +105,9 @@ func (c *Client) sendFaultProposal(cmd defs.Propose) {
 		// injection schedule; the application pays the actual failover delay.
 		if time.Since(c.fault.lastLookup) >= time.Second {
 			c.fault.lastLookup = time.Now()
-			r := &defs.GetLeaderReply{LeaderId: -1}
+			// gob omits zero fields. A fresh zero reply is required to decode
+			// replica 0; the master explicitly returns -1 when no leader exists.
+			r := &defs.GetLeaderReply{}
 			if err := c.call(c.master, "Master.GetLeader", &defs.GetLeaderArgs{}, r); err == nil && r.LeaderId >= 0 && r.LeaderId < len(c.servers) && !c.fault.dead[r.LeaderId].Load() {
 				c.LeaderId = r.LeaderId
 				c.fault.replyFrom.Store(int32(r.LeaderId))
@@ -174,14 +176,12 @@ func faultPhase(sec float64) string {
 	switch {
 	case sec < 0:
 		return "warmup"
-	case sec < 20:
+	case sec < 10:
 		return "normal"
-	case sec < 40:
-		return "slow"
-	case sec < 60:
-		return "restored"
-	default:
+	case sec < 35:
 		return "crashed"
+	default:
+		return "maximum_crashes"
 	}
 }
 
@@ -225,7 +225,7 @@ func (c *BufferClient) loopFault(getKey func() int64) {
 	var mu sync.Mutex
 	stats := faultBucket{}
 	cohorts := map[string]*faultBucket{}
-	for _, p := range []string{"warmup", "normal", "slow", "restored", "crashed"} {
+	for _, p := range []string{"warmup", "normal", "crashed", "maximum_crashes"} {
 		for _, op := range []string{"READ", "UPDATE"} {
 			cohorts[p+"/"+op] = &faultBucket{}
 		}

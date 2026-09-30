@@ -286,6 +286,7 @@ func (master *Master) registrationIndex(alias, addrPort string) (int, error) {
 func (master *Master) GetLeader(args *defs.GetLeaderArgs, reply *defs.GetLeaderReply) error {
 	master.lock.Lock()
 	defer master.lock.Unlock()
+	reply.LeaderId = -1 // gob must transmit an explicit nonzero no-leader sentinel.
 
 	for i, l := range master.leader {
 		if l {

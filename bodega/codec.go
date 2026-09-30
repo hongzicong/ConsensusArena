@@ -13,7 +13,7 @@ import (
 const maxFrame = 64 << 20
 const compactCommitFlag uint32 = 1 << 31
 const compactCommitSize = 33
-const wireVersion = 2
+const wireVersion = 3
 
 type encoder struct{ b []byte }
 
@@ -96,18 +96,22 @@ func (m *message) Marshal(w io.Writer) {
 		e.u64(m.Sequence)
 		e.u64(m.Threshold)
 	case prepare:
+		e.u64(m.PrepareStart)
 	case promise:
+		e.u64(m.PrepareStart)
 		e.u32(uint32(m.Part))
 		e.u32(uint32(m.Parts))
 		e.u32(uint32(len(m.Entries)))
 		for _, v := range m.Entries {
 			e.entry(v)
 		}
-	case accept:
+	case accept, committedEntry:
 		e.entry(m.Entry)
-	case accepted:
+	case accepted, acceptNote:
 		e.u64(m.Entry.Slot)
 		e.u64(m.Prefix)
+	case leaseRevoke, leaseRevoked:
+		e.u64(m.Sequence)
 	case forward:
 		e.request(m.Request)
 	case result:
@@ -264,7 +268,9 @@ func (m *message) Unmarshal(r io.Reader) error {
 		m.Sequence = d.u64()
 		m.Threshold = d.u64()
 	case prepare:
+		m.PrepareStart = d.u64()
 	case promise:
+		m.PrepareStart = d.u64()
 		m.Part = int(d.u32())
 		m.Parts = int(d.u32())
 		count := d.count(51)
@@ -277,11 +283,13 @@ func (m *message) Unmarshal(r io.Reader) error {
 		if m.Parts < 1 || m.Part >= m.Parts {
 			d.err = fmt.Errorf("bodega: invalid snapshot part")
 		}
-	case accept:
+	case accept, committedEntry:
 		m.Entry = d.entry()
-	case accepted:
+	case accepted, acceptNote:
 		m.Entry = entry{Slot: d.u64(), Ballot: m.Roster.Ballot}
 		m.Prefix = d.u64()
+	case leaseRevoke, leaseRevoked:
+		m.Sequence = d.u64()
 	case forward:
 		m.Request = d.request()
 	case result:

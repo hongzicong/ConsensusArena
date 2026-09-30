@@ -83,7 +83,22 @@ func (e *engine) sendRepairWindow(peer int, start, window uint64) uint64 {
 	slot, size := start, 0
 	for ; slot <= end; slot++ {
 		v, ok := e.log[slot]
-		if !ok || v.Ballot != e.current.Ballot {
+		if !ok {
+			continue
+		}
+		// History before the Prepare suffix is already chosen, and must not be
+		// re-voted merely to catch up a lagging follower in a newer ballot.
+		if slot <= e.prefix && v.Ballot != e.current.Ballot {
+			bytes := entryBytes(v)
+			if size > 0 && size+bytes > maxBatchBytes {
+				break
+			}
+			size += bytes
+			e.stats.CommitRepairEntries++
+			e.emit(peer, message{Kind: committedEntry, Entry: v})
+			continue
+		}
+		if v.Ballot != e.current.Ballot {
 			continue
 		}
 		// An acknowledged value survives for this ballot in the crash-stop

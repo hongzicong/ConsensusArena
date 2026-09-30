@@ -48,6 +48,7 @@ type PreAcceptReply struct {
 	Deps          []int32
 	CommittedDeps []int32
 	Status        int8
+	AcceptorId    int32
 }
 
 type PreAcceptOK struct {
@@ -61,12 +62,14 @@ type Accept struct {
 	Ballot   int32
 	Seq      int32
 	Deps     []int32
+	Command  []state.Command
 }
 
 type AcceptReply struct {
-	Replica  int32
-	Instance int32
-	Ballot   int32
+	Replica    int32
+	Instance   int32
+	Ballot     int32
+	AcceptorId int32
 }
 
 type Commit struct {
@@ -423,6 +426,7 @@ func (p *AcceptCache) Put(t *Accept) {
 	p.mu.Unlock()
 }
 func (t *Accept) Marshal(wire io.Writer) {
+	writeCommandBatch(wire, t.Command)
 	var b [20]byte
 	var bs []byte
 	bs = b[:20]
@@ -469,6 +473,11 @@ func (t *Accept) Marshal(wire io.Writer) {
 }
 
 func (t *Accept) Unmarshal(rr io.Reader) error {
+	var batchErr error
+	t.Command, batchErr = readCommandBatch(rr)
+	if batchErr != nil {
+		return batchErr
+	}
 	var wire byteReader
 	var ok bool
 	if wire, ok = rr.(byteReader); !ok {
@@ -537,6 +546,7 @@ func (p *AcceptReplyCache) Put(t *AcceptReply) {
 	p.mu.Unlock()
 }
 func (t *AcceptReply) Marshal(wire io.Writer) {
+	_ = binary.Write(wire, binary.LittleEndian, t.AcceptorId)
 	var b [12]byte
 	var bs []byte
 	bs = b[:12]
@@ -559,6 +569,9 @@ func (t *AcceptReply) Marshal(wire io.Writer) {
 }
 
 func (t *AcceptReply) Unmarshal(wire io.Reader) error {
+	if err := binary.Read(wire, binary.LittleEndian, &t.AcceptorId); err != nil {
+		return err
+	}
 	var b [12]byte
 	var bs []byte
 	bs = b[:12]
@@ -820,6 +833,7 @@ func (p *PreAcceptReplyCache) Put(t *PreAcceptReply) {
 	p.mu.Unlock()
 }
 func (t *PreAcceptReply) Marshal(wire io.Writer) {
+	_ = binary.Write(wire, binary.LittleEndian, t.AcceptorId)
 	var b [21]byte
 	var bs []byte
 	bs = b[:21]
@@ -881,6 +895,9 @@ func (t *PreAcceptReply) Marshal(wire io.Writer) {
 }
 
 func (t *PreAcceptReply) Unmarshal(rr io.Reader) error {
+	if err := binary.Read(rr, binary.LittleEndian, &t.AcceptorId); err != nil {
+		return err
+	}
 	var wire byteReader
 	var ok bool
 	if wire, ok = rr.(byteReader); !ok {

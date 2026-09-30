@@ -22,6 +22,11 @@ const (
 	forward
 	result
 	repairRequest
+	leaseRevoke
+	leaseRevoked
+	acceptNote
+	committedEntry
+	kindCount
 )
 
 type roster struct {
@@ -69,6 +74,7 @@ type message struct {
 	ReadPrefix                  uint64 // leader-certified majority accepted prefix
 	CommitPrefix, CommitSlot    uint64 // inclusive prefix and optional out-of-order slot
 	RepairStart                 uint64
+	PrepareStart                uint64
 	Part, Parts                 int
 	Entry                       entry
 	Entries                     []entry
