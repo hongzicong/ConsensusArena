@@ -203,7 +203,9 @@ The SCITAS experiment uses these configuration files:
 
 - `slurm/workload.conf`: five replicas, ten regional clients, protocol and
   workload parameters.
-- `latency.conf`: a 15-endpoint, 225-entry round-trip latency matrix.
+- `slurm/cloudping-1y-p50.csv`: all 35 CloudPing regions and 1,225 directed RTT values, using the website's 1 Year / P50 selection. The raw JSON and fetch metadata are stored beside it.
+- `slurm/topologies.json`: three fixed replica layouts, with the same ten client regions. Replica counts 5/9/13 use prefixes of each layout.
+- `latency.conf`: the generated 5-replica topology-1 RTT matrix; the harness generates a separate matrix for every size and topology.
 
 Each protocol's `plan.go` selects its initial leader, quorums, responders, or
 client ingress from the topology and workload at startup. All participants use
@@ -211,8 +213,7 @@ the same deployment configuration and topology inputs; no generated `quorum.conf
 or `leader.conf` is required. The topology matrix defaults to `latency.conf`
 beside the deployment configuration, or can be set with `topology: path` relative
 to that configuration. Placement planning does not inject network delay;
-Toxiproxy applies the latency matrix separately in experiments. See
-[topology selection](slurm/TOPOLOGY.md) for placement policies and plan inspection.
+Toxiproxy applies the latency matrix separately in experiments. Use `python slurm/topology.py inspect --replicas 5 --topology 1` to inspect membership; `-run plan` inspects each protocol's placement choices.
 
 The workload is open-loop. Each logical client generates requests according to
 a Poisson process. Keys are selected with a Zipfian distribution.
@@ -226,7 +227,7 @@ clones: 0
 arrivalRate: 2000
 warmup: 5s
 duration: 10s
-repetitions: 3
+repetitions: 1
 keyCount: 1000000
 zipfSkew: 0.9
 workloadSeed: 1
@@ -248,10 +249,10 @@ These are ratio-only profiles rather than complete YCSB semantics. In
 particular, they use ConsensusArena's blob values instead of field-oriented
 records.
 
-Every profile runs three repetitions. Each repetition generates warm-up traffic
+Every profile runs once on each of three fixed topologies. Each run generates warm-up traffic
 for 5 seconds without recording latency, records requests generated during the
 following 10 seconds, and then waits for all in-flight replies. The Slurm job
-restarts the master, replicas, and clients before every repetition.
+restarts the master, replicas, and clients before every run. All protocols use the same topology catalog and frozen CloudPing snapshot; client regions, workload seed and offered load remain fixed. Results carry `topology_id`, `repetition=1` and topology/snapshot SHA256 values. Cross-topology ranges are not repeated-run confidence intervals. Historical measurements retain their original repetition labels.
 
 `workloadSeed` makes request generation reproducible across protocol runs. Each
 logical client derives a stable stream seed from the base seed, its configured
@@ -352,15 +353,16 @@ Important output paths:
 
 | Path | Contents |
 | --- | --- |
-| `summary.csv` | Combined averages and sample standard deviations, keyed by YCSB profile, read/write ratio, region, and operation. |
+| `summary.csv` | Per-topology summaries keyed by replica count, topology ID, protocol, profile, region and operation. |
+| `baseline-latency.csv` | Portable overall latency rows with explicit topology IDs and SHA256 provenance; merge protocol outputs for the report. |
 | `repetition-summaries.csv` | Combined per-repetition rows with separate `READ`, `UPDATE`, and `ALL` operation values. |
-| `ycsb-X/summary.csv` | Three-run per-region, per-operation averages and sample standard deviations for profile `X`. |
-| `ycsb-X/repetition-summaries.csv` | All per-repetition, per-operation rows for profile `X`. |
-| `ycsb-X/repetition-XX/results/summary.csv` | Per-region READ, UPDATE, and ALL latency statistics for one repetition. |
-| `ycsb-X/repetition-XX/results/` | Raw measured client latency logs; warm-up latency is excluded. |
-| `ycsb-X/repetition-XX/stdout/` | Master, replica, and client process output. |
-| `ycsb-X/repetition-XX/logs/` | Application logs. |
-| `ycsb-X/repetition-XX/metadata.txt` | Profile, write ratio, preload status, and verified preload digest. |
+| `replicas-N/topology-T/ycsb-X/summary.csv` | One-run per-region and per-operation summary for topology `T`. |
+| `replicas-N/topology-T/ycsb-X/repetition-summaries.csv` | All per-repetition, per-operation rows for profile `X`. |
+| `replicas-N/topology-T/ycsb-X/repetition-01/results/summary.csv` | Per-region READ, UPDATE, and ALL latency statistics for the topology's single run. |
+| `replicas-N/topology-T/ycsb-X/repetition-01/results/` | Raw measured client latency logs; warm-up latency is excluded. |
+| `replicas-N/topology-T/ycsb-X/repetition-01/stdout/` | Master, replica, and client process output. |
+| `replicas-N/topology-T/ycsb-X/repetition-01/logs/` | Application logs. |
+| `replicas-N/topology-T/ycsb-X/repetition-01/metadata.txt` | Topology/snapshot provenance, profile, write ratio, preload status, and verified preload digest. |
 | `config/` | Generated physical-address configuration and latency matrix. |
 | `metadata.txt` | Job ID, timestamps, binary path, and repository path. |
 

@@ -4,6 +4,8 @@ package bodega
 import (
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -66,7 +68,7 @@ func (e *engine) flushBatch(now time.Time) {
 	}
 	rs := e.batch
 	e.batch, e.batchBytes = nil, 0
-	e.batchIDs = map[requestID]bool{}
+	e.batchIDs = map[defs.RequestID]bool{}
 	if !e.active() || e.current.Leader != e.id || !e.prepared {
 		for _, r := range rs {
 			e.enqueue(r)
@@ -98,13 +100,13 @@ func (e *engine) proposeBatch(rs []request, now time.Time) {
 		e.stats.MaxBatchCommands = uint64(len(rs))
 	}
 	e.acceptEntry(v)
-	e.votes[v.Slot] = bit(e.id)
+	e.votes[v.Slot] = replicaset.Set(0).With(e.id)
 	e.broadcast(message{Kind: accept, Entry: v})
 	e.tryCommit(v.Slot, now)
 }
 
 // A cancellation only retires read delivery state, never an accepted log value.
-func (e *engine) cancelRead(id requestID) {
+func (e *engine) cancelRead(id defs.RequestID) {
 	e.dropHeld(id)
 	if r, ok := e.queued[id]; ok && r.Proposal.Command.Op == state.GET {
 		delete(e.queued, id)
@@ -121,7 +123,7 @@ func (e *engine) cancelRead(id requestID) {
 	}
 }
 
-func (e *engine) dropHeld(id requestID) {
+func (e *engine) dropHeld(id defs.RequestID) {
 	if h, ok := e.held[id]; ok {
 		delete(e.held, id)
 		e.holdCounts[h.Slot]--

@@ -1,7 +1,6 @@
 package rpc
 
 import (
-	"bufio"
 	"io"
 )
 
@@ -48,23 +47,4 @@ func (t *Table) Register(obj Serializable, notify chan Serializable) uint8 {
 func (t *Table) Get(id uint8) (Pair, bool) {
 	p, exists := t.pairs[id]
 	return p, exists
-}
-
-// ReadStream reads tagged messages on one stream. Decode owns message formats
-// and code validation; receive owns identity checks and event delivery. False
-// stops normally. The caller owns connection closure and failure reporting.
-func ReadStream[T any](r *bufio.Reader, decode func(uint8, io.Reader) (T, error), receive func(T) bool) error {
-	for {
-		code, err := r.ReadByte()
-		if err != nil {
-			return err
-		}
-		msg, err := decode(code, r)
-		if err != nil {
-			return err
-		}
-		if !receive(msg) {
-			return nil
-		}
-	}
 }

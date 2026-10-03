@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -114,11 +115,11 @@ func (c *BufferClient) UniqueKeysFor(ordinal, clients int) error {
 
 func (c *BufferClient) RegisterReply(val state.Value, seqnum int32) {
 	t := time.Now()
-	c.Reply <- &ReqReply{
+	fastrpc.Deliver(c.Reply, &ReqReply{
 		Val:    val,
 		Seqnum: int(seqnum),
 		Time:   t,
-	}
+	}, nil)
 }
 
 func (c *BufferClient) Write(key int64, val []byte) {
@@ -296,26 +297,19 @@ func (c *BufferClient) WaitReplies(waitFrom int) {
 		return
 	}
 	go func() {
-		for {
-			r, err := c.GetReplyFrom(waitFrom)
-			if err != nil {
-				if errors.Is(err, net.ErrClosed) {
-					c.Println("warning: calling GetReplyFrom after closing connections. Not a big deal")
-				} else {
-					c.Println(err)
-				}
-				break
-			}
+		err := c.ReadReplies(waitFrom, func(r *defs.ProposeReplyTS) bool {
 			if r.OK != defs.TRUE {
 				c.Println("Faulty reply")
-				break
+				return false
 			}
-			val := r.Value
-			seqnum := r.CommandId
-			c.Reply <- &ReqReply{
-				Val:    val,
-				Seqnum: int(seqnum),
-				Time:   time.Now(),
+			c.RegisterReply(r.Value, r.CommandId)
+			return true
+		})
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				c.Println("warning: calling GetReplyFrom after closing connections. Not a big deal")
+			} else {
+				c.Println(err)
 			}
 		}
 	}()

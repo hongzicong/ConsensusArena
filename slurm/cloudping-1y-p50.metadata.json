@@ -1,0 +1,14 @@
+{
+  "source_url": "https://www.cloudping.co/api/latencies?percentile=p_50&timeframe=1Y",
+  "website": "https://www.cloudping.co/",
+  "fetched_at_utc": "2026-10-03T20:39:05.868221+00:00",
+  "timeframe": "1Y",
+  "percentile": "P50",
+  "unit": "RTT milliseconds",
+  "region_count": 35,
+  "entry_count": 1225,
+  "orientation": "data[source_region][destination_region]",
+  "raw_sha256": "f03de2265b7f0f42e5927de6f0165fab5956b4593cb13d2af626f11f89384eef",
+  "source_diagonal": "preserved; runtime self-process RTT is zero",
+  "simulation": "ceil(directed RTT / 2) milliseconds per Toxiproxy stream direction"
+}

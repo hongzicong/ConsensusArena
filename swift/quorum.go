@@ -1,10 +1,16 @@
-package replica
+package swift
 
-import "fmt"
+// Swift's leader-containing quorum families and ballot mapping. Replica identity
+// storage is shared; quorum selection and thresholds remain protocol policy.
+import (
+	"fmt"
+
+	"github.com/hongzicong/ConsensusArena/replicaset"
+)
 
 type QuorumI interface {
 	Size() int
-	Contains(int32) bool
+	Contains(int) bool
 }
 
 type Majority int
@@ -17,7 +23,7 @@ func (m Majority) Size() int {
 	return int(m)
 }
 
-func (m Majority) Contains(int32) bool {
+func (m Majority) Contains(int) bool {
 	return true
 }
 
@@ -31,60 +37,15 @@ func (m ThreeQuarters) Size() int {
 	return int(m)
 }
 
-func (m ThreeQuarters) Contains(int32) bool {
+func (m ThreeQuarters) Contains(int) bool {
 	return true
 }
 
-type Quorum map[int32]struct{}
+type Quorum = replicaset.Set
 
 type QuorumsOfLeader map[int32]Quorum
 
 type QuorumSet map[int32]QuorumsOfLeader
-
-func NewQuorum(size int) Quorum {
-	return make(map[int32]struct{}, size)
-}
-
-func NewQuorumOfAll(size int) Quorum {
-	q := NewQuorum(size)
-
-	for i := int32(0); i < int32(size); i++ {
-		q[i] = struct{}{}
-	}
-
-	return q
-}
-
-func (q Quorum) Size() int {
-	return len(q)
-}
-
-func (q Quorum) Contains(repId int32) bool {
-	_, exists := q[repId]
-	return exists
-}
-
-func (q Quorum) copy() Quorum {
-	nq := NewQuorum(len(q))
-
-	for cmdId := range q {
-		nq[cmdId] = struct{}{}
-	}
-
-	return nq
-}
-
-func (q1 Quorum) Equals(q2 Quorum) bool {
-	if len(q1) != len(q2) {
-		return false
-	}
-	for r := range q1 {
-		if !q2.Contains(r) {
-			return false
-		}
-	}
-	return true
-}
 
 type QuorumSystem struct {
 	qs      QuorumSet
@@ -92,16 +53,14 @@ type QuorumSystem struct {
 }
 
 // NewQuorumSystem binds the protocol's initial plan to the existing ballot space.
-func NewQuorumSystem(quorumSize int, r *Replica, initial Quorum, leader int32) (*QuorumSystem, error) {
-	if initial.Size() != quorumSize || !initial.Contains(leader) {
+func NewQuorumSystem(quorumSize, repNum int, initial Quorum, leader int32) (*QuorumSystem, error) {
+	if initial.Size() != quorumSize || !initial.Contains(int(leader)) {
 		return nil, fmt.Errorf("invalid initial Swift quorum")
 	}
-	for id := range initial {
-		if id < 0 || int(id) >= r.N {
-			return nil, fmt.Errorf("invalid quorum member %d", id)
-		}
+	if repNum < 1 || repNum > replicaset.MaxSize || !replicaset.All(repNum).Covers(initial) {
+		return nil, fmt.Errorf("invalid quorum membership %d", repNum)
 	}
-	qs := NewQuorumSet(quorumSize, r.N)
+	qs := NewQuorumSet(quorumSize, repNum)
 	ballot := qs.BallotOf(leader, initial)
 	if ballot < 0 {
 		return nil, fmt.Errorf("initial quorum has no ballot")
@@ -140,7 +99,7 @@ func NewQuorumSet(quorumSize, repNum int) QuorumSet {
 
 func newQuorumSetAdvance(quorumSize, repNum int, treat func(int32, int32, Quorum)) QuorumSet {
 	ids := make([]int32, repNum)
-	q := NewQuorum(quorumSize)
+	q := replicaset.New()
 	qs := make(map[int32]QuorumsOfLeader, repNum)
 
 	for id := range ids {
@@ -162,7 +121,7 @@ func (qs QuorumSet) AQ(ballot int32) Quorum {
 
 func (qs QuorumSet) BallotOf(leader int32, q Quorum) int32 {
 	for qid, qj := range qs[leader] {
-		if qj.Equals(q) {
+		if qj.Equal(q) {
 			return qid*int32(len(qs)) + leader
 		}
 	}
@@ -175,17 +134,25 @@ func subsets(ids []int32, repNum, quorumSize, i int, q Quorum,
 	if quorumSize == 0 {
 		for repId := int32(0); repId < int32(repNum); repId++ {
 			length := int32(len(qs[repId]))
-			_, exists := q[repId]
+			exists := q.Contains(int(repId))
 			if exists {
-				qs[repId][length] = q.copy()
+				qs[repId][length] = q
 				treat(repId, length, q)
 			}
 		}
 	}
 
 	for j := i; j < repNum; j++ {
-		q[ids[j]] = struct{}{}
+		q.Add(int(ids[j]))
 		subsets(ids, repNum, quorumSize-1, j+1, q, qs, treat)
-		delete(q, ids[j])
+		q.Remove(int(ids[j]))
 	}
+}
+
+func Leader(ballot int32, repNum int) int32 {
+	return ballot % int32(repNum)
+}
+
+func NextBallotOf(rid, oldBallot int32, repNum int) int32 {
+	return (oldBallot/int32(repNum)+1)*int32(repNum) + rid
 }

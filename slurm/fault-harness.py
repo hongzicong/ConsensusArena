@@ -18,14 +18,14 @@ import subprocess
 import sys
 import time
 
+from topology import load_layout
+
 REPLICA_COUNT = int(os.environ.get('CONSENSUSARENA_REPLICAS', '5').split(':')[0])
 if REPLICA_COUNT not in (5, 9, 13):
     raise ValueError('replica count must be 5, 9 or 13')
-REPLICAS = ['ap-south-1', 'ap-northeast-1', 'eu-west-3', 'us-west-1', 'af-south-1',
-            'eu-west-1', 'us-east-1', 'ap-southeast-2', 'sa-east-1',
-            'ap-east-1', 'ca-central-1', 'us-east-2', 'us-west-2'][:REPLICA_COUNT]
-CLIENTS = ['ap-east-1', 'ap-northeast-1', 'ap-southeast-2', 'eu-west-1',
-           'ca-central-1', 'sa-east-1', 'us-east-1', 'us-east-2', 'us-west-1', 'us-west-2']
+LAYOUT = load_layout(REPLICA_COUNT)
+TOPOLOGY_ID = LAYOUT['topology_id']
+REPLICAS, CLIENTS = LAYOUT['replicas'], LAYOUT['clients']
 MASTER = REPLICA_COUNT + len(CLIENTS)
 TASKS = MASTER + 1
 NODES = (TASKS + 7) // 8
@@ -210,7 +210,9 @@ def run_one(repo, base, config_dir, protocol, profile, repetition, binary, toxi,
         [str(binary),'-run','plan','-config',str(run/'config/cluster.conf')],
         text=True,timeout=7200))
     write_json(run/'plan.json',selection)
-    write_json(run/'metadata.json',dict(protocol=protocol,profile=profile,repetition=repetition,replicas=REPLICA_COUNT,binary_sha256=sha(binary),options=options,timeline_origin='run_start',warmup_s=WARMUP_S,observation_s=OBSERVATION_S,measurement_s=MEASUREMENT_S,crash_s=FIRST_CRASH_S,max_crash_s=MAX_CRASH_S,protocol_selection=selection))
+    topology=json.loads((base/'logical/topology.json').read_text())
+    write_json(run/'topology.json',topology)
+    write_json(run/'metadata.json',dict(topology_id=TOPOLOGY_ID, topology_sha256=topology['topology_sha256'], latency_snapshot_sha256=topology['latency_snapshot_sha256'], experiment_design='three_topologies_one_run_each', protocol=protocol,profile=profile,repetition=repetition,replicas=REPLICA_COUNT,binary_sha256=sha(binary),options=options,timeline_origin='run_start',warmup_s=WARMUP_S,observation_s=OBSERVATION_S,measurement_s=MEASUREMENT_S,crash_s=FIRST_CRASH_S,max_crash_s=MAX_CRASH_S,protocol_selection=selection))
     args = step_args() + ['--kill-on-bad-exit=1',
             'python3',str(repo/'slurm/fault-harness.py'),'rank',str(repo),str(run),str(binary),str(toxi)]
     with open(run/'stdout/srun.out','w') as out: runner = subprocess.Popen(args,stdout=out,stderr=subprocess.STDOUT)
@@ -319,10 +321,12 @@ def coordinator_one(repo):
     options=json.loads(os.environ.get('FAULT_WORKLOAD_OVERRIDES','{}'))
     if 'FAULT_ARRIVAL_RATE' in os.environ:
         options['arrivalRate']=float(os.environ['FAULT_ARRIVAL_RATE'])
-    repetitions=int(os.environ.get('FAULT_REPETITIONS','3'))
+    repetitions=int(os.environ.get('FAULT_REPETITIONS','1'))
+    if repetitions != 1: raise ValueError('each topology must run exactly once')
     profiles=os.environ.get('CONSENSUSARENA_YCSB_PROFILES','A:B:C').split(':')
     write_json(base/'metadata.json',dict(job_id=os.environ['SLURM_JOB_ID'],protocol=protocol,binary_sha256=sha(binary),toxiproxy_sha256=sha(toxi),
-             replicas=REPLICA_COUNT,profiles=profiles,repetitions=repetitions,
+             replicas=REPLICA_COUNT,topology_id=TOPOLOGY_ID,profiles=profiles,repetitions=repetitions,
+             experiment_design='three_topologies_one_run_each',
              selection_scope='protocol plan.go from per-repetition inputs after workload overrides',
              timeline_origin='run_start',warmup_s=WARMUP_S,observation_s=OBSERVATION_S,crash_s=FIRST_CRASH_S,measurement_s=MEASUREMENT_S,
              max_crash_s=MAX_CRASH_S,max_total_failures=(REPLICA_COUNT-1)//2,
@@ -347,13 +351,14 @@ def coordinator(repo):
         raise RuntimeError('insufficient Slurm allocation for requested fault sweep')
     base=Path(os.environ.get('CONSENSUSARENA_RUN_DIR','/scratch/%s/consensusarena-fault-%s'%(os.environ['USER'],os.environ['SLURM_JOB_ID'])))
     base.mkdir(parents=True,exist_ok=False)
-    write_json(base/'metadata.json',dict(job_id=os.environ['SLURM_JOB_ID'],protocol=os.environ['CONSENSUSARENA_PROTOCOL'].lower(),replica_counts=counts,timeline_origin='run_start',warmup_s=WARMUP_S,observation_s=OBSERVATION_S,crash_s=FIRST_CRASH_S,max_crash_s=MAX_CRASH_S,measurement_s=MEASUREMENT_S))
+    write_json(base/'metadata.json',dict(job_id=os.environ['SLURM_JOB_ID'],protocol=os.environ['CONSENSUSARENA_PROTOCOL'].lower(),replica_counts=counts,topology_ids=[1,2,3],experiment_design='three_topologies_one_run_each',timeline_origin='run_start',warmup_s=WARMUP_S,observation_s=OBSERVATION_S,crash_s=FIRST_CRASH_S,max_crash_s=MAX_CRASH_S,measurement_s=MEASUREMENT_S))
     outcomes=[]
     for count in counts:
-        env=dict(os.environ,CONSENSUSARENA_REPLICAS=str(count),CONSENSUSARENA_RUN_DIR=str(base/('replicas-'+str(count))))
-        completed=subprocess.run([sys.executable,str(repo/'slurm/fault-harness.py'),'coordinator-one',str(repo)],env=env)
-        outcomes.append(dict(replicas=count,returncode=completed.returncode))
-        write_json(base/'size-outcomes.json',outcomes)
+        for topology_id in (1,2,3):
+            env=dict(os.environ,CONSENSUSARENA_REPLICAS=str(count),CONSENSUSARENA_TOPOLOGY=str(topology_id),CONSENSUSARENA_RUN_DIR=str(base/('replicas-'+str(count))/('topology-'+str(topology_id))))
+            completed=subprocess.run([sys.executable,str(repo/'slurm/fault-harness.py'),'coordinator-one',str(repo)],env=env)
+            outcomes.append(dict(replicas=count,topology_id=topology_id,returncode=completed.returncode))
+            write_json(base/'size-outcomes.json',outcomes)
     subprocess.run([sys.executable,str(repo/'slurm/summarize-fault.py'),str(base)],check=True)
     print('Fault sweep completed: '+str(base),flush=True)
     if any(o['returncode'] for o in outcomes): sys.exit(2)

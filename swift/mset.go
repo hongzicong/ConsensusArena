@@ -1,5 +1,6 @@
-package replica
+package swift
 
+// Swift acknowledgement matching, including its distinguished leader message.
 type MsgSetHandler func(interface{}, []interface{})
 
 type MsgSet struct {
@@ -43,7 +44,7 @@ func (ms *MsgSet) ReinitMsgSet(q QuorumI, accept func(interface{}, interface{}) 
 }
 
 func (ms *MsgSet) Add(repId int32, isLeader bool, msg interface{}) bool {
-	if !ms.q.Contains(repId) {
+	if !ms.q.Contains(int(repId)) {
 		return false
 	}
 

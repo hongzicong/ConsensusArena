@@ -41,11 +41,11 @@ lookup_rtt_ms() {
         "$latency_matrix")
     case "$duration" in
         *ms) duration=${duration%ms} ;;
-        *s) duration=$(( ${duration%s} * 1000 )) ;;
-        *) echo "Toxiproxy requires an integer ms or s latency, got $duration" >&2; return 1 ;;
+        *s) duration=$(awk -v seconds="${duration%s}" 'BEGIN { printf "%.6f", seconds * 1000 }') ;;
+        *) echo "Toxiproxy requires ms or s latency, got $duration" >&2; return 1 ;;
     esac
-    [[ "$duration" =~ ^[0-9]+$ ]] || {
-        echo "Toxiproxy requires an integer latency, got $duration" >&2
+    [[ "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+        echo "Toxiproxy requires a nonnegative latency, got $duration" >&2
         return 1
     }
     printf '%s\n' "$duration"
@@ -138,8 +138,8 @@ while read -r latency_endpoint target_endpoint; do
     proxy_port=$((proxy_port_base + target_index))
     upstream_ms=$(lookup_rtt_ms "$source_endpoint" "$latency_endpoint")
     downstream_ms=$(lookup_rtt_ms "$latency_endpoint" "$source_endpoint")
-    upstream_ms=$(( (upstream_ms + 1) / 2 ))
-    downstream_ms=$(( (downstream_ms + 1) / 2 ))
+    upstream_ms=$(awk -v rtt="$upstream_ms" 'BEGIN { v=rtt/2; print int(v)+(v>int(v)) }')
+    downstream_ms=$(awk -v rtt="$downstream_ms" 'BEGIN { v=rtt/2; print int(v)+(v>int(v)) }')
 
     data_endpoint=$target_endpoint
     for traffic in "${traffic_types[@]}"; do

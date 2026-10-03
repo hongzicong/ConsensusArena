@@ -189,7 +189,7 @@ func (c *core) consumeGraph(m message, x *slotState, edge graphEdge) {
 				if at == ss[len(ss)-1].Time {
 					ballot = uint64(c.n + c.plan.Leaders[p])
 				}
-				c.mergeReport(x, nodeReport{From: w, Proposer: p, Ballot: ballot, Mask: state.Knowledge[w], Time: int64(at), Value: x.values[p]})
+				c.mergeReport(x, nodeReport{From: w, Proposer: p, Ballot: ballot, Mask: uint64(state.Knowledge[w]), Time: int64(at), Value: x.values[p]})
 			}
 		}
 		if bits.OnesCount64(x.participants) > 1 {

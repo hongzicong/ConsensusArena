@@ -18,13 +18,13 @@ import (
 type protocolRuntime struct {
 	*transportRuntime
 	Core          *Core
-	proposals     map[Key]*defs.GPropose
+	proposals     map[defs.RequestID]*defs.GPropose
 	ReplyMessage  func(Request, state.Value, bool, int32) (uint8, fastrpc.Serializable)
 	RecordMessage func(Request, bool, int32) (uint8, fastrpc.Serializable)
 }
 
 func newProtocolRuntime(base *replica.Replica, leader int32) *protocolRuntime {
-	r := &protocolRuntime{Core: newCore(base.N, base.Id, leader, base.State), proposals: map[Key]*defs.GPropose{}}
+	r := &protocolRuntime{Core: newCore(base.N, base.Id, leader, base.State), proposals: map[defs.RequestID]*defs.GPropose{}}
 	r.transportRuntime = newTransportRuntime(base, &protocolAdapter{r})
 	code := r.Register(&Packet{})
 	r.Core.Send = func(id int32, p *Packet) { r.Send(id, code, p) }
@@ -53,7 +53,7 @@ func newProtocolRuntime(base *replica.Replica, leader int32) *protocolRuntime {
 	return r
 }
 
-func (r *protocolRuntime) client(id Key, code uint8, msg interface{ Marshal(io.Writer) }, custom bool) {
+func (r *protocolRuntime) client(id defs.RequestID, code uint8, msg interface{ Marshal(io.Writer) }, custom bool) {
 	var writer *bufio.Writer
 	if g := r.proposals[id]; g != nil {
 		writer = g.Reply
@@ -72,7 +72,7 @@ func (p *protocolAdapter) Propose(g *defs.GPropose, _ time.Time) error {
 	if err := protocol.ValidateProposal(g); err != nil {
 		return err
 	}
-	id := Key{g.ClientId, g.CommandId}
+	id := g.RequestID()
 	p.runtime.proposals[id] = g
 	p.runtime.Core.Propose(Request{id, g.Command})
 	return nil

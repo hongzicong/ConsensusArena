@@ -2,6 +2,7 @@ package fastpaxos
 
 // Protocol recovery transitions and recovery-specific helpers.
 import (
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"math/bits"
 	"sort"
 )
@@ -15,7 +16,7 @@ func (c *core) adopt(epoch uint64) {
 	c.preparing = false
 	c.frozen = nil
 	c.queue = nil
-	c.assigned = make(map[CommandId]bool)
+	c.assigned = make(map[defs.RequestID]bool)
 }
 
 func (c *core) begin() {
@@ -99,8 +100,8 @@ func selectValue(reports map[int]entry, voters uint64, fixed bool, mask uint64, 
 	if !found {
 		return record{Noop: true}, false
 	}
-	values := make(map[CommandId]record)
-	supports := make(map[CommandId]uint64)
+	values := make(map[defs.RequestID]record)
+	supports := make(map[defs.RequestID]uint64)
 	for id, e := range reports {
 		if e.Epoch == top.Epoch && e.Round == top.Round {
 			if e.Value.Noop {
@@ -184,15 +185,15 @@ func (c *core) promisePage(m message) {
 		}
 		c.repaired++
 	}
-	ids := make([]CommandId, 0, len(c.pending))
+	ids := make([]defs.RequestID, 0, len(c.pending))
 	for id := range c.pending {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool {
-		if ids[i].ClientId != ids[j].ClientId {
-			return ids[i].ClientId < ids[j].ClientId
+		if ids[i].Client != ids[j].Client {
+			return ids[i].Client < ids[j].Client
 		}
-		return ids[i].SeqNum < ids[j].SeqNum
+		return ids[i].Sequence < ids[j].Sequence
 	})
 	for _, id := range ids {
 		c.enqueue(id)

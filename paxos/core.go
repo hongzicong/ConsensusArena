@@ -3,9 +3,10 @@ package paxos
 // Protocol state and normal-case transitions.
 import (
 	"fmt"
-	"math/bits"
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -20,16 +21,16 @@ type Core struct {
 	Active, Preparing          bool
 	High, Executed             int64
 	Log                        map[int64]*Record
-	Values                     map[Key]state.Value
-	Assigned                   map[Key]int64
-	Pending                    map[Key]Request
-	Witness                    map[Key]Request
-	recorded                   map[Key]int64
-	votes                      map[int64]uint64
+	Values                     map[defs.RequestID]state.Value
+	Assigned                   map[defs.RequestID]int64
+	Pending                    map[defs.RequestID]Request
+	Witness                    map[defs.RequestID]Request
+	recorded                   map[defs.RequestID]int64
+	votes                      map[int64]replicaset.Set
 	pages                      map[int32]map[int32]Packet
 	promises                   map[int32]bool
-	queue                      []Key
-	queued                     map[Key]bool
+	queue                      []defs.RequestID
+	queued                     map[defs.RequestID]bool
 	recoveryEnd                int64
 	lastSend, lastFetch        time.Time
 	State                      *state.State
@@ -50,7 +51,7 @@ func newCore(n int, id, leader int32, st *state.State) *Core {
 		panic("recovery log requires odd membership of 3..63")
 	}
 	return &Core{N: n, ID: id, Leader: leader, Ballot: int64(leader), Active: true,
-		High: -1, Executed: -1, recoveryEnd: -1, Log: map[int64]*Record{}, Values: map[Key]state.Value{}, Assigned: map[Key]int64{}, Pending: map[Key]Request{}, Witness: map[Key]Request{}, recorded: map[Key]int64{}, votes: map[int64]uint64{}, pages: map[int32]map[int32]Packet{}, promises: map[int32]bool{}, queued: map[Key]bool{}, State: st, witnessIndex: newConflictIndex(), pendingIndex: newConflictIndex()}
+		High: -1, Executed: -1, recoveryEnd: -1, Log: map[int64]*Record{}, Values: map[defs.RequestID]state.Value{}, Assigned: map[defs.RequestID]int64{}, Pending: map[defs.RequestID]Request{}, Witness: map[defs.RequestID]Request{}, recorded: map[defs.RequestID]int64{}, votes: map[int64]replicaset.Set{}, pages: map[int32]map[int32]Packet{}, promises: map[int32]bool{}, queued: map[defs.RequestID]bool{}, State: st, witnessIndex: newConflictIndex(), pendingIndex: newConflictIndex()}
 }
 
 func (c *Core) broadcast(p *Packet) {
@@ -217,7 +218,7 @@ func (c *Core) Handle(p *Packet) {
 			c.Ballot = p.Ballot
 			c.Leader = p.From
 			c.Preparing = false
-			c.votes = map[int64]uint64{}
+			c.votes = map[int64]replicaset.Set{}
 		}
 		c.Active = false
 		c.promise(p)
@@ -228,7 +229,7 @@ func (c *Core) Handle(p *Packet) {
 		c.Leader = p.From
 		c.Preparing = false
 		c.Active = false
-		c.votes = map[int64]uint64{}
+		c.votes = map[int64]replicaset.Set{}
 	}
 	if p.Ballot != c.Ballot {
 		return
@@ -330,9 +331,9 @@ func (c *Core) ack(p *Packet) {
 		if ack.Slot <= c.Executed {
 			continue
 		}
-		c.votes[ack.Slot] |= uint64(1) << p.From
+		c.votes[ack.Slot] = c.votes[ack.Slot].With(int(p.From))
 		r := c.Log[ack.Slot]
-		if r == nil || r.Ballot != c.Ballot || r.Committed || bits.OnesCount64(c.votes[ack.Slot]) < c.N/2+1 {
+		if r == nil || r.Ballot != c.Ballot || r.Committed || c.votes[ack.Slot].Size() < c.N/2+1 {
 			continue
 		}
 		r.Committed = true

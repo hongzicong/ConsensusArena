@@ -7,12 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"github.com/hongzicong/ConsensusArena/config"
-	"github.com/hongzicong/ConsensusArena/placement"
 	"math"
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/hongzicong/ConsensusArena/config"
+	"github.com/hongzicong/ConsensusArena/placement"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 )
 
 // PlanDeployment prepares ingress and the input to the native per-process
@@ -108,7 +110,7 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 	signature := func(r Requirement) string {
 		b := make([]byte, 8*len(r))
 		for i, v := range r {
-			binary.LittleEndian.PutUint64(b[8*i:], v)
+			binary.LittleEndian.PutUint64(b[8*i:], uint64(v))
 		}
 		return string(b)
 	}
@@ -193,7 +195,7 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 			for _, a := range keep {
 				superset := true
 				for w := range a.req {
-					if c.req[w] & ^a.req[w] != 0 {
+					if !a.req[w].Covers(c.req[w]) {
 						superset = false
 						break
 					}
@@ -241,7 +243,7 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 	domains := make([][]int, m)
 	best := make([]int, m)
 	bestCost := 0.0
-	full := uint64(1)<<voters - 1
+	full := replicaset.All(voters)
 	for p := range levels {
 		for i, c := range levels[p] {
 			domains[p] = append(domains[p], i)
@@ -305,6 +307,93 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 		if bound >= bestCost {
 			return
 		}
+		// If all remaining cheapest levels agree, the lower bound is attainable.
+		// Finish this branch directly instead of enumerating more expensive levels.
+		cheapestCompatible := true
+		for q := 0; q < m && cheapestCompatible; q++ {
+			if chosen[q] >= 0 {
+				continue
+			}
+			for r := 0; r < q; r++ {
+				if chosen[r] < 0 && !compatible[ids[q][ds[q][0]]][ids[r][ds[r][0]]] {
+					cheapestCompatible = false
+					// An optimum must change one endpoint of this conflict. Branch
+					// here before choosing unrelated proposers whose minima agree.
+					p = r
+					if len(ds[q]) < len(ds[r]) {
+						p = q
+					}
+					break
+				}
+			}
+		}
+		if cheapestCompatible {
+			bestCost = bound
+			for q := 0; q < m; q++ {
+				best[q] = chosen[q]
+				if chosen[q] < 0 {
+					best[q] = ds[q][0]
+				}
+			}
+			return
+		}
+		// Disjoint conflicting pairs give a stronger, still exact lower bound:
+		// each pair must pay at least its cheapest compatible joint cost.
+		type pairBound struct {
+			q, r  int
+			extra float64
+		}
+		pairs := []pairBound{}
+		for q := 0; q < m; q++ {
+			if chosen[q] >= 0 {
+				continue
+			}
+			for r := 0; r < q; r++ {
+				if chosen[r] >= 0 || compatible[ids[q][ds[q][0]]][ids[r][ds[r][0]]] {
+					continue
+				}
+				minimum := math.Inf(1)
+				q0 := weights[q] * float64(levels[q][ds[q][0]].cost)
+				r0 := weights[r] * float64(levels[r][ds[r][0]].cost)
+				for _, a := range ds[q] {
+					ac := weights[q] * float64(levels[q][a].cost)
+					if ac+r0 >= minimum {
+						break
+					}
+					for _, b := range ds[r] {
+						cost := ac + weights[r]*float64(levels[r][b].cost)
+						if cost >= minimum {
+							break
+						}
+						if compatible[ids[q][a]][ids[r][b]] {
+							minimum = cost
+							break
+						}
+					}
+				}
+				if math.IsInf(minimum, 1) {
+					return
+				}
+				pairs = append(pairs, pairBound{q, r, minimum - q0 - r0})
+			}
+		}
+		sort.SliceStable(pairs, func(i, j int) bool { return pairs[i].extra > pairs[j].extra })
+		if len(pairs) > 0 {
+			p = pairs[0].r
+			if len(ds[pairs[0].q]) < len(ds[p]) {
+				p = pairs[0].q
+			}
+		}
+		used := make([]bool, m)
+		for _, pair := range pairs {
+			if !used[pair.q] && !used[pair.r] {
+				bound += pair.extra
+				used[pair.q], used[pair.r] = true, true
+			}
+		}
+		if bound >= bestCost {
+			return
+		}
 		for _, l := range ds[p] {
 			chosen[p] = l
 			next := make([][]int, m)
@@ -344,7 +433,7 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 		binary.LittleEndian.PutUint64(b[:], uint64(c.leader))
 		h.Write(b[:])
 		for _, v := range c.req {
-			binary.LittleEndian.PutUint64(b[:], v)
+			binary.LittleEndian.PutUint64(b[:], uint64(v))
 			h.Write(b[:])
 		}
 	}
@@ -366,7 +455,7 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 				binary.LittleEndian.PutUint64(b[:], uint64(s.Time))
 				h.Write(b[:])
 				for _, k := range s.Knowledge {
-					binary.LittleEndian.PutUint64(b[:], k)
+					binary.LittleEndian.PutUint64(b[:], uint64(k))
 					h.Write(b[:])
 				}
 				for _, at := range s.Remote {

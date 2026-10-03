@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
@@ -101,7 +102,7 @@ func (r *Replica) startRecoveryForInstance(replica int32, instance int32) {
 		inst.Seq,
 		inst.Deps}
 
-	lb.prepareVoters[r.Id] = true
+	lb.prepareVoters.Add(int(r.Id))
 	lb.prepareReplies = append(lb.prepareReplies, preply)
 	lb.leaderResponded = r.Id == replica
 
@@ -164,10 +165,9 @@ func (r *Replica) handlePrepareReply(preply *PrepareReply) {
 		return
 	}
 
-	if preply.AcceptorId < 0 || preply.AcceptorId >= int32(r.N) || lb.prepareVoters[preply.AcceptorId] {
+	if preply.AcceptorId < 0 || preply.AcceptorId >= int32(r.N) || !lb.prepareVoters.Add(int(preply.AcceptorId)) {
 		return
 	}
-	lb.prepareVoters[preply.AcceptorId] = true
 	lb.prepareReplies = append(lb.prepareReplies, preply)
 	if len(lb.prepareReplies) < r.Replica.SlowQuorumSize() {
 		return
@@ -233,7 +233,7 @@ func (r *Replica) handlePrepareReply(preply *PrepareReply) {
 		// published limitations; this is not the EPaxos* recovery algorithm.
 		lb.tryingToPreAccept = true
 		lb.preAcceptOKs, lb.tpaReps = 0, 0
-		lb.preVoters = make(map[int32]bool)
+		lb.preVoters = replicaset.New()
 		r.bcastTryPreAccept(preply.Replica, preply.Instance)
 		r.handleTryPreAccept(&TryPreAccept{r.Id, preply.Replica, preply.Instance, lb.lastTriedBallot, lb.cmds, lb.seq, lb.deps})
 	} else {
@@ -343,10 +343,9 @@ func (r *Replica) handleTryPreAcceptReply(tpar *TryPreAcceptReply) {
 		return
 	}
 
-	if tpar.AcceptorId < 0 || tpar.AcceptorId >= int32(r.N) || lb.preVoters[tpar.AcceptorId] {
+	if tpar.AcceptorId < 0 || tpar.AcceptorId >= int32(r.N) || !lb.preVoters.Add(int(tpar.AcceptorId)) {
 		return
 	}
-	lb.preVoters[tpar.AcceptorId] = true
 	lb.tpaReps++
 
 	if tpar.VBallot == lb.lastTriedBallot && tpar.ConflictReplica < 0 {

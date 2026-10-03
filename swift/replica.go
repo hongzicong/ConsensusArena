@@ -11,6 +11,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/hook"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 	cmap "github.com/orcaman/concurrent-map"
@@ -109,25 +110,25 @@ type Replica struct {
 	hashBacklogDeferrals  uint64
 	proposalBatchCommands uint64
 	proposalBatchMax      int
-	proposedInBallot      map[CommandId]struct{}
+	proposedInBallot      map[defs.RequestID]struct{}
 	seqnum                int
-	pendingHashUpds       map[CommandId]*UpdateEntry
-	recoveryCmds          map[CommandId]int // commands installed by the current Sync
+	pendingHashUpds       map[defs.RequestID]*UpdateEntry
+	recoveryCmds          map[defs.RequestID]int // commands installed by the current Sync
 
 	history      []commandStaticDesc
 	historySize  int
 	historyStart int
 
-	qs *replica.QuorumSystem
-	SQ replica.QuorumI
-	FQ replica.QuorumI
+	qs *QuorumSystem
+	SQ QuorumI
+	FQ QuorumI
 	cs CommunicationSupply
 
 	fixedMajority bool
 
 	optExec     bool
 	fastRead    bool
-	deliverChan chan CommandId
+	deliverChan chan defs.RequestID
 
 	descPool     sync.Pool
 	poolLevel    int
@@ -135,9 +136,9 @@ type Replica struct {
 
 	recover        chan int32
 	recStart       time.Time
-	newLeaderAckNs *replica.MsgSet
+	newLeaderAckNs *MsgSet
 
-	proposes map[CommandId]*defs.GPropose
+	proposes map[defs.RequestID]*defs.GPropose
 
 	// take only slow paths for these addresses
 	slowAddrs map[string]struct{}
@@ -160,8 +161,8 @@ func New(alias string, rid int, addrs []string, exec, fastRead, optExec bool,
 		keys:             make(map[state.Key]keyInfo),
 		hlog:             make(map[state.Key]*HashLog),
 		seqnum:           0,
-		proposedInBallot: make(map[CommandId]struct{}),
-		pendingHashUpds:  make(map[CommandId]*UpdateEntry),
+		proposedInBallot: make(map[defs.RequestID]struct{}),
+		pendingHashUpds:  make(map[defs.RequestID]*UpdateEntry),
 
 		history:      make([]commandStaticDesc, HISTORY_SIZE),
 		historySize:  0,
@@ -171,7 +172,7 @@ func New(alias string, rid int, addrs []string, exec, fastRead, optExec bool,
 
 		optExec:     optExec,
 		fastRead:    fastRead,
-		deliverChan: make(chan CommandId, defs.CHAN_BUFFER_SIZE),
+		deliverChan: make(chan defs.RequestID, defs.CHAN_BUFFER_SIZE),
 
 		poolLevel:    pl,
 		routineCount: 0,
@@ -184,7 +185,7 @@ func New(alias string, rid int, addrs []string, exec, fastRead, optExec bool,
 			},
 		},
 
-		proposes: make(map[CommandId]*defs.GPropose),
+		proposes: make(map[defs.RequestID]*defs.GPropose),
 
 		slowAddrs: make(map[string]struct{}),
 	}
@@ -193,17 +194,17 @@ func New(alias string, rid int, addrs []string, exec, fastRead, optExec bool,
 		r.slowAddrs[addr] = struct{}{}
 	}
 
-	r.SQ = replica.NewMajorityOf(r.N)
-	r.FQ = replica.NewThreeQuartersOf(r.N)
+	r.SQ = NewMajorityOf(r.N)
+	r.FQ = NewThreeQuartersOf(r.N)
 
 	r.batcher = NewBatcher(r, 16)
 	r.repchan = NewReplyChan(r)
 
-	initial := replica.NewQuorum(len(conf.Plan.FastQuorum))
+	initial := replicaset.New()
 	for _, member := range conf.Plan.FastQuorum {
-		initial[int32(member.Rank)] = struct{}{}
+		initial.Add(member.Rank)
 	}
-	qs, err := replica.NewQuorumSystem(r.N/2+1, r.Replica, initial, conf.Plan.LeaderID())
+	qs, err := NewQuorumSystem(r.N/2+1, r.N, initial, conf.Plan.LeaderID())
 	if err != nil {
 		r.Fatal(err)
 	}

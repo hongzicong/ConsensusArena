@@ -15,6 +15,7 @@ import (
 
 	"github.com/hongzicong/ConsensusArena/client"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -330,20 +331,14 @@ func (c *Client) WaitReplies(_ int) {
 			continue
 		}
 		go func(id int) {
-			for {
-				r, err := c.GetReplyFrom(id)
-				if err != nil {
-					c.markBodegaPeer(id)
-					return
-				}
+			err := c.ReadReplies(id, func(r *defs.ProposeReplyTS) bool {
 				if r.OK != defs.TRUE || !c.completeBodegaRequest(r.CommandId, id) {
-					continue
+					return true
 				}
-				select {
-				case c.Reply <- &client.ReqReply{Val: r.Value, Seqnum: int(r.CommandId), Time: time.Now()}:
-				case <-c.bodega.stop:
-					return
-				}
+				return fastrpc.Deliver(c.Reply, &client.ReqReply{Val: r.Value, Seqnum: int(r.CommandId), Time: time.Now()}, c.bodega.stop)
+			})
+			if err != nil {
+				c.markBodegaPeer(id)
 			}
 		}(id)
 	}

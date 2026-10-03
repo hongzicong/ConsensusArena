@@ -1,7 +1,9 @@
 package swift
 
+import "github.com/hongzicong/ConsensusArena/replica/defs"
+
 // Execution ordering, result deduplication, and protocol completion.
-func (r *Replica) deliver(desc *commandDesc, cmdId CommandId) {
+func (r *Replica) deliver(desc *commandDesc, cmdId defs.RequestID) {
 	// TODO: what if desc.propose is nil ?
 	//       is that possible ?
 	//
@@ -29,7 +31,7 @@ func (r *Replica) deliver(desc *commandDesc, cmdId CommandId) {
 	desc.successorsL.Lock()
 	if desc.successors != nil {
 		for _, sucCmdId := range desc.successors {
-			go func(sucCmdId CommandId) {
+			go func(sucCmdId defs.RequestID) {
 				r.deliverChan <- sucCmdId
 			}(sucCmdId)
 		}

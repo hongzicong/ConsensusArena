@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -79,7 +80,7 @@ func (c *core) markFailed(id int) {
 			c.failedGraphs = make([]bool, c.m)
 		}
 		for p, g := range c.plan.Graphs {
-			if c.plan.Leaders[p] == id || c.plan.Requirements[p].Quorum()&(uint64(1)<<id) != 0 {
+			if c.plan.Leaders[p] == id || c.plan.Requirements[p].Quorum().Contains(id) {
 				c.failedGraphs[p] = true
 				continue
 			}
@@ -393,7 +394,7 @@ func (c *core) adoptGraph(x *slotState) *Value {
 				continue
 			}
 			if r.Proposer != p {
-				knowledge := uint64(1) << voter
+				knowledge := replicaset.New(voter)
 				if r.Proposer >= 0 {
 					knowledge = c.plan.Graphs[r.Proposer].state(voter, time.Duration(r.Time)).Knowledge[voter]
 				}
@@ -439,7 +440,7 @@ func (c *core) saveOwnState(x *slotState) {
 	if x.acceptedBallot > 0 {
 		r.Value = x.classic
 	} else if x.fast != nil {
-		r.Proposer, r.Value, r.Mask = x.fast.Proposer, x.fast, x.knowledge[c.id]
+		r.Proposer, r.Value, r.Mask = x.fast.Proposer, x.fast, uint64(x.knowledge[c.id])
 		r.Time = int64(x.knowledgeTime)
 	}
 	if x.nodeReports == nil {
@@ -454,7 +455,7 @@ func (c *core) mergeReport(x *slotState, r nodeReport) {
 	}
 	if r.Proposer >= 0 {
 		s := c.plan.Graphs[r.Proposer].state(r.From, time.Duration(r.Time))
-		if s == nil || s.Knowledge[r.From] != r.Mask || r.Value == nil || r.Value.Proposer != r.Proposer || r.AcceptedBallot != 0 {
+		if s == nil || uint64(s.Knowledge[r.From]) != r.Mask || r.Value == nil || r.Value.Proposer != r.Proposer || r.AcceptedBallot != 0 {
 			return
 		}
 	} else if r.Mask != 0 || r.Time != 0 || (r.AcceptedBallot > 0 && r.Value == nil) {

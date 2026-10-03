@@ -22,15 +22,9 @@ func (c *BufferClient) WaitAnyRepliesWithHandler(onReply func(*defs.ProposeReply
 			continue
 		}
 		go func(id int) {
-			for {
-				r, err := c.GetReplyFrom(id)
-				if err != nil {
-					c.peerDead[id].Store(true)
-					c.markFaultPeer(id)
-					return
-				}
+			err := c.ReadReplies(id, func(r *defs.ProposeReplyTS) bool {
 				if r.OK != defs.TRUE {
-					continue
+					return true
 				}
 				mu.Lock()
 				seen := completed[r.CommandId]
@@ -42,6 +36,11 @@ func (c *BufferClient) WaitAnyRepliesWithHandler(onReply func(*defs.ProposeReply
 					}
 					c.RegisterReply(r.Value, r.CommandId)
 				}
+				return true
+			})
+			if err != nil {
+				c.peerDead[id].Store(true)
+				c.markFaultPeer(id)
 			}
 		}(id)
 	}

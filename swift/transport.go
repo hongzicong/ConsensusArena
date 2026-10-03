@@ -11,7 +11,7 @@ type replyArgs struct {
 	dep     Dep
 	hs      []SHash
 	val     state.Value
-	cmdId   CommandId
+	cmdId   defs.RequestID
 	finish  chan interface{}
 	propose *defs.GPropose
 }
@@ -53,8 +53,8 @@ func (r *replyChan) stop() {
 	<-r.ok
 }
 
-func (r *replyChan) reply(desc *commandDesc, cmdId CommandId, val state.Value) {
-	dep := make([]CommandId, len(desc.dep))
+func (r *replyChan) reply(desc *commandDesc, cmdId defs.RequestID, val state.Value) {
+	dep := make([]defs.RequestID, len(desc.dep))
 	copy(dep, desc.dep)
 
 	hs := make([]SHash, len(desc.hs))

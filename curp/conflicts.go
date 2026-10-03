@@ -4,6 +4,7 @@ package curp
 import (
 	"encoding/binary"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -11,11 +12,11 @@ import (
 // conflict predicate. It changes the cost, not the commutativity test.
 type conflictIndex struct {
 	all, writes map[state.Key]int
-	scans       map[Key]Request
+	scans       map[defs.RequestID]Request
 }
 
 func newConflictIndex() *conflictIndex {
-	return &conflictIndex{map[state.Key]int{}, map[state.Key]int{}, map[Key]Request{}}
+	return &conflictIndex{map[state.Key]int{}, map[state.Key]int{}, map[defs.RequestID]Request{}}
 }
 
 func (x *conflictIndex) add(r Request) {

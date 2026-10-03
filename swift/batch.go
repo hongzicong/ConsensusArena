@@ -2,6 +2,7 @@ package swift
 
 // Protocol-specific message or proposal batching.
 import (
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 )
 
@@ -47,9 +48,9 @@ func NewBatcher(r *Replica, size int) *Batcher {
 						Seqnum:   fastAck.Seqnum,
 					}},
 				}
-				is := map[CommandId]int{fastAck.CmdId: 0}
-				fastAckClientMsgs := make(map[CommandId]MFastAckClient)
-				slowAckClientMsgs := make(map[CommandId]MLightSlowAck)
+				is := map[defs.RequestID]int{fastAck.CmdId: 0}
+				fastAckClientMsgs := make(map[defs.RequestID]MFastAckClient)
+				slowAckClientMsgs := make(map[defs.RequestID]MLightSlowAck)
 
 				if op.sendToClient {
 					fastAckClientMsgs[fastAck.CmdId] = MFastAckClient{
@@ -120,11 +121,11 @@ func NewBatcher(r *Replica, size int) *Batcher {
 
 				for _, f := range fastAckClientMsgs {
 					cf := f
-					r.SendClientMsg(cf.CmdId.ClientId, r.cs.fastAckClientRPC, &cf)
+					r.SendClientMsg(cf.CmdId.Client, r.cs.fastAckClientRPC, &cf)
 				}
 				for _, s := range slowAckClientMsgs {
 					cs := s
-					r.SendClientMsg(cs.CmdId.ClientId, r.cs.lightSlowAckRPC, &cs)
+					r.SendClientMsg(cs.CmdId.Client, r.cs.lightSlowAckRPC, &cs)
 				}
 
 				var (
@@ -161,9 +162,9 @@ func NewBatcher(r *Replica, size int) *Batcher {
 						Checksum: []SHash{},
 					}},
 				}
-				is := map[CommandId]int{slowAck.CmdId: 0}
-				fastAckClientMsgs := make(map[CommandId]MFastAckClient)
-				slowAckClientMsgs := make(map[CommandId]MLightSlowAck)
+				is := map[defs.RequestID]int{slowAck.CmdId: 0}
+				fastAckClientMsgs := make(map[defs.RequestID]MFastAckClient)
+				slowAckClientMsgs := make(map[defs.RequestID]MLightSlowAck)
 
 				if op.sendToClient {
 					slowAckClientMsgs[slowAck.CmdId] = *slowAck
@@ -225,11 +226,11 @@ func NewBatcher(r *Replica, size int) *Batcher {
 
 				for _, f := range fastAckClientMsgs {
 					cf := f
-					r.SendClientMsg(cf.CmdId.ClientId, r.cs.fastAckClientRPC, &cf)
+					r.SendClientMsg(cf.CmdId.Client, r.cs.fastAckClientRPC, &cf)
 				}
 				for _, s := range slowAckClientMsgs {
 					cs := s
-					r.SendClientMsg(cs.CmdId.ClientId, r.cs.lightSlowAckRPC, &cs)
+					r.SendClientMsg(cs.CmdId.Client, r.cs.lightSlowAckRPC, &cs)
 				}
 
 				var (

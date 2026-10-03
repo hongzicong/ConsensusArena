@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -53,7 +54,7 @@ type engine struct {
 	current, pending              roster
 	log                           map[uint64]entry
 	committed                     map[uint64]bool
-	votes                         map[uint64]uint64
+	votes                         map[uint64]replicaset.Set
 	latest                        map[state.Key]uint64
 	latestCommitted               map[state.Key]uint64
 	prefix, high, threshold, next uint64
@@ -73,7 +74,7 @@ type engine struct {
 	snapshotChunks                [][]entry
 	batching                      bool
 	batch                         []request
-	batchIDs                      map[requestID]bool
+	batchIDs                      map[defs.RequestID]bool
 	batchBytes                    int
 	snapshotCursor                map[int]int
 	snapshotTaken                 bool
@@ -84,17 +85,17 @@ type engine struct {
 	seen                          []time.Time
 	failureAt                     []time.Time
 	progress                      []uint64
-	held                          map[requestID]pendingRead
+	held                          map[defs.RequestID]pendingRead
 	holdSlots                     readSlots
 	fastSlots                     readSlots
 	fastQueued                    map[uint64]bool
-	holdWaiters                   map[uint64][]requestID
+	holdWaiters                   map[uint64][]defs.RequestID
 	holdCounts                    map[uint64]int
-	queued                        map[requestID]request
-	retryQueue                    []requestID
+	queued                        map[defs.RequestID]request
+	retryQueue                    []defs.RequestID
 	retryHead                     int
-	inflight                      map[requestID]uint64
-	completed                     map[requestID]state.Value
+	inflight                      map[defs.RequestID]uint64
+	completed                     map[defs.RequestID]state.Value
 	stats                         statistics
 	send                          func(int, message)
 	trySend                       func(int, message) bool
@@ -106,12 +107,12 @@ type engine struct {
 
 func newEngine(id, n int, opt options, now time.Time) *engine {
 	e := &engine{id: id, n: n, majority: n/2 + 1, opt: opt,
-		log: map[uint64]entry{}, committed: map[uint64]bool{}, votes: map[uint64]uint64{}, latest: map[state.Key]uint64{},
+		log: map[uint64]entry{}, committed: map[uint64]bool{}, votes: map[uint64]replicaset.Set{}, latest: map[state.Key]uint64{},
 		latestCommitted: map[state.Key]uint64{},
 		snapshots:       map[int]*snapshot{}, incoming: map[int]grant{}, outgoing: map[int]time.Time{}, requests: map[uint64]time.Time{},
-		seen: make([]time.Time, n), failureAt: make([]time.Time, n), progress: make([]uint64, n), held: map[requestID]pendingRead{}, queued: map[requestID]request{},
-		inflight: map[requestID]uint64{}, completed: map[requestID]state.Value{}, holdWaiters: map[uint64][]requestID{}, holdCounts: map[uint64]int{},
-		acceptedProgress: make([]uint64, n), fastQueued: map[uint64]bool{}, noticeSlots: map[uint64]bool{}, batchIDs: map[requestID]bool{},
+		seen: make([]time.Time, n), failureAt: make([]time.Time, n), progress: make([]uint64, n), held: map[defs.RequestID]pendingRead{}, queued: map[defs.RequestID]request{},
+		inflight: map[defs.RequestID]uint64{}, completed: map[defs.RequestID]state.Value{}, holdWaiters: map[uint64][]defs.RequestID{}, holdCounts: map[uint64]int{},
+		acceptedProgress: make([]uint64, n), fastQueued: map[uint64]bool{}, noticeSlots: map[uint64]bool{}, batchIDs: map[defs.RequestID]bool{},
 		revoked: make([]uint64, n)}
 	for i := range e.seen {
 		e.refreshPeer(i, now)
@@ -265,7 +266,7 @@ func (e *engine) tick(now time.Time) {
 		}
 	}
 	if e.retryHead > 0 && e.retryHead >= len(e.retryQueue)/2 {
-		e.retryQueue = append([]requestID(nil), e.retryQueue[e.retryHead:]...)
+		e.retryQueue = append([]defs.RequestID(nil), e.retryQueue[e.retryHead:]...)
 		e.retryHead = 0
 	}
 	e.release(now)
@@ -352,7 +353,7 @@ func (e *engine) receive(m message, now time.Time) {
 					e.acceptedProgress[m.From] = m.Prefix
 					e.updateReadPrefix()
 				}
-				e.votes[v.Slot] |= bit(m.From)
+				e.votes[v.Slot] = e.votes[v.Slot].With(m.From)
 				e.tryCommit(v.Slot, now)
 			}
 		}
@@ -548,7 +549,7 @@ func (e *engine) tryCommit(s uint64, now time.Time) {
 	}
 	v := e.log[s]
 	mask := e.votes[s]
-	if bits.OnesCount64(mask) < e.majority {
+	if mask.Size() < e.majority {
 		return
 	}
 	responders := uint64(0)
@@ -557,7 +558,7 @@ func (e *engine) tryCommit(s uint64, now time.Time) {
 			responders |= e.current.respondersFor(r.Proposal.Command.K)
 		}
 	}
-	if mask&responders != responders {
+	if !mask.Covers(replicaset.Set(responders)) {
 		e.stats.CoverageWaits++
 		return
 	}

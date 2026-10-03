@@ -8,6 +8,8 @@ import (
 	"math/bits"
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -16,8 +18,8 @@ type slotState struct {
 	Proposed *entry // coordinator plan; not a vote until Accept is processed
 	Chosen   *entry
 	Votes    map[uint64]map[int]entry
-	Acks     uint64
-	Local    *CommandId
+	Acks     replicaset.Set
+	Local    *defs.RequestID
 	Deferred *entry
 }
 
@@ -28,7 +30,7 @@ type snapshot struct {
 }
 
 type pendingCommand struct {
-	ID      CommandId
+	ID      defs.RequestID
 	RetryAt time.Duration
 }
 
@@ -40,12 +42,12 @@ type core struct {
 	active, preparing                                  bool
 	start, high, next, executed                        int
 	slots                                              map[int]*slotState
-	known                                              map[CommandId]record
-	pending                                            map[CommandId]*list.Element
+	known                                              map[defs.RequestID]record
+	pending                                            map[defs.RequestID]*list.Element
 	forwardOrder                                       list.List
-	results                                            map[CommandId]state.Value
-	assigned                                           map[CommandId]bool
-	queue                                              []CommandId
+	results                                            map[defs.RequestID]state.Value
+	assigned                                           map[defs.RequestID]bool
+	queue                                              []defs.RequestID
 	snapshots                                          map[int]*snapshot
 	frozen                                             []message
 	frozenStart                                        int
@@ -56,7 +58,7 @@ type core struct {
 	stalled                                            bool
 	windowFallbacks, ageFallbacks                      uint64
 	execute                                            func(record) state.Value
-	complete                                           func(CommandId, state.Value)
+	complete                                           func(defs.RequestID, state.Value)
 	elections, fastCommits, classicCommits, repaired   uint64
 }
 
@@ -68,8 +70,8 @@ func newCore(id, n int, mask uint64, size int, fixed bool) *core {
 		panic("invalid FastPaxos fast quorum")
 	}
 	return &core{id: id, n: n, fastMask: mask, fastSize: size, fixed: fixed,
-		high: -1, executed: -1, slots: make(map[int]*slotState), known: make(map[CommandId]record),
-		pending: make(map[CommandId]*list.Element), results: make(map[CommandId]state.Value), assigned: make(map[CommandId]bool), heard: make([]time.Duration, n)}
+		high: -1, executed: -1, slots: make(map[int]*slotState), known: make(map[defs.RequestID]record),
+		pending: make(map[defs.RequestID]*list.Element), results: make(map[defs.RequestID]state.Value), assigned: make(map[defs.RequestID]bool), heard: make([]time.Duration, n)}
 }
 
 func (c *core) slot(s int) *slotState {
@@ -132,14 +134,14 @@ func (c *core) submit(v record) {
 	}
 }
 
-func (c *core) forgetPending(id CommandId) {
+func (c *core) forgetPending(id defs.RequestID) {
 	if e := c.pending[id]; e != nil {
 		c.forwardOrder.Remove(e)
 		delete(c.pending, id)
 	}
 }
 
-func (c *core) enqueue(id CommandId) {
+func (c *core) enqueue(id defs.RequestID) {
 	if !c.assigned[id] {
 		c.assigned[id] = true
 		c.queue = append(c.queue, id)
@@ -326,8 +328,8 @@ func (c *core) step(m message) {
 			if s == nil || s.Proposed == nil || s.Proposed.Epoch != m.Epoch || s.Chosen != nil {
 				continue
 			}
-			s.Acks |= 1 << m.From
-			if bits.OnesCount64(s.Acks) >= c.n/2+1 {
+			s.Acks = s.Acks.With(m.From)
+			if s.Acks.Size() >= c.n/2+1 {
 				v := *s.Proposed
 				if !v.Value.Noop {
 					v.Value = c.known[v.Value.ID]

@@ -46,12 +46,15 @@ def recovery_window(seconds, start, end, reference, valid):
 def summarize(base):
     metadata=json.loads((base/'metadata.json').read_text())
     if 'replica_counts' in metadata:
-        sizes=[base/('replicas-'+str(n)) for n in metadata['replica_counts']]
+        sizes=[base/('replicas-'+str(n))/('topology-'+str(t)) for n in metadata['replica_counts'] for t in metadata['topology_ids']] if 'topology_ids' in metadata else [base/('replicas-'+str(n)) for n in metadata['replica_counts']]
         outcomes=[]
         combined={name:[] for name in ('phase-summary.csv','timeseries.csv','request-cohorts.csv')}
         for size in sizes:
             if not (size/'metadata.json').exists():
-                outcomes.append(dict(replicas=int(size.name.split('-')[1]),valid=False,error='missing size metadata'))
+                missing=dict(replicas=int((size.parent if size.name.startswith('topology-') else size).name.split('-')[1]),valid=False,error='missing size metadata')
+                if size.name.startswith('topology-'):
+                    missing['topology_id']=int(size.name.split('-')[1])
+                outcomes.append(missing)
                 continue
             outcomes.extend(summarize(size))
             for name,rows in combined.items():
@@ -85,6 +88,8 @@ def summarize(base):
         identity=dict(protocol=protocol,replicas=meta['replicas'],profile=meta['profile'],repetition=meta['repetition'],valid=outcome['valid'],
                       timeline_origin=origin,warmup_s=warmup,observation_s=duration,
                       crash_s=first,max_crash_s=maximum,measurement_s=duration-warmup)
+        if 'topology_id' in meta:
+            identity.update(topology_id=meta['topology_id'],topology_sha256=meta['topology_sha256'],latency_snapshot_sha256=meta['latency_snapshot_sha256'],experiment_design=meta['experiment_design'])
         seconds=collections.defaultdict(bucket)
         cohort=collections.defaultdict(bucket)
         unresolved=collections.Counter()

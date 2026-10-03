@@ -3,7 +3,6 @@ package replica
 import (
 	"bufio"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +15,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/dlog"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
@@ -70,6 +70,9 @@ type Replica struct {
 
 func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, config *config.Config, l *dlog.Logger) *Replica {
 	n := len(addrs)
+	if n > replicaset.MaxSize {
+		panic("replica membership exceeds Set capacity of 64")
+	}
 	stateMachine := state.InitState()
 	if config.Preload {
 		started := time.Now()
@@ -101,7 +104,7 @@ func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, con
 		State:       stateMachine,
 		RPC:         fastrpc.NewTableId(defs.RPC_TABLE),
 		StableStore: nil,
-		Stats:       &defs.Stats{make(map[string]int)},
+		Stats:       &defs.Stats{M: make(map[string]int)},
 		Shutdown:    false,
 		Listener:    nil,
 		ProposeChan: make(chan *defs.GPropose, defs.CHAN_BUFFER_SIZE),
@@ -397,197 +400,4 @@ func (r *Replica) waitForPeerConnections(done chan bool) {
 	}
 
 	done <- true
-}
-
-func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
-	defer r.closeConnectionSender(r.Peers[rid])
-	defer r.Peers[rid].Close()
-	var (
-		msgType      uint8
-		err          error = nil
-		gbeacon      defs.Beacon
-		gbeaconReply defs.BeaconReply
-	)
-	for err == nil && !r.Shutdown {
-		if msgType, err = reader.ReadByte(); err != nil {
-			break
-		}
-
-		switch uint8(msgType) {
-
-		case defs.GENERIC_SMR_BEACON:
-			if err = gbeacon.Unmarshal(reader); err != nil {
-				break
-			}
-			r.ReplyBeacon(&defs.GBeacon{
-				Rid:       int32(rid),
-				Timestamp: gbeacon.Timestamp,
-			})
-
-		case defs.GENERIC_SMR_BEACON_REPLY:
-			if err = gbeaconReply.Unmarshal(reader); err != nil {
-				break
-			}
-			r.M.Lock()
-			r.Latencies[rid] += time.Now().UnixNano() - gbeaconReply.Timestamp
-			r.M.Unlock()
-			now := time.Now().UnixNano()
-			r.Ewma[rid] = 0.99*r.Ewma[rid] + 0.01*float64(now-gbeaconReply.Timestamp)
-
-		default:
-			p, exists := r.RPC.Get(msgType)
-			if exists {
-				obj := p.Obj.New()
-				if err = obj.Unmarshal(reader); err != nil {
-					break
-				}
-				notify := p.Chan
-				notify <- obj
-			} else {
-				r.Fatal("Error: received unknown message type ", msgType, " from ", rid)
-			}
-		}
-	}
-
-	r.M.Lock()
-	r.Alive[rid] = false
-	r.M.Unlock()
-}
-
-func (r *Replica) clientListener(conn net.Conn) {
-	defer r.closeConnectionSender(conn)
-	reader := bufio.NewReader(conn)
-	writer := bufio.NewWriter(conn)
-
-	var (
-		msgType byte
-		err     error
-	)
-
-	r.M.Lock()
-	r.Println("Client up", conn.RemoteAddr(), "(", r.LRead, ")")
-	r.M.Unlock()
-
-	addr, identityErr := defs.ReadClientIdentity(reader)
-	if identityErr != nil {
-		r.Printf("Rejecting client %s: %v", conn.RemoteAddr(), identityErr)
-		conn.Close()
-		return
-	}
-	knownClient := false
-	for _, endpoint := range r.Config.ClientAddrs {
-		if endpoint == addr {
-			knownClient = true
-			break
-		}
-	}
-	if !knownClient {
-		r.Printf("Rejecting client %s with unknown endpoint identity %q", conn.RemoteAddr(), addr)
-		conn.Close()
-		return
-	}
-	isProxy := r.Config.Proxy.IsProxy(r.Alias, addr)
-
-	r.senderMu.Lock()
-	if r.clientConns == nil {
-		r.clientConns = make(map[*bufio.Writer]net.Conn)
-	}
-	r.clientConns[writer] = conn
-	r.senderMu.Unlock()
-	defer func() {
-		r.senderMu.Lock()
-		sender := r.senders[writer]
-		delete(r.clientConns, writer)
-		r.senderMu.Unlock()
-		if sender != nil {
-			sender.Close()
-		}
-	}()
-	mutex := &sync.Mutex{}
-	for !r.Shutdown && err == nil {
-		if msgType, err = reader.ReadByte(); err != nil {
-			break
-		}
-
-		switch uint8(msgType) {
-		case defs.PROPOSE:
-			propose := &defs.Propose{}
-			if err = propose.Unmarshal(reader); err != nil {
-				break
-			}
-			r.M.Lock()
-			r.ClientWriters[propose.ClientId] = writer
-			r.M.Unlock()
-			// Identity is now known. Install the reply sender before the
-			// proposal can produce any protocol output on this connection.
-			r.ReplySender(writer, mutex, r.ClientReplyCapacity)
-			op := propose.Command.Op
-			if r.LRead && (op == state.GET || op == state.SCAN) {
-				r.ReplyProposeTS(&defs.ProposeReplyTS{
-					OK:        defs.TRUE,
-					CommandId: propose.CommandId,
-					Value:     propose.Command.Execute(r.State),
-					Timestamp: propose.Timestamp,
-				}, writer, mutex)
-			} else {
-				gpropose := &defs.GPropose{
-					Propose: propose,
-					Reply:   writer,
-					Mutex:   mutex,
-					Proxy:   isProxy,
-					Addr:    addr,
-				}
-				r.ProposeChan <- gpropose
-			}
-
-		case defs.READ:
-			// TODO: do something with this
-			read := &defs.Read{}
-			if err = read.Unmarshal(reader); err != nil {
-				break
-			}
-
-		case defs.PROPOSE_AND_READ:
-			// TODO: do something with this
-			pr := &defs.ProposeAndRead{}
-			if err = pr.Unmarshal(reader); err != nil {
-				break
-			}
-
-		case defs.STATS:
-			r.M.Lock()
-			b, _ := json.Marshal(r.Stats)
-			r.M.Unlock()
-			_ = r.ReplySender(writer, mutex, -1).Enqueue(Frame{Data: b})
-
-		default:
-			p, exists := r.RPC.Get(msgType)
-			if exists {
-				obj := p.Obj.New()
-				if err = obj.Unmarshal(reader); err != nil {
-					break
-				}
-				// Protocol adapters may need the configured endpoint and its
-				// return stream without adding transport fields to their wire format.
-				if bound, ok := obj.(interface{ BindClient(net.Conn, string) }); ok {
-					bound.BindClient(conn, addr)
-				}
-				notify := p.Chan
-				notify <- obj
-			} else {
-				r.Fatal("Error: received unknown client message ", msgType)
-			}
-		}
-	}
-
-	conn.Close()
-	r.Println("Client down", conn.RemoteAddr())
-}
-
-func Leader(ballot int32, repNum int) int32 {
-	return ballot % int32(repNum)
-}
-
-func NextBallotOf(rid, oldBallot int32, repNum int) int32 {
-	return (oldBallot/int32(repNum)+1)*int32(repNum) + rid
 }

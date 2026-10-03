@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/protocol"
-	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 	"github.com/orcaman/concurrent-map"
@@ -78,9 +77,9 @@ func (r *Replica) handleNewLeaderAckNs(_ interface{}, msgs []interface{}) {
 		}
 	}
 
-	phases := make(map[CommandId]int)
-	cmds := make(map[CommandId]state.Command)
-	deps := make(map[CommandId]Dep)
+	phases := make(map[defs.RequestID]int)
+	cmds := make(map[defs.RequestID]state.Command)
+	deps := make(map[defs.RequestID]Dep)
 
 	for newLeaderAckN := range U {
 		for i, phase := range newLeaderAckN.Phases {
@@ -105,19 +104,16 @@ func (r *Replica) handleNewLeaderAckNs(_ interface{}, msgs []interface{}) {
 }
 
 func (r *Replica) fillNewLeaderAckN(newLeaderAckN *MNewLeaderAckN) {
-	cmdIds := []CommandId{}
+	cmdIds := []defs.RequestID{}
 	phases := []int{}
 	cmds := []state.Command{}
 	deps := []SDep{}
-	seen := make(map[CommandId]struct{})
+	seen := make(map[defs.RequestID]struct{})
 
 	r.cmdDescs.IterCb(func(_ string, v interface{}) {
 		desc := v.(*commandDesc)
 		if desc.propose != nil {
-			cmdId := CommandId{
-				ClientId: desc.propose.ClientId,
-				SeqNum:   desc.propose.CommandId,
-			}
+			cmdId := desc.propose.RequestID()
 			if _, exists := seen[cmdId]; !exists {
 				seen[cmdId] = struct{}{}
 				cmdIds = append(cmdIds, cmdId)
@@ -135,7 +131,7 @@ func (r *Replica) fillNewLeaderAckN(newLeaderAckN *MNewLeaderAckN) {
 		cmdIds = append(cmdIds, cmdId)
 		phases = append(phases, ACCEPT)
 		cmds = append(cmds, state.NOOP()[0])
-		deps = append(deps, SDep{[]CommandId{}})
+		deps = append(deps, SDep{[]defs.RequestID{}})
 	}
 
 	newLeaderAckN.CmdIds = cmdIds
@@ -159,10 +155,7 @@ func (r *Replica) handleSync(msg *MSync) {
 	r.cmdDescs.IterCb(func(_ string, v interface{}) {
 		desc := v.(*commandDesc)
 		if desc.propose != nil {
-			cmdId := CommandId{
-				ClientId: desc.propose.ClientId,
-				SeqNum:   desc.propose.CommandId,
-			}
+			cmdId := desc.propose.RequestID()
 			if _, exists := msg.Phases[cmdId]; !exists {
 				go func(propose *defs.GPropose) {
 					r.ProposeChan <- propose
@@ -190,7 +183,7 @@ func (r *Replica) handleSync(msg *MSync) {
 	r.historySize = 0
 
 	i := 0
-	sorted := make([]CommandId, len(msg.Phases))
+	sorted := make([]defs.RequestID, len(msg.Phases))
 	for cmdId := range msg.Phases {
 		sorted[i] = cmdId
 		i++
@@ -212,12 +205,12 @@ func (r *Replica) handleSync(msg *MSync) {
 				if descPrime != nil {
 					descPrime.successors = append(descPrime.successors, cmdId)
 				}
-				go func(cmdIdPrime CommandId) {
+				go func(cmdIdPrime defs.RequestID) {
 					r.deliverChan <- cmdIdPrime
 				}(cmdIdPrime)
 			}
 
-			go func(cmdId CommandId) {
+			go func(cmdId defs.RequestID) {
 				r.deliverChan <- cmdId
 			}(cmdId)
 
@@ -273,7 +266,7 @@ func (r *Replica) reinitNewLeaderAckNs() {
 		return true
 	}
 	free := func(_ interface{}) {}
-	Q := replica.NewMajorityOf(r.N)
+	Q := NewMajorityOf(r.N)
 	r.newLeaderAckNs = r.newLeaderAckNs.ReinitMsgSet(Q, accept, free, r.handleNewLeaderAckNs)
 }
 
@@ -289,17 +282,18 @@ func (r *Replica) beginRecovery(newBallot int32) {
 			newLeader.Ballot = r.qs.SameHigher(newBallot, newLeader.Ballot)
 		}
 	} else {
-		newLeader.Ballot = replica.NextBallotOf(r.Id, newLeader.Ballot, r.N)
+		newLeader.Ballot = NextBallotOf(r.Id, newLeader.Ballot, r.N)
 	}
 	for quorumIsAlive := false; r.fixedMajority && !quorumIsAlive; {
 		quorumIsAlive = true
-		for rid := range r.qs.AQ(newLeader.Ballot) {
-			if rid != r.Id && !r.Alive[rid] {
-				newLeader.Ballot = replica.NextBallotOf(r.Id, newLeader.Ballot, r.N)
+		r.qs.AQ(newLeader.Ballot).Range(func(rid int) bool {
+			if rid != int(r.Id) && !r.Alive[rid] {
+				newLeader.Ballot = NextBallotOf(r.Id, newLeader.Ballot, r.N)
 				quorumIsAlive = false
-				break
+				return false
 			}
-		}
+			return true
+		})
 	}
 	r.SendToAll(newLeader, r.cs.newLeaderRPC)
 	r.reinitNewLeaderAckNs()

@@ -5,13 +5,14 @@ package kcensus
 // src/consensus/kcensus/propagation.rs. See LICENSE.upstream for its MIT license.
 import (
 	"fmt"
-	"math/bits"
+
+	"github.com/hongzicong/ConsensusArena/replicaset"
 )
 
-type Requirement []uint64
+type Requirement []replicaset.Set
 
-func (r Requirement) Quorum() uint64 {
-	var q uint64
+func (r Requirement) Quorum() replicaset.Set {
+	var q replicaset.Set
 	for w, a := range r {
 		if a != 0 {
 			q |= 1 << w
@@ -25,11 +26,11 @@ func (r Requirement) valid(n, f int) bool {
 		return false
 	}
 	q := r.Quorum()
-	if bits.OnesCount64(q) <= f || q>>(2*f+1) != 0 {
+	if q.Size() <= f || q>>(2*f+1) != 0 {
 		return false
 	}
 	for w, a := range r {
-		if a != 0 && (a&(1<<w) == 0 || a & ^q != 0) {
+		if a != 0 && (!a.Contains(w) || !q.Covers(a)) {
 			return false
 		}
 	}
@@ -38,13 +39,13 @@ func (r Requirement) valid(n, f int) bool {
 
 func Compatible(a, b Requirement, f int) bool {
 	i := a.Quorum() & b.Quorum()
-	var witnesses uint64
+	var witnesses replicaset.Set
 	for w := range a {
 		if a[w]&i != 0 || b[w]&i != 0 {
 			witnesses |= 1 << w
 		}
 	}
-	return bits.OnesCount64(witnesses) > f
+	return witnesses.Size() > f
 }
 
 func ValidateRequirements(rs []Requirement) error { return validateRequirements(rs, len(rs)) }

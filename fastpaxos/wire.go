@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
@@ -30,8 +31,8 @@ func (m *wireMessage) Marshal(w io.Writer) {
 		binary.LittleEndian.PutUint32(b[:4], uint32(e.Slot))
 		binary.LittleEndian.PutUint64(b[4:12], e.Epoch)
 		binary.LittleEndian.PutUint64(b[12:20], e.Round)
-		binary.LittleEndian.PutUint32(b[20:24], uint32(e.Value.ID.ClientId))
-		binary.LittleEndian.PutUint32(b[24:28], uint32(e.Value.ID.SeqNum))
+		binary.LittleEndian.PutUint32(b[20:24], uint32(e.Value.ID.Client))
+		binary.LittleEndian.PutUint32(b[24:28], uint32(e.Value.ID.Sequence))
 		if e.Payload {
 			b[28] |= 1
 		}
@@ -86,7 +87,7 @@ func (m *wireMessage) Unmarshal(r io.Reader) error {
 		}
 		e.Epoch = binary.LittleEndian.Uint64(b[4:12])
 		e.Round = binary.LittleEndian.Uint64(b[12:20])
-		e.Value.ID = CommandId{int32(binary.LittleEndian.Uint32(b[20:24])), int32(binary.LittleEndian.Uint32(b[24:28]))}
+		e.Value.ID = defs.RequestID{Client: int32(binary.LittleEndian.Uint32(b[20:24])), Sequence: int32(binary.LittleEndian.Uint32(b[24:28]))}
 		e.Payload = b[28]&1 != 0
 		e.Decided = b[28]&2 != 0
 		e.Value.Noop = b[28]&4 != 0

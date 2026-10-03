@@ -57,7 +57,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 	r.ConnectToPeersConcurrent()
 	defer r.CloseSenders()
 	go r.WaitForClientConnections()
-	waiting := map[requestID]*defs.GPropose{}
+	waiting := map[defs.RequestID]*defs.GPropose{}
 	e := newEngine(int(r.Id), r.N, opt, time.Now())
 	r.engine, r.waiting = e, waiting
 	e.clock = time.Now

@@ -18,7 +18,7 @@ type Replica struct {
 	control       chan leaderCall
 	rosterQueries chan chan defs.BodegaRosterReply
 	engine        *engine
-	waiting       map[requestID]*defs.GPropose
+	waiting       map[defs.RequestID]*defs.GPropose
 }
 
 func readOptions(c *config.Config, n int) (options, error) {

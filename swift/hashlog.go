@@ -5,11 +5,12 @@ import (
 	"crypto/sha256"
 	"fmt"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
 type HashNode struct {
-	id           CommandId
+	id           defs.RequestID
 	next         *HashNode
 	previous     *HashNode
 	proposalHash SHash
@@ -33,10 +34,10 @@ type HashLog struct {
 	hash  SHash
 	dirty bool // rebuild only when a proposal actually needs the path hash
 	// mapping from cmdIds to nodes
-	nodes map[CommandId]*HashNode
+	nodes map[defs.RequestID]*HashNode
 	// mapping from yet-to-be-synced commands to seqnums and hashes
 	// this is for the cases when a command is updated before being appended
-	pendingUpd map[CommandId]*UpdateEntry
+	pendingUpd map[defs.RequestID]*UpdateEntry
 }
 
 func (n *HashNode) String() string {
@@ -50,8 +51,8 @@ func NewHashLog() *HashLog {
 	return &HashLog{
 		ballot:     -1,
 		synced:     -1,
-		nodes:      make(map[CommandId]*HashNode),
-		pendingUpd: make(map[CommandId]*UpdateEntry),
+		nodes:      make(map[defs.RequestID]*HashNode),
+		pendingUpd: make(map[defs.RequestID]*UpdateEntry),
 	}
 }
 
@@ -68,13 +69,13 @@ func (l *HashLog) BeginBallot(ballot int32) int {
 	l.hash = l.syncedHash
 	l.ballot, l.synced = ballot, -1
 	l.pendingHead, l.pendingTail = nil, nil
-	l.nodes = make(map[CommandId]*HashNode)
-	l.pendingUpd = make(map[CommandId]*UpdateEntry)
+	l.nodes = make(map[defs.RequestID]*HashNode)
+	l.pendingUpd = make(map[defs.RequestID]*UpdateEntry)
 	l.dirty = false
 	return count
 }
 
-func (l *HashLog) Append(_ state.Command, cmdId CommandId) SHash {
+func (l *HashLog) Append(_ state.Command, cmdId defs.RequestID) SHash {
 	if upd, exists := l.pendingUpd[cmdId]; exists {
 		delete(l.pendingUpd, cmdId)
 		l.update(cmdId, upd.seqnum, upd.hash[0], false)
@@ -110,13 +111,13 @@ func (l *HashLog) Append(_ state.Command, cmdId CommandId) SHash {
 	return l.hash
 }
 
-func (l *HashLog) Update(cmdId CommandId, s int, h SHash) {
+func (l *HashLog) Update(cmdId defs.RequestID, s int, h SHash) {
 	l.update(cmdId, s, h, true)
 }
 
 // AppendDeferred retains the exact local order without making a fast proposal.
 // Replica ballot deduplication prevents later ordinary reinitialization of id.
-func (l *HashLog) AppendDeferred(cmdId CommandId) {
+func (l *HashLog) AppendDeferred(cmdId defs.RequestID) {
 	if upd, exists := l.pendingUpd[cmdId]; exists {
 		delete(l.pendingUpd, cmdId)
 		l.update(cmdId, upd.seqnum, upd.hash[0], false)
@@ -144,7 +145,7 @@ func (l *HashLog) AppendDeferred(cmdId CommandId) {
 // AppendAndUpdate has the same future path as Append followed immediately by
 // Update, without computing the unused proposal digest. Callers must already
 // have genuine leader evidence and must not emit a local fast vote for this id.
-func (l *HashLog) AppendAndUpdate(cmdId CommandId, s int, h SHash) {
+func (l *HashLog) AppendAndUpdate(cmdId defs.RequestID, s int, h SHash) {
 	if upd, exists := l.pendingUpd[cmdId]; exists {
 		delete(l.pendingUpd, cmdId)
 		l.update(cmdId, upd.seqnum, upd.hash[0], false)
@@ -162,7 +163,7 @@ func (l *HashLog) String() string {
 	return s + fmt.Sprintf("hash: %v", l.hash)
 }
 
-func (l *HashLog) update(cmdId CommandId, s int, h SHash, save bool) {
+func (l *HashLog) update(cmdId defs.RequestID, s int, h SHash, save bool) {
 	n, exists := l.nodes[cmdId]
 	if !exists && save {
 		l.pendingUpd[cmdId] = &UpdateEntry{
@@ -215,18 +216,18 @@ func (l *HashLog) pathHash() SHash {
 	return l.hash
 }
 
-func hash(initial [32]byte, cmdId CommandId) [32]byte {
+func hash(initial [32]byte, cmdId defs.RequestID) [32]byte {
 	bs := make([]byte, 40)
 	for i, b := range initial {
 		bs[i] = b
 	}
 
-	tmp32 := cmdId.ClientId
+	tmp32 := cmdId.Client
 	bs[32] = byte(tmp32)
 	bs[33] = byte(tmp32 >> 8)
 	bs[34] = byte(tmp32 >> 16)
 	bs[35] = byte(tmp32 >> 24)
-	tmp32 = cmdId.SeqNum
+	tmp32 = cmdId.Sequence
 	bs[36] = byte(tmp32)
 	bs[37] = byte(tmp32 >> 8)
 	bs[38] = byte(tmp32 >> 16)

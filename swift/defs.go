@@ -2,8 +2,7 @@ package swift
 
 // Protocol messages, identifiers, constants, and value helpers.
 import (
-	"fmt"
-
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -23,28 +22,13 @@ const (
 
 const HISTORY_SIZE = 10010001
 
-type CommandId struct {
-	ClientId int32
-	SeqNum   int32
-}
-
-type Dep []CommandId
-
-//////////////////////////////////////////////////////////////
-//                                                          //
-//  gobin-codegen doesn't support declarations of the form  //
-//                                                          //
-//      type A B                                            //
-//                                                          //
-//  that's why we use `[]CommandId` instead of `Dep`        //
-//                                                          //
-//////////////////////////////////////////////////////////////
+type Dep []defs.RequestID
 
 type MFastAck struct {
 	Replica  int32
 	Ballot   int32
-	CmdId    CommandId
-	Dep      []CommandId
+	CmdId    defs.RequestID
+	Dep      []defs.RequestID
 	Checksum []SHash
 	Seqnum   int
 }
@@ -52,22 +36,22 @@ type MFastAck struct {
 type MFastAckClient struct {
 	Replica  int32
 	Ballot   int32
-	CmdId    CommandId
+	CmdId    defs.RequestID
 	Checksum []SHash
 }
 
 type MSlowAck struct {
 	Replica  int32
 	Ballot   int32
-	CmdId    CommandId
-	Dep      []CommandId
+	CmdId    defs.RequestID
+	Dep      []defs.RequestID
 	Checksum []SHash
 }
 
 type MLightSlowAck struct {
 	Replica int32
 	Ballot  int32
-	CmdId   CommandId
+	CmdId   defs.RequestID
 }
 
 type MAcks struct {
@@ -76,8 +60,8 @@ type MAcks struct {
 }
 
 type Ack struct {
-	CmdId    CommandId
-	Dep      []CommandId
+	CmdId    defs.RequestID
+	Dep      []defs.RequestID
 	Checksum []SHash
 	Seqnum   int
 }
@@ -91,7 +75,7 @@ type MOptAcks struct {
 type MReply struct {
 	Replica  int32
 	Ballot   int32
-	CmdId    CommandId
+	CmdId    defs.RequestID
 	Checksum []SHash
 	Rep      []byte
 }
@@ -99,7 +83,7 @@ type MReply struct {
 type MAccept struct {
 	Replica int32
 	Ballot  int32
-	CmdId   CommandId
+	CmdId   defs.RequestID
 	Rep     []byte
 }
 
@@ -115,14 +99,14 @@ type MNewLeaderAck struct {
 }
 
 type SDep struct {
-	Dep []CommandId
+	Dep []defs.RequestID
 }
 
 type MNewLeaderAckN struct {
 	Replica int32
 	Ballot  int32
 	Cballot int32
-	CmdIds  []CommandId
+	CmdIds  []defs.RequestID
 	Phases  []int
 	Cmds    []state.Command
 	Deps    []SDep
@@ -136,9 +120,9 @@ type MShareState struct {
 type MSync struct {
 	Replica int32
 	Ballot  int32
-	Phases  map[CommandId]int
-	Cmds    map[CommandId]state.Command
-	Deps    map[CommandId]Dep
+	Phases  map[defs.RequestID]int
+	Cmds    map[defs.RequestID]state.Command
+	Deps    map[defs.RequestID]Dep
 }
 
 type MLightSync struct {
@@ -149,7 +133,7 @@ type MLightSync struct {
 type MCollect struct {
 	Replica int32
 	Ballot  int32
-	Ids     []CommandId
+	Ids     []defs.RequestID
 }
 
 type MPing struct {
@@ -162,11 +146,7 @@ type MPingRep struct {
 	Ballot  int32
 }
 
-func (cmdId CommandId) String() string {
-	return fmt.Sprintf("%v,%v", cmdId.ClientId, cmdId.SeqNum)
-}
-
-func (d Dep) Contains(cmdId CommandId) bool {
+func (d Dep) Contains(cmdId defs.RequestID) bool {
 	for _, c := range d {
 		if c == cmdId {
 			return true
@@ -175,11 +155,11 @@ func (d Dep) Contains(cmdId CommandId) bool {
 	return false
 }
 
-func NilDepOfCmdId(cmdId CommandId) Dep {
-	return []CommandId{cmdId}
+func NilDepOfCmdId(cmdId defs.RequestID) Dep {
+	return []defs.RequestID{cmdId}
 }
 
-func IsNilDepOfCmdId(cmdId CommandId, dep Dep) bool {
+func IsNilDepOfCmdId(cmdId defs.RequestID, dep Dep) bool {
 	return len(dep) == 1 && dep[0] == cmdId
 }
 
@@ -188,8 +168,8 @@ func (dep1 Dep) Equals(dep2 Dep) bool {
 		return false
 	}
 
-	seen1 := make(map[CommandId]struct{})
-	seen2 := make(map[CommandId]struct{})
+	seen1 := make(map[defs.RequestID]struct{})
+	seen2 := make(map[defs.RequestID]struct{})
 	for i := 0; i < len(dep1); i++ {
 		if dep1[i] == dep2[i] {
 			continue

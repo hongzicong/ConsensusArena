@@ -6,6 +6,8 @@ import (
 	"math/bits"
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -25,7 +27,7 @@ type slotState struct {
 	fetchSent                           bool
 	fetchTarget                         int
 	nextRetry, retryDelay               time.Duration
-	knowledge                           []uint64
+	knowledge                           []replicaset.Set
 	knowledgeTime                       time.Duration
 	frozen                              bool
 	participants, announcedParticipants uint64
@@ -43,9 +45,9 @@ type slotState struct {
 type shard struct {
 	high, executed uint64
 	slots          map[uint64]*slotState
-	pending        []CommandID
-	queued         map[CommandID]bool
-	shared         map[CommandID]bool
+	pending        []defs.RequestID
+	queued         map[defs.RequestID]bool
+	shared         map[defs.RequestID]bool
 	objects        map[uint64]*Value
 	nextUID        uint64
 	pendingValue   *Value
@@ -87,14 +89,14 @@ type core struct {
 	retryQueue          []slotID
 	retryHead           int
 	retryBudget         int
-	known               map[CommandID]Record
-	commandUIDs         map[CommandID]uint64
-	results             map[CommandID]state.Value
-	ordered             map[CommandID]bool
-	reads               map[CommandID]*pendingRead
-	readQueue           []CommandID
+	known               map[defs.RequestID]Record
+	commandUIDs         map[defs.RequestID]uint64
+	results             map[defs.RequestID]state.Value
+	ordered             map[defs.RequestID]bool
+	reads               map[defs.RequestID]*pendingRead
+	readQueue           []defs.RequestID
 	readHead            int
-	readsByKey          map[state.Key]map[CommandID]*pendingRead
+	readsByKey          map[state.Key]map[defs.RequestID]*pendingRead
 	gaps                map[state.Key]bool
 	gapQueue            []state.Key
 	gapHead             int
@@ -108,9 +110,9 @@ type core struct {
 	probes              [8]heartbeatProbe
 	failure, retry      time.Duration
 	execute             func(Record) state.Value
-	complete            func(CommandID, state.Value)
+	complete            func(defs.RequestID, state.Value)
 	stats               Stats
-	localWrites         map[CommandID]writeArrival
+	localWrites         map[defs.RequestID]writeArrival
 	pendingKeys         []state.Key
 	pendingHead         int
 	future              map[state.Key][]message
@@ -140,13 +142,13 @@ func newCore(id int, plan Plan, failure time.Duration) *core {
 	if failure <= 0 {
 		failure = 1500 * time.Millisecond
 	}
-	return &core{id: id, n: n, m: m, f: n / 2, plan: plan, priority: plan.leaderPriority(), shards: make(map[state.Key]*shard), active: make(map[slotID]*slotState), known: make(map[CommandID]Record), commandUIDs: make(map[CommandID]uint64), results: make(map[CommandID]state.Value), ordered: make(map[CommandID]bool), reads: make(map[CommandID]*pendingRead), readsByKey: make(map[state.Key]map[CommandID]*pendingRead), gaps: make(map[state.Key]bool), heard: make([]time.Duration, m), failure: failure, retry: failure / 3, localWrites: make(map[CommandID]writeArrival), future: make(map[state.Key][]message)}
+	return &core{id: id, n: n, m: m, f: n / 2, plan: plan, priority: plan.leaderPriority(), shards: make(map[state.Key]*shard), active: make(map[slotID]*slotState), known: make(map[defs.RequestID]Record), commandUIDs: make(map[defs.RequestID]uint64), results: make(map[defs.RequestID]state.Value), ordered: make(map[defs.RequestID]bool), reads: make(map[defs.RequestID]*pendingRead), readsByKey: make(map[state.Key]map[defs.RequestID]*pendingRead), gaps: make(map[state.Key]bool), heard: make([]time.Duration, m), failure: failure, retry: failure / 3, localWrites: make(map[defs.RequestID]writeArrival), future: make(map[state.Key][]message)}
 }
 
 func (c *core) shard(k state.Key) *shard {
 	s := c.shards[k]
 	if s == nil {
-		s = &shard{objects: make(map[uint64]*Value), nextUID: uint64(2 * c.id), slots: make(map[uint64]*slotState), queued: make(map[CommandID]bool), shared: make(map[CommandID]bool)}
+		s = &shard{objects: make(map[uint64]*Value), nextUID: uint64(2 * c.id), slots: make(map[uint64]*slotState), queued: make(map[defs.RequestID]bool), shared: make(map[defs.RequestID]bool)}
 		c.shards[k] = s
 	}
 	return s
@@ -165,7 +167,7 @@ func (c *core) slot(k state.Key, i uint64) *slotState {
 	}
 	x := s.slots[i]
 	if x == nil {
-		x = &slotState{knowledge: make([]uint64, c.m), created: c.now, nextRetry: c.now + c.retry, retryDelay: c.retry}
+		x = &slotState{knowledge: make([]replicaset.Set, c.m), created: c.now, nextRetry: c.now + c.retry, retryDelay: c.retry}
 		s.slots[i] = x
 		c.active[slotID{k, i}] = x
 		c.retryQueue = append(c.retryQueue, slotID{k, i})
@@ -255,7 +257,7 @@ func (c *core) submit(r Record) error {
 			c.reads[r.ID] = q
 			c.readQueue = append(c.readQueue, r.ID)
 			if c.readsByKey[r.Command.K] == nil {
-				c.readsByKey[r.Command.K] = make(map[CommandID]*pendingRead)
+				c.readsByKey[r.Command.K] = make(map[defs.RequestID]*pendingRead)
 			}
 			c.readsByKey[r.Command.K][r.ID] = q
 			c.stats.Reads++
@@ -343,7 +345,7 @@ func (c *core) validValue(k state.Key, v *Value, fast bool) bool {
 	if v == nil || v.Proposer < 0 || v.Proposer >= c.m || len(v.Records) > maxBatch || (fast && len(v.Records) == 0) {
 		return false
 	}
-	seen := map[CommandID]bool{}
+	seen := map[defs.RequestID]bool{}
 	bytes := 0
 	for _, r := range v.Records {
 		bytes += recordBytes(r)
@@ -363,7 +365,7 @@ func (c *core) canCommit(x *slotState) bool {
 		return false
 	}
 	for w, req := range c.plan.Requirements[x.fast.Proposer] {
-		if req & ^x.knowledge[w] != 0 {
+		if !x.knowledge[w].Covers(req) {
 			return false
 		}
 	}

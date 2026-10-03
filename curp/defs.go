@@ -2,8 +2,7 @@ package curp
 
 // Protocol messages, identifiers, constants, and value helpers.
 import (
-	"fmt"
-
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -12,19 +11,10 @@ const (
 	FALSE = uint8(0)
 )
 
-type CommandId struct {
-	ClientId int32
-	SeqNum   int32
-}
-
-func (cmdId CommandId) String() string {
-	return fmt.Sprintf("%v,%v", cmdId.ClientId, cmdId.SeqNum)
-}
-
 type MReply struct {
 	Replica int32
 	Ballot  int32
-	CmdId   CommandId
+	CmdId   defs.RequestID
 	Rep     []byte
 	Ok      uint8
 }
@@ -33,7 +23,7 @@ type MAccept struct {
 	Replica int32
 	Ballot  int32
 	Cmd     state.Command
-	CmdId   CommandId
+	CmdId   defs.RequestID
 	CmdSlot int
 }
 
@@ -51,7 +41,7 @@ type MAAcks struct {
 type MRecordAck struct {
 	Replica int32
 	Ballot  int32
-	CmdId   CommandId
+	CmdId   defs.RequestID
 	Ok      uint8
 }
 
@@ -62,13 +52,13 @@ type MCommit struct {
 }
 
 type MSync struct {
-	CmdId CommandId
+	CmdId defs.RequestID
 }
 
 type MSyncReply struct {
 	Replica int32
 	Ballot  int32
-	CmdId   CommandId
+	CmdId   defs.RequestID
 	Rep     []byte
 }
 
@@ -76,10 +66,8 @@ const PageSize = 128
 
 const AdmissionWindow = 8192
 
-type Key struct{ Client, Sequence int32 }
-
 type Request struct {
-	ID      Key
+	ID      defs.RequestID
 	Command state.Command
 }
 

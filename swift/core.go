@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"github.com/hongzicong/ConsensusArena/hook"
-	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 )
@@ -19,8 +18,8 @@ type commandDesc struct {
 	propose    *defs.GPropose
 	proposeDep Dep
 
-	slowPathH      *replica.MsgSet
-	fastPathH      *replica.MsgSet
+	slowPathH      *MsgSet
+	fastPathH      *MsgSet
 	afterPropagate *hook.OptCondF
 
 	msgs     chan interface{}
@@ -29,7 +28,7 @@ type commandDesc struct {
 	seq      bool
 	stopChan chan *sync.WaitGroup
 
-	successors  []CommandId
+	successors  []defs.RequestID
 	successorsL sync.Mutex
 
 	// execute before sending an MSync message
@@ -37,7 +36,7 @@ type commandDesc struct {
 }
 
 type commandStaticDesc struct {
-	cmdId    CommandId
+	cmdId    defs.RequestID
 	phase    int
 	cmd      state.Command
 	dep      Dep
@@ -53,7 +52,7 @@ type readDesc struct {
 
 type deferredProposal struct{ propose *defs.GPropose }
 
-func (r *Replica) handlePropose(msg *defs.GPropose, desc *commandDesc, cmdId CommandId) {
+func (r *Replica) handlePropose(msg *defs.GPropose, desc *commandDesc, cmdId defs.RequestID) {
 	if r.status != NORMAL || desc.propose != nil {
 		return
 	}
@@ -72,7 +71,7 @@ func (r *Replica) handlePropose(msg *defs.GPropose, desc *commandDesc, cmdId Com
 	}
 	desc.cmd = msg.Command
 
-	if !r.FQ.Contains(r.Id) || desc.deferFast {
+	if !r.FQ.Contains(int(r.Id)) || desc.deferFast {
 		desc.afterPropagate.Recall()
 		return
 	}
@@ -141,8 +140,8 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 		dep := Dep(msg.Dep)
 		hs := desc.hs
 		neq := !desc.dep.Equals(dep)
-		fast := r.FQ.Contains(r.Id)
-		slow := r.SQ.Contains(r.Id)
+		fast := r.FQ.Contains(int(r.Id))
+		slow := r.SQ.Contains(int(r.Id))
 		sendSlowAck := r.leader() != r.Id && (slow || (fast && neq))
 		msgCmdId := msg.CmdId
 		msgChecksum := msg.Checksum
@@ -158,7 +157,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 					CmdId:   msgCmdId,
 				}
 
-				r.SendClientMsg(msgCmdId.ClientId, r.cs.lightSlowAckRPC, lightSlowAck)
+				r.SendClientMsg(msgCmdId.Client, r.cs.lightSlowAckRPC, lightSlowAck)
 			}
 		}()
 
@@ -184,7 +183,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 			if !r.optExec {
 				r.batcher.SendLightSlowAck(lightSlowAck)
 			} else {
-				r.batcher.SendLightSlowAckClient(lightSlowAck, msgCmdId.ClientId)
+				r.batcher.SendLightSlowAckClient(lightSlowAck, msgCmdId.Client)
 			}
 			if !delivered {
 				r.handleLightSlowAck(lightSlowAck, desc)
@@ -208,7 +207,7 @@ func (r *Replica) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
 	desc.fastPathH.Add(msg.Replica, msg.Replica == r.leader(), msg)
 }
 
-func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) replica.MsgSetHandler {
+func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {
 	return func(leaderMsg interface{}, msgs []interface{}) {
 
 		if leaderMsg == nil {
@@ -242,11 +241,11 @@ func (r *Replica) handleLightSlowAck(msg *MLightSlowAck, desc *commandDesc) {
 	r.commonCaseFastAck(fastAck, desc)
 }
 
-func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *commandDesc {
+func (r *Replica) getCmdDesc(cmdId defs.RequestID, msg interface{}, dep Dep) *commandDesc {
 	return r.getCmdDescSeq(cmdId, msg, dep, nil, false)
 }
 
-func (r *Replica) getCmdDescSeq(cmdId CommandId, msg interface{}, dep Dep, hs []SHash, seq bool) *commandDesc {
+func (r *Replica) getCmdDescSeq(cmdId defs.RequestID, msg interface{}, dep Dep, hs []SHash, seq bool) *commandDesc {
 	key := cmdId.String()
 	if r.delivered.Has(key) {
 		return nil
@@ -353,7 +352,7 @@ func (r *Replica) freeDesc(desc *commandDesc) {
 	}
 }
 
-func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
+func (r *Replica) handleDesc(desc *commandDesc, cmdId defs.RequestID) {
 	defer func() {
 		for len(desc.stopChan) != 0 {
 			(<-desc.stopChan).Done()
@@ -375,7 +374,7 @@ func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 	}
 }
 
-func (r *Replica) handleMsg(m interface{}, desc *commandDesc, cmdId CommandId) bool {
+func (r *Replica) handleMsg(m interface{}, desc *commandDesc, cmdId defs.RequestID) bool {
 	switch msg := m.(type) {
 
 	case *defs.GPropose:
@@ -418,15 +417,15 @@ func (r *Replica) handleMsg(m interface{}, desc *commandDesc, cmdId CommandId) b
 }
 
 func (r *Replica) leader() int32 {
-	return replica.Leader(r.ballot, r.N)
+	return Leader(r.ballot, r.N)
 }
 
-func (r *Replica) getDepAndHashes(cmd state.Command, cmdId CommandId) (Dep, []SHash) {
+func (r *Replica) getDepAndHashes(cmd state.Command, cmdId defs.RequestID) (Dep, []SHash) {
 	return r.getDepAndHashesWithUpdate(cmd, cmdId, nil, false)
 }
 
-func (r *Replica) getDepAndHashesWithUpdate(cmd state.Command, cmdId CommandId, update *UpdateEntry, deferHash bool) (Dep, []SHash) {
-	dep := []CommandId{}
+func (r *Replica) getDepAndHashesWithUpdate(cmd state.Command, cmdId defs.RequestID, update *UpdateEntry, deferHash bool) (Dep, []SHash) {
+	dep := []defs.RequestID{}
 	hashes := []SHash{}
 	keysOfCmd := keysOf(cmd)
 	if update != nil && len(update.hash) != len(keysOfCmd) {
@@ -465,7 +464,7 @@ func (r *Replica) getDepAndHashesWithUpdate(cmd state.Command, cmdId CommandId, 
 	return dep, hashes
 }
 
-func (r *Replica) recordLeaderHash(cmdId CommandId, s int, hs []SHash) {
+func (r *Replica) recordLeaderHash(cmdId defs.RequestID, s int, hs []SHash) {
 	p, exists := r.proposes[cmdId]
 	if !exists {
 		r.pendingHashUpds[cmdId] = &UpdateEntry{
@@ -477,7 +476,7 @@ func (r *Replica) recordLeaderHash(cmdId CommandId, s int, hs []SHash) {
 	r.updateLogs(p.Command, cmdId, s, hs)
 }
 
-func (r *Replica) updateLogs(cmd state.Command, cmdId CommandId, s int, hs []SHash) {
+func (r *Replica) updateLogs(cmd state.Command, cmdId defs.RequestID, s int, hs []SHash) {
 	keys := keysOf(cmd)
 
 	if len(keys) != len(hs) {
@@ -515,9 +514,7 @@ func (r *Replica) handleProposalBatch(first *defs.GPropose) {
 }
 
 func (r *Replica) handleQueuedProposal(propose *defs.GPropose) {
-	var cmdId CommandId
-	cmdId.ClientId = propose.ClientId
-	cmdId.SeqNum = propose.CommandId
+	cmdId := propose.RequestID()
 	if _, seen := r.proposedInBallot[cmdId]; seen {
 		return
 	}
@@ -533,7 +530,7 @@ func (r *Replica) handleQueuedProposal(propose *defs.GPropose) {
 	var dep Dep
 	var hs []SHash
 	deferFast := !deferred && r.shouldDeferFast(propose.Command)
-	if deferred && r.leader() != r.Id && r.SQ.Contains(r.Id) {
+	if deferred && r.leader() != r.Id && r.SQ.Contains(int(r.Id)) {
 		// The already-enqueued leader transition will send SlowAck and make
 		// handlePropose return before any local FastAck can consume this hash.
 		dep, hs = r.getDepAndHashesWithUpdate(propose.Command, cmdId, upd, false)
@@ -545,7 +542,7 @@ func (r *Replica) handleQueuedProposal(propose *defs.GPropose) {
 	} else {
 		dep, hs = r.getDepAndHashes(propose.Command, cmdId)
 	}
-	if deferred && r.leader() != r.Id && !r.SQ.Contains(r.Id) {
+	if deferred && r.leader() != r.Id && !r.SQ.Contains(int(r.Id)) {
 		// TODO: when pipelining this can break ordering, disabling fast paths.
 		delete(r.pendingHashUpds, cmdId)
 		r.recordLeaderHash(cmdId, upd.seqnum, upd.hash)
@@ -565,7 +562,7 @@ func (r *Replica) handleQueuedProposal(propose *defs.GPropose) {
 func (r *Replica) shouldDeferFast(cmd state.Command) bool {
 	// Optional speculative reads may need the local proxy's execution/reply.
 	// Keep their existing path rather than suppressing that local fast vote.
-	if r.fastRead || r.leader() == r.Id || !r.SQ.Contains(r.Id) {
+	if r.fastRead || r.leader() == r.Id || !r.SQ.Contains(int(r.Id)) {
 		return false
 	}
 	for _, key := range keysOf(cmd) {

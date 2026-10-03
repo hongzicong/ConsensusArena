@@ -30,15 +30,14 @@ type Client struct {
 	control     chan message
 	resultInbox chan message
 	proposals   chan Record
-	peers       []replica.PendingSender
+	peers       *replica.PeerStreams
 	stop        chan struct{}
 	closeOnce   sync.Once
 	listener    net.Listener
-	sendMu      sync.Mutex
-	requests    map[CommandID]*clientRequest
-	done        map[CommandID]bool
+	requests    map[defs.RequestID]*clientRequest
+	done        map[defs.RequestID]bool
 	readersOnce sync.Once
-	queryQueue  []CommandID
+	queryQueue  []defs.RequestID
 	queryHead   int
 }
 
@@ -57,12 +56,12 @@ func NewClient(b *client.BufferClient, conf *config.Config, clone int) *Client {
 	if pid < 0 {
 		panic("KCensus client alias/clone is not configured")
 	}
-	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, topology: topology, engine: newCore(pid, topology.Plan, conf.KCensusFailure), inbox: make(chan message, 65536), resultInbox: make(chan message, 4096), proposals: make(chan Record, 65536), stop: make(chan struct{}), requests: make(map[CommandID]*clientRequest), done: make(map[CommandID]bool)}
+	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, topology: topology, engine: newCore(pid, topology.Plan, conf.KCensusFailure), inbox: make(chan message, 65536), resultInbox: make(chan message, 4096), proposals: make(chan Record, 65536), stop: make(chan struct{}), requests: make(map[defs.RequestID]*clientRequest), done: make(map[defs.RequestID]bool)}
 	b.ClientId = int32(pid)
 	c.control = make(chan message, 4*c.engine.m)
 	b.SkipPing = true
 	b.ClosestId = topology.Plan.Leaders[pid]
-	c.peers = make([]replica.PendingSender, len(topology.Aliases))
+	c.peers = replica.NewPeerStreams(len(topology.Aliases))
 	b.SetProtocol(c)
 	return c
 }
@@ -94,8 +93,6 @@ func (c *Client) Start() error {
 
 func (c *Client) WaitReplies(_ int) {
 	c.readersOnce.Do(func() {
-		c.sendMu.Lock()
-		defer c.sendMu.Unlock()
 		select {
 		case <-c.stop:
 			return
@@ -103,8 +100,11 @@ func (c *Client) WaitReplies(_ int) {
 		}
 		for id := 0; id < c.engine.n; id++ {
 			if c.Connection(id) != nil {
-				c.startStreamSender(id, c.Connection(id), c.Writer(id))
-				go c.readStream(id, c.Connection(id), c.Reader(id))
+				if c.bindStream(id, c.Connection(id), c.Writer(id)) == nil {
+					go c.readStream(id, c.Connection(id), c.Reader(id))
+				} else {
+					c.MarkPeerFailed(id)
+				}
 			} else {
 				c.MarkPeerFailed(id)
 			}
@@ -117,7 +117,7 @@ func (c *Client) SendProposal(p defs.Propose) {
 		panic(fmt.Sprintf("KCensus supports PUT/GET, not operation %d", p.Command.Op))
 	}
 	select {
-	case c.proposals <- Record{CommandID{int32(c.engine.id), p.CommandId}, p.Command}:
+	case c.proposals <- Record{defs.RequestID{Client: int32(c.engine.id), Sequence: p.CommandId}, p.Command}:
 	case <-c.stop:
 	}
 }
@@ -128,12 +128,7 @@ func (c *Client) Close() {
 		if c.listener != nil {
 			c.listener.Close()
 		}
-		c.sendMu.Lock()
-		defer c.sendMu.Unlock()
-		for i := range c.peers {
-			p := &c.peers[i]
-			p.Close()
-		}
+		c.peers.Close()
 	})
 }
 
@@ -175,7 +170,7 @@ func (c *Client) receiveResult(m message) {
 		delete(s.queued, m.ID)
 		delete(s.shared, m.ID)
 	}
-	c.RegisterReply(m.Result, m.ID.Seq)
+	c.RegisterReply(m.Result, m.ID.Sequence)
 }
 
 // Fair, bounded cache repair. Queries never propose a PUT or authorize completion.

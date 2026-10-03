@@ -20,28 +20,28 @@ type Client struct {
 	N         int
 	cs        CommunicationSupply
 	ballot    int32
-	pending   map[CommandId]*completion
+	pending   map[defs.RequestID]*completion
 	delivered map[int32]struct{}
 }
 
 func NewClient(b *client.BufferClient, n int) *Client {
-	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, N: n, ballot: -1, pending: map[CommandId]*completion{}, delivered: map[int32]struct{}{}}
+	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, N: n, ballot: -1, pending: map[defs.RequestID]*completion{}, delivered: map[int32]struct{}{}}
 	b.MonitorRPCFailures = true
 	b.SetProtocol(c)
 	return c
 }
 
-func (c *Client) evidence(id CommandId, ballot, replica int32) *completion {
-	if id.ClientId != c.ClientId || replica < 0 || int(replica) >= c.N || ballot < c.ballot {
+func (c *Client) evidence(id defs.RequestID, ballot, replica int32) *completion {
+	if id.Client != c.ClientId || replica < 0 || int(replica) >= c.N || ballot < c.ballot {
 		return nil
 	}
-	if _, done := c.delivered[id.SeqNum]; done {
+	if _, done := c.delivered[id.Sequence]; done {
 		return nil
 	}
 	if ballot > c.ballot {
 		// A quorum must belong to one ballot. Never combine witness records across elections.
 		c.ballot = ballot
-		c.pending = map[CommandId]*completion{}
+		c.pending = map[defs.RequestID]*completion{}
 	}
 	p := c.pending[id]
 	if p == nil {
@@ -51,13 +51,13 @@ func (c *Client) evidence(id CommandId, ballot, replica int32) *completion {
 	return p
 }
 
-func (c *Client) finish(id CommandId, v state.Value) {
-	c.delivered[id.SeqNum] = struct{}{}
+func (c *Client) finish(id defs.RequestID, v state.Value) {
+	c.delivered[id.Sequence] = struct{}{}
 	delete(c.pending, id)
-	c.RegisterReply(v, id.SeqNum)
+	c.RegisterReply(v, id.Sequence)
 }
 
-func (c *Client) tryFast(id CommandId, p *completion) {
+func (c *Client) tryFast(id defs.RequestID, p *completion) {
 	f := c.N / 2
 	if p.leaderReply && bits.OnesCount64(p.votes) >= f+(f+1)/2+1 {
 		c.finish(id, p.value)

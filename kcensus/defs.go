@@ -3,8 +3,10 @@ package kcensus
 // Protocol messages, identifiers, constants, and value helpers.
 import (
 	"bytes"
-	"net"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
+	"github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -35,10 +37,8 @@ const maxBatch = 4096
 
 const maxBatchBytes = 4 << 20
 
-type CommandID struct{ Client, Seq int32 }
-
 type Record struct {
-	ID      CommandID
+	ID      defs.RequestID
 	Command state.Command
 }
 
@@ -72,9 +72,9 @@ type message struct {
 	Proposer                           int // fast value identity within this key/slot
 	Key                                state.Key
 	Slot, Ballot, AcceptedBallot, High uint64
-	ID                                 CommandID
+	ID                                 defs.RequestID
 	Value, Fast                        *Value
-	Knowledge                          []uint64
+	Knowledge                          []replicaset.Set
 	Mask                               uint64 // Abandon: proposer set; Promise: frozen first-order evidence
 	Digest                             [32]byte
 	GraphTime                          int64
@@ -87,8 +87,7 @@ type message struct {
 	Request                            *Record
 	Result                             state.Value
 	// Local transport context, never serialized.
-	ClientConn     net.Conn
-	ClientIdentity string
+	ClientConnection *rpc.ClientConnection
 }
 
 // Original voter identity survives relaying. Ballot zero denotes an unfrozen

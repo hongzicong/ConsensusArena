@@ -15,7 +15,7 @@ type Replica struct {
 	engine *core
 	inbox chan fastrpc.Serializable
 	code uint8
-	pending map[commandID]*defs.GPropose
+	pending map[defs.RequestID]*defs.GPropose
 	peers []*replica.Sender
 }
 
@@ -30,7 +30,7 @@ func New(alias string, id int, addrs []string, conf *config.Config, logger *dlog
 	r := &Replica{
 		Replica: replica.New(alias, id, (len(addrs)-1)/2, addrs, false, true, false, conf, logger),
 		engine: engine, inbox: make(chan fastrpc.Serializable, queueCapacity),
-		pending: make(map[commandID]*defs.GPropose),
+		pending: make(map[defs.RequestID]*defs.GPropose),
 	}
 	r.engine.execute = func(cmd state.Command) state.Value { return cmd.Execute(r.State) }
 	// Keep the registration order identical on every replica.

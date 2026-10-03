@@ -32,6 +32,16 @@ for count in "${requested_replica_counts[@]}"; do
     seen_replica_counts[$count]=1
     if (( count > max_replica_count )); then max_replica_count=$count; fi
 done
+cases_spec=${CONSENSUSARENA_CASES:-}
+declare -A selected_cases=()
+if [[ -n "$cases_spec" ]]; then
+    [[ "$cases_spec" =~ ^(5|9|13)-[123](:(5|9|13)-[123])*$ ]] || { echo "Invalid size-topology cases: $cases_spec" >&2; exit 1; }
+    IFS=: read -r -a case_names <<< "$cases_spec"
+    for case_name in "${case_names[@]}"; do
+        [[ -n "${seen_replica_counts[${case_name%-*}]:-}" && -z "${selected_cases[$case_name]:-}" ]] || { echo "Duplicate or unrequested case: $case_name" >&2; exit 1; }
+        selected_cases[$case_name]=1
+    done
+fi
 required_tasks=$((max_replica_count + 11))
 required_nodes=$(((required_tasks + 7) / 8))
 if (( ${SLURM_NTASKS:-0} < required_tasks || ${SLURM_JOB_NUM_NODES:-0} < required_nodes || ${SLURM_CPUS_PER_TASK:-8} < 8 )); then
@@ -146,9 +156,12 @@ printf '%s\n' \
     'ycsb_semantics=ratio-only; READ is mapped to GET; UPDATE is mapped to PUT' \
     'request_distribution=zipfian' >> "$run_dir/metadata.txt"
 printf 'resource_observer=GNU time per role; exit-time CPU, RSS, context switches\n' >> "$run_dir/metadata.txt"
+printf 'experiment_design=three_topologies_one_run_each\ntopology_ids=1:2:3\nrepetitions_per_topology=1\nlatency_source=CloudPing 1Y P50\n' >> "$run_dir/metadata.txt"
+printf 'selected_cases=%s\n' "$cases_spec" >> "$run_dir/metadata.txt"
 
 run_scale() {
-    local run_dir="$sweep_dir/replicas-$1"
+    local run_dir="$sweep_dir/replicas-$1/topology-$2"
+    export CONSENSUSARENA_TOPOLOGY=$2
     local combined_summary combined_details
     export CONSENSUSARENA_REPLICAS=$1
     source "$script_dir/topology.sh"
@@ -208,8 +221,8 @@ run_scale() {
         > "$run_dir/config/latency.conf"
 
     repetitions=$(awk '$1 == "repetitions:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
-    if [[ ! "$repetitions" =~ ^[1-9][0-9]*$ ]]; then
-        echo "Invalid repetitions value: $repetitions" >&2
+    if [[ "$repetitions" != 1 ]]; then
+        echo "Each topology must run exactly once; repetitions=$repetitions" >&2
         exit 1
     fi
     preload_enabled=$(awk 'tolower($1) == "preload:" { print tolower($2); exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
@@ -260,8 +273,10 @@ run_scale() {
         cp "$profile_dir/config/address-map.txt" "$repetition_dir/config/address-map.txt"
         cp "$profile_dir/config/latency.conf" "$repetition_dir/config/latency.conf"
         cp "$profile_dir/plan.json" "$repetition_dir/plan.json"
+        cp "$run_dir/config/logical/topology.json" "$repetition_dir/topology.json"
+        cp "$run_dir/config/logical/topology-metadata.txt" "$repetition_dir/metadata.txt"
         printf 'ycsb_profile=%s\nwrite_ratio_percent=%s\nworkload_seed=%s\npreload_enabled=%s\n' \
-            "$profile" "$write_ratio" "$workload_seed" "$preload_enabled" > "$repetition_dir/metadata.txt"
+            "$profile" "$write_ratio" "$workload_seed" "$preload_enabled" >> "$repetition_dir/metadata.txt"
 
         echo "Starting YCSB profile $profile (${write_ratio}% writes) $repetition_name/$repetitions through Toxiproxy..."
         srun --nodelist="$scale_nodes" --nodes="$node_count" --ntasks="$task_count" --ntasks-per-node="$tasks_per_node" --cpus-per-task=8 --distribution=cyclic \
@@ -384,14 +399,14 @@ run_scale() {
 
         bash "$script_dir/summarize-repetitions.sh" "$profile_dir" "$repetitions"
         if [[ ! -s "$combined_summary" ]]; then
-            awk 'NR == 1 { print "ReplicaCount,Protocol,YCSBProfile,ReadRatioPercent,WriteRatioPercent," $0 }' "$profile_dir/summary.csv" > "$combined_summary"
-            awk 'NR == 1 { print "ReplicaCount,Protocol,YCSBProfile,ReadRatioPercent,WriteRatioPercent," $0 }' "$profile_dir/repetition-summaries.csv" > "$combined_details"
+            awk 'NR == 1 { print "ReplicaCount,TopologyID,Protocol,YCSBProfile,ReadRatioPercent,WriteRatioPercent," $0 }' "$profile_dir/summary.csv" > "$combined_summary"
+            awk 'NR == 1 { print "ReplicaCount,TopologyID,Protocol,YCSBProfile,ReadRatioPercent,WriteRatioPercent," $0 }' "$profile_dir/repetition-summaries.csv" > "$combined_details"
         fi
-        awk -v replica_count="$replica_count" -v protocol="$protocol" -v profile="$profile" -v read_ratio="$read_ratio" -v write_ratio="$write_ratio" \
-            'NR > 1 { print replica_count "," protocol "," profile "," read_ratio "," write_ratio "," $0 }' \
+        awk -v replica_count="$replica_count" -v topology_id="$topology_id" -v protocol="$protocol" -v profile="$profile" -v read_ratio="$read_ratio" -v write_ratio="$write_ratio" \
+            'NR > 1 { print replica_count "," topology_id "," protocol "," profile "," read_ratio "," write_ratio "," $0 }' \
             "$profile_dir/summary.csv" >> "$combined_summary"
-        awk -v replica_count="$replica_count" -v protocol="$protocol" -v profile="$profile" -v read_ratio="$read_ratio" -v write_ratio="$write_ratio" \
-            'NR > 1 { print replica_count "," protocol "," profile "," read_ratio "," write_ratio "," $0 }' \
+        awk -v replica_count="$replica_count" -v topology_id="$topology_id" -v protocol="$protocol" -v profile="$profile" -v read_ratio="$read_ratio" -v write_ratio="$write_ratio" \
+            'NR > 1 { print replica_count "," topology_id "," protocol "," profile "," read_ratio "," write_ratio "," $0 }' \
             "$profile_dir/repetition-summaries.csv" >> "$combined_details"
     done
 
@@ -406,19 +421,23 @@ for filename in summary.csv repetition-summaries.csv; do
     : > "$run_dir/$filename"
 done
 for requested_count in "${requested_replica_counts[@]}"; do
-    run_scale "$requested_count"
+  for requested_topology in 1 2 3; do
+    if [[ -n "$cases_spec" && -z "${selected_cases[$requested_count-$requested_topology]:-}" ]]; then continue; fi
+    run_scale "$requested_count" "$requested_topology"
     for filename in summary.csv repetition-summaries.csv; do
-        source_csv="$run_dir/replicas-$requested_count/$filename"
+        source_csv="$run_dir/replicas-$requested_count/topology-$requested_topology/$filename"
         if [[ ! -s "$run_dir/$filename" ]]; then
             head -n 1 "$source_csv" > "$run_dir/$filename"
         fi
         tail -n +2 "$source_csv" >> "$run_dir/$filename"
     done
+  done
 done
 combined_summary="$run_dir/summary.csv"
 combined_details="$run_dir/repetition-summaries.csv"
 printf 'protocol=%s\n' "$protocol" >> "$run_dir/metadata.txt"
 printf 'completed_at=%s\n' "$(date --iso-8601=seconds)" >> "$run_dir/metadata.txt"
+"${CONSENSUSARENA_PYTHON:-python3}" "$script_dir/export-latency.py" "$run_dir"
 cat "$combined_summary"
 printf 'YCSB profile details: %s\n' "$combined_details"
 printf 'YCSB profile summary: %s\n' "$combined_summary"

@@ -4,6 +4,7 @@ package fastpaxos
 import (
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -33,7 +34,7 @@ const fastWindow = 8192
 const failureTimeout = 3 * time.Second
 
 type record struct {
-	ID      CommandId
+	ID      defs.RequestID
 	Command state.Command
 	Noop    bool
 }
@@ -61,8 +62,3 @@ type envelope struct {
 }
 
 func newer(a, b entry) bool { return a.Epoch > b.Epoch || a.Epoch == b.Epoch && a.Round > b.Round }
-
-type CommandId struct {
-	ClientId int32
-	SeqNum   int32
-}

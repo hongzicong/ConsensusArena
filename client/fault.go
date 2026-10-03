@@ -125,19 +125,18 @@ func (c *BufferClient) waitFaultReplies(waitFrom int) {
 			continue
 		}
 		go func(rid int) {
-			for {
-				r, err := c.GetReplyFrom(rid)
-				if err != nil {
-					c.markFaultPeer(rid)
-					// Broadcast protocols may accept a completed reply from another
-					// existing stream after the old reply source is lost.
-					if c.Fast && int(c.fault.replyFrom.Load()) == rid {
-						c.fault.replyFrom.Store(int32(c.nearestFaultSurvivor()))
-					}
-					return
-				}
+			err := c.ReadReplies(rid, func(r *defs.ProposeReplyTS) bool {
 				if r.OK == defs.TRUE && int(c.fault.replyFrom.Load()) == rid {
 					c.RegisterReply(r.Value, r.CommandId)
+				}
+				return true
+			})
+			if err != nil {
+				c.markFaultPeer(rid)
+				// Broadcast protocols may accept a completed reply from another
+				// existing stream after the old reply source is lost.
+				if c.Fast && int(c.fault.replyFrom.Load()) == rid {
+					c.fault.replyFrom.Store(int32(c.nearestFaultSurvivor()))
 				}
 			}
 		}(i)

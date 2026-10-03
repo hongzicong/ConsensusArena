@@ -122,7 +122,7 @@ func (r *Replica) ReplyProposal(p *defs.GPropose, reply *defs.ProposeReplyTS, ca
 }
 
 func (r *Replica) ReplyResult(p *defs.GPropose, value state.Value, capacity int) error {
-	reply := &defs.ProposeReplyTS{OK: defs.TRUE, CommandId: p.CommandId, Value: value, Timestamp: p.Timestamp}
+	reply := &defs.ProposeReplyTS{OK: defs.TRUE, CommandId: p.RequestID().Sequence, Value: value, Timestamp: p.Timestamp}
 	return r.ReplyProposal(p, reply, capacity)
 }
 

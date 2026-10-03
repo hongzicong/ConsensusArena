@@ -2,6 +2,7 @@ package paxos
 
 // Protocol messages, identifiers, constants, and value helpers.
 import (
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -9,10 +10,8 @@ const PageSize = 128
 
 const AdmissionWindow = 8192
 
-type Key struct{ Client, Sequence int32 }
-
 type Request struct {
-	ID      Key
+	ID      defs.RequestID
 	Command state.Command
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 )
 
 func (e *engine) proposeRoster(leader int, responders uint64, now time.Time) {
@@ -61,7 +62,7 @@ func (e *engine) install(now time.Time) {
 	e.snapshotTaken = false
 	e.snapshotStart, e.prepareStart = 0, e.prefix+1
 	e.prepareSince = now
-	e.votes = map[uint64]uint64{}
+	e.votes = map[uint64]replicaset.Set{}
 	// Executed history is already irrevocable; only the suffix needs a new vote.
 	e.acceptedPrefix, e.readPrefix = e.prefix, e.prefix
 	e.acceptedProgress = make([]uint64, e.n)
@@ -79,13 +80,13 @@ func (e *engine) install(now time.Time) {
 	e.holdSlots = nil
 	e.fastSlots = nil
 	e.fastQueued = map[uint64]bool{}
-	e.holdWaiters = map[uint64][]requestID{}
+	e.holdWaiters = map[uint64][]defs.RequestID{}
 	e.holdCounts = map[uint64]int{}
 	for _, r := range e.batch {
 		e.enqueue(r)
 	}
 	e.batch, e.batchBytes = nil, 0
-	e.batchIDs = map[requestID]bool{}
+	e.batchIDs = map[defs.RequestID]bool{}
 	if e.current.Leader == e.id {
 		e.startPrepare(now)
 	}
@@ -197,7 +198,7 @@ func (e *engine) addSnapshot(from int, start uint64, part, parts int, entries []
 		}
 	}
 	e.next = high
-	e.inflight = map[requestID]uint64{}
+	e.inflight = map[defs.RequestID]uint64{}
 	e.prepared = true
 	for slot := start; slot <= high; slot++ {
 		v, ok := selected[slot]
@@ -209,7 +210,7 @@ func (e *engine) addSnapshot(from int, start uint64, part, parts int, entries []
 		for _, r := range v.requests() {
 			e.inflight[r.id()] = slot
 		}
-		e.votes[slot] = bit(e.id)
+		e.votes[slot] = replicaset.Set(0).With(e.id)
 		// Already committed entries are fixed; others must cover the new roster.
 		e.stats.RecoveredSlots++
 	}
@@ -319,7 +320,7 @@ func (e *engine) sendRepairWindow(peer int, start, window uint64) uint64 {
 		}
 		// An acknowledged value survives for this ballot in the crash-stop
 		// model. Do not flood the data queue with copies of it on every tick.
-		if e.votes[slot]&bit(peer) == 0 {
+		if !e.votes[slot].Contains(peer) {
 			bytes := entryBytes(v)
 			if size > 0 && size+bytes > maxBatchBytes {
 				break

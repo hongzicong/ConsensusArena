@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -59,7 +60,7 @@ type LeaderBookkeeping struct {
 	seq                                    int32
 	deps                                   []int32
 	leaderResponded                        bool
-	preVoters, acceptVoters, prepareVoters map[int32]bool
+	preVoters, acceptVoters, prepareVoters replicaset.Set
 	phaseStarted                           time.Time
 }
 
@@ -372,10 +373,9 @@ func (r *Replica) handlePreAcceptReply(pareply *PreAcceptReply) {
 		return
 	}
 
-	if pareply.AcceptorId < 0 || pareply.AcceptorId >= int32(r.N) || lb.preVoters[pareply.AcceptorId] {
+	if pareply.AcceptorId < 0 || pareply.AcceptorId >= int32(r.N) || !lb.preVoters.Add(int(pareply.AcceptorId)) {
 		return
 	}
-	lb.preVoters[pareply.AcceptorId] = true
 	inst.lb.preAcceptOKs++
 
 	if pareply.VBallot > lb.ballot {
@@ -543,10 +543,9 @@ func (r *Replica) handleAcceptReply(areply *AcceptReply) {
 		return
 	}
 
-	if areply.AcceptorId < 0 || areply.AcceptorId >= int32(r.N) || lb.acceptVoters[areply.AcceptorId] {
+	if areply.AcceptorId < 0 || areply.AcceptorId >= int32(r.N) || !lb.acceptVoters.Add(int(areply.AcceptorId)) {
 		return
 	}
-	lb.acceptVoters[areply.AcceptorId] = true
 	inst.lb.acceptOKs++
 
 	if inst.lb.acceptOKs+1 > r.N/2 {
@@ -638,7 +637,7 @@ func (r *Replica) newLeaderBookkeepingDefault() *LeaderBookkeeping {
 }
 
 func (r *Replica) newLeaderBookkeeping(p []*defs.GPropose, originalDeps []int32, committedDeps []int32, deps []int32, lastTriedBallot int32, cmds []state.Command, status int8, seq int32) *LeaderBookkeeping {
-	return &LeaderBookkeeping{clientProposals: p, ballot: lastTriedBallot, allEqual: true, originalDeps: originalDeps, committedDeps: committedDeps, preparing: true, possibleQuorum: allPossible(r.N), lastTriedBallot: lastTriedBallot, cmds: cmds, status: status, seq: seq, deps: deps, preVoters: map[int32]bool{r.Id: true}, acceptVoters: map[int32]bool{r.Id: true}, prepareVoters: make(map[int32]bool), phaseStarted: time.Now()}
+	return &LeaderBookkeeping{clientProposals: p, ballot: lastTriedBallot, allEqual: true, originalDeps: originalDeps, committedDeps: committedDeps, preparing: true, possibleQuorum: allPossible(r.N), lastTriedBallot: lastTriedBallot, cmds: cmds, status: status, seq: seq, deps: deps, preVoters: replicaset.New(int(r.Id)), acceptVoters: replicaset.New(int(r.Id)), prepareVoters: replicaset.New(), phaseStarted: time.Now()}
 }
 
 func (r *Replica) newNilDeps() []int32 {

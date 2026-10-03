@@ -15,13 +15,13 @@ type Replica struct {
 	engine         *core
 	inbox          chan fastrpc.Serializable
 	code           uint8
-	proposals      map[CommandId]*defs.GPropose
+	proposals      map[defs.RequestID]*defs.GPropose
 	peerQueues     []*replica.Sender
-	pendingReplies map[CommandId]replyJob
+	pendingReplies map[defs.RequestID]replyJob
 }
 
 func New(alias string, rid int, addrs []string, exec bool, f int, conf *config.Config, l *dlog.Logger) *Replica {
-	r := &Replica{Replica: replica.New(alias, rid, f, addrs, false, exec, false, conf, l), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[CommandId]*defs.GPropose), pendingReplies: make(map[CommandId]replyJob)}
+	r := &Replica{Replica: replica.New(alias, rid, f, addrs, false, exec, false, conf, l), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[defs.RequestID]*defs.GPropose), pendingReplies: make(map[defs.RequestID]replyJob)}
 	mask := uint64(0)
 	for _, member := range conf.Plan.FastQuorum {
 		mask |= 1 << member.Rank
@@ -38,9 +38,9 @@ func New(alias string, rid int, addrs []string, exec bool, f int, conf *config.C
 		}
 		return v.Command.Execute(r.State)
 	}
-	r.engine.complete = func(id CommandId, result state.Value) {
+	r.engine.complete = func(id defs.RequestID, result state.Value) {
 		if p := r.proposals[id]; p != nil {
-			job := replyJob{p, defs.ProposeReplyTS{OK: defs.TRUE, CommandId: id.SeqNum, Value: result, Timestamp: p.Timestamp}}
+			job := replyJob{p, defs.ProposeReplyTS{OK: defs.TRUE, CommandId: id.Sequence, Value: result, Timestamp: p.Timestamp}}
 			r.pendingReplies[id] = job
 		}
 	}

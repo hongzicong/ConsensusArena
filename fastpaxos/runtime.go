@@ -44,7 +44,7 @@ func (r *Replica) Propose(p *defs.GPropose, _ time.Time) error {
 	if err := protocol.ValidateProposal(p); err != nil {
 		return err
 	}
-	id := CommandId{p.ClientId, p.CommandId}
+	id := p.RequestID()
 	r.proposals[id] = p
 	r.engine.submit(record{ID: id, Command: p.Command})
 	return nil

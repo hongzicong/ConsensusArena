@@ -288,42 +288,6 @@ func (c *Client) SendScan(key, count int64) int32 {
 	return c.seqnum
 }
 
-func (c *Client) GetReplyFrom(rid int) (*defs.ProposeReplyTS, error) {
-	rep := &defs.ProposeReplyTS{}
-	err := rep.Unmarshal(c.readers[rid])
-	return rep, err
-}
-
-func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
-	for i, reader := range c.readers {
-		go func(i int, reader *bufio.Reader) {
-			if reader == nil {
-				return
-			}
-			err := fastrpc.ReadStream(reader, func(msgType uint8, wire io.Reader) (fastrpc.Pair, error) {
-				p, exists := t.Get(msgType)
-				if !exists {
-					c.Println("error: received unknown message:", msgType)
-					return fastrpc.Pair{}, nil
-				}
-				p.Obj = p.Obj.New()
-				return p, p.Obj.Unmarshal(wire)
-			}, func(p fastrpc.Pair) bool {
-				if p.Obj != nil {
-					p.Chan <- p.Obj
-				}
-				return true
-			})
-			if err != nil {
-				if c.MonitorRPCFailures {
-					c.peerDead[i].Store(true)
-				}
-				c.markFaultPeer(i)
-			}
-		}(i, reader)
-	}
-}
-
 // For custom client messages
 func (c *Client) SendMsg(rid int32, code uint8, msg fastrpc.Serializable) {
 	if c.fault != nil {

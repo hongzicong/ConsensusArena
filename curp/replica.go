@@ -26,7 +26,7 @@ func New(alias string, rid int, addrs []string, exec bool, f int, conf *config.C
 
 	r.recovery = newProtocolRuntime(r.Replica, ballot)
 	r.recovery.ReplyMessage = func(req Request, value state.Value, fast bool, ballot int32) (uint8, fastrpc.Serializable) {
-		id := CommandId{ClientId: req.ID.Client, SeqNum: req.ID.Sequence}
+		id := req.ID
 		if fast {
 			return cs.replyRPC, &MReply{Replica: r.Id, Ballot: ballot, CmdId: id, Rep: value, Ok: TRUE}
 		}
@@ -37,7 +37,7 @@ func New(alias string, rid int, addrs []string, exec bool, f int, conf *config.C
 		if positive {
 			ok = TRUE
 		}
-		return cs.recordAckRPC, &MRecordAck{Replica: r.Id, Ballot: ballot, CmdId: CommandId{ClientId: req.ID.Client, SeqNum: req.ID.Sequence}, Ok: ok}
+		return cs.recordAckRPC, &MRecordAck{Replica: r.Id, Ballot: ballot, CmdId: req.ID, Ok: ok}
 	}
 	go r.recovery.Run()
 

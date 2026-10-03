@@ -18,9 +18,9 @@ type Replica struct {
 	engine         *core
 	inbox          chan fastrpc.Serializable
 	code           uint8
-	peers          []replica.PendingSender
-	proposals      map[CommandID]*defs.GPropose
-	pendingReplies map[CommandID]replyJob
+	peers          *replica.PeerStreams
+	proposals      map[defs.RequestID]*defs.GPropose
+	pendingReplies map[defs.RequestID]replyJob
 }
 
 func New(alias string, rid int, addrs []string, conf *config.Config, l *dlog.Logger) *Replica {
@@ -42,11 +42,11 @@ func New(alias string, rid int, addrs []string, conf *config.Config, l *dlog.Log
 	plan := topology.Plan
 	l.Printf("KCENSUS_PLAN replica=%d digest=%x processes=%v delegates=%v predicted_mean=%s budgets=%v returns=%v synthesis=%s requirements=%v", rid, plan.Digest, topology.Aliases, plan.Leaders, plan.Mean, plan.Budgets, plan.Returns, time.Since(start), plan.Requirements)
 	l.Printf("KCENSUS_PRIORITY replica=%d order=%v", rid, plan.leaderPriority())
-	r := &Replica{topology: topology, Replica: replica.New(alias, rid, n/2, addrs, false, true, false, conf, l), engine: newCore(rid, plan, conf.KCensusFailure), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[CommandID]*defs.GPropose), pendingReplies: make(map[CommandID]replyJob)}
+	r := &Replica{topology: topology, Replica: replica.New(alias, rid, n/2, addrs, false, true, false, conf, l), engine: newCore(rid, plan, conf.KCensusFailure), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[defs.RequestID]*defs.GPropose), pendingReplies: make(map[defs.RequestID]replyJob)}
 	r.engine.execute = func(v Record) state.Value { return v.Command.Execute(r.State) }
-	r.engine.complete = func(id CommandID, v state.Value) {
+	r.engine.complete = func(id defs.RequestID, v state.Value) {
 		if p := r.proposals[id]; p != nil {
-			r.pendingReplies[id] = replyJob{p, defs.ProposeReplyTS{OK: defs.TRUE, CommandId: id.Seq, Value: v, Timestamp: p.Timestamp}}
+			r.pendingReplies[id] = replyJob{p, defs.ProposeReplyTS{OK: defs.TRUE, CommandId: id.Sequence, Value: v, Timestamp: p.Timestamp}}
 		} else if int(id.Client) >= r.engine.n && int(id.Client) < r.engine.m {
 			record, ok := r.engine.known[id]
 			delegate := plan.Leaders[int(id.Client)]

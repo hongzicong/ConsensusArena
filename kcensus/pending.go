@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -50,7 +51,7 @@ func (c *core) enqueueValue(v *Value) {
 
 func (c *core) pendingRecords(k state.Key, shared *bool) []Record {
 	s := c.shard(k)
-	ids := make([]CommandID, 0, len(s.pending))
+	ids := make([]defs.RequestID, 0, len(s.pending))
 	for _, id := range s.pending {
 		if s.queued[id] && (shared == nil || s.shared[id] == *shared) {
 			ids = append(ids, id)
@@ -77,7 +78,7 @@ func (c *core) pendingBatch(k state.Key, shared bool) *Value {
 
 func (c *core) pendingSingle(k state.Key) *Value {
 	s := c.shard(k)
-	var chosen CommandID
+	var chosen defs.RequestID
 	var lowest uint64
 	found := false
 	for _, id := range s.pending {
@@ -103,7 +104,7 @@ func (c *core) pendingSingle(k state.Key) *Value {
 type payloadEdgeID struct {
 	Proposer int
 	Edge     graphEdge
-	ID       CommandID
+	ID       defs.RequestID
 }
 
 func (c *core) offerValue(k state.Key, v *Value, repair bool) {

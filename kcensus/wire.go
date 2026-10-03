@@ -8,8 +8,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"net"
 
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	"github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
@@ -20,13 +20,13 @@ const wireVersion = 11
 type wireMessage struct{ message }
 
 func (*wireMessage) New() rpc.Serializable { return &wireMessage{} }
-func (w *wireMessage) BindClient(conn net.Conn, identity string) {
-	w.ClientConn, w.ClientIdentity = conn, identity
+func (w *wireMessage) BindClient(connection *rpc.ClientConnection) {
+	w.ClientConnection = connection
 }
 func put(w io.Writer, v interface{}) { _ = binary.Write(w, binary.LittleEndian, v) }
 func writeRecord(w io.Writer, r Record) {
 	put(w, r.ID.Client)
-	put(w, r.ID.Seq)
+	put(w, r.ID.Sequence)
 	put(w, uint8(r.Command.Op))
 	put(w, int64(r.Command.K))
 	put(w, uint32(len(r.Command.V)))
@@ -73,7 +73,7 @@ func (w *wireMessage) Marshal(out io.Writer) {
 	put(&b, w.AcceptedBallot)
 	put(&b, w.High)
 	put(&b, w.ID.Client)
-	put(&b, w.ID.Seq)
+	put(&b, w.ID.Sequence)
 	put(&b, w.Mask)
 	b.Write(w.Digest[:])
 	writeValue(&b, w.Value, w.References)
@@ -155,7 +155,7 @@ func (w *wireMessage) Unmarshal(in io.Reader) error {
 		var op uint8
 		var key int64
 		get(&x.ID.Client)
-		get(&x.ID.Seq)
+		get(&x.ID.Sequence)
 		get(&op)
 		get(&key)
 		x.Command = state.Command{Op: state.Operation(op), K: state.Key(key), V: readBytes()}
@@ -228,7 +228,7 @@ func (w *wireMessage) Unmarshal(in io.Reader) error {
 	get(&w.AcceptedBallot)
 	get(&w.High)
 	get(&w.ID.Client)
-	get(&w.ID.Seq)
+	get(&w.ID.Sequence)
 	get(&w.Mask)
 	get(&w.Digest)
 	w.Value = readValue()
@@ -238,7 +238,7 @@ func (w *wireMessage) Unmarshal(in io.Reader) error {
 	if count > 63 {
 		return fmt.Errorf("oversize knowledge")
 	}
-	w.Knowledge = make([]uint64, count)
+	w.Knowledge = make([]replicaset.Set, count)
 	for i := range w.Knowledge {
 		get(&w.Knowledge[i])
 	}

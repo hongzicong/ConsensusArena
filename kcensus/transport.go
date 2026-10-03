@@ -10,7 +10,6 @@ import (
 
 	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica"
-
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 )
@@ -25,7 +24,7 @@ func (r *Replica) drain() {
 		if e.To == int(r.Id) {
 			protocol.Must(r.Handle(localMessage{e.Message}, time.Time{}))
 		} else if !r.engine.peerFailed(e.To) {
-			_ = r.peers[e.To].Enqueue(replica.Encode(r.code, &wireMessage{e.Message}, true))
+			_ = r.peers.Enqueue(e.To, replica.Encode(r.code, &wireMessage{e.Message}, true))
 		}
 		return true
 	})
@@ -37,13 +36,22 @@ func (r *Replica) configureTransport() {
 	r.PeerSendOptions = replica.SenderOptions{Capacity: -1}
 }
 
-func (r *Replica) startConnectionSender(id int, conn net.Conn) {
-	if conn == nil {
-		r.engine.markFailed(id)
-		return
+func (r *Replica) bindClient(m message) (int, error) {
+	id, connection := m.From, m.ClientConnection
+	if id < r.engine.n || id >= r.engine.m || r.topology.Identities[id] != connection.Identity {
+		return -1, fmt.Errorf("invalid KCensus client peer %d", id)
 	}
-	// Retain lossless pending sends, using the same unbounded FIFO option as Swift.
-	_ = r.peers[id].Bind(r.StreamSender(conn, replica.SenderOptions{Capacity: -1}))
+	if r.engine.peerFailed(id) {
+		return -1, replica.ErrSendClosed
+	}
+	// The shared connection context invokes this exactly once, before delivery.
+	if err := r.peers.Bind(id, func() *replica.Sender {
+		return r.StreamSender(connection.Conn, replica.SenderOptions{Capacity: -1})
+	}); err != nil {
+		return -1, err
+	}
+	r.engine.markConnected(id)
+	return id, nil
 }
 
 func (r *Replica) flushReplies() {
@@ -60,14 +68,12 @@ func (c *Client) drain() {
 		if e.To == c.engine.id {
 			c.engine.step(e.Message)
 		} else if !c.engine.peerFailed(e.To) {
-			c.sendMu.Lock()
-			defer c.sendMu.Unlock()
 			select {
 			case <-c.stop:
 				return false
 			default:
 			}
-			_ = c.peers[e.To].Enqueue(replica.Encode(defs.RPC_TABLE, &wireMessage{e.Message}, true))
+			_ = c.peers.Enqueue(e.To, replica.Encode(defs.RPC_TABLE, &wireMessage{e.Message}, true))
 		}
 		return true
 	})
@@ -81,41 +87,45 @@ func (c *Client) deliver(m message) bool {
 	if m.Kind == executedResult {
 		inbox = c.resultInbox
 	}
-	select {
-	case inbox <- m:
-		return true
-	case <-c.stop:
-		return false
+	return fastrpc.Deliver(inbox, m, c.stop)
+}
+
+// All client streams use the same immutable registration and fresh factories.
+var clientMessages = func() *fastrpc.Table {
+	t := fastrpc.NewTableId(defs.RPC_TABLE)
+	t.Register(&wireMessage{}, nil)
+	return t
+}()
+
+func decodeClientMessage(code uint8, wire io.Reader) (*wireMessage, error) {
+	p, err := clientMessages.Decode(code, wire)
+	if err != nil {
+		return nil, err
 	}
+	return p.Obj.(*wireMessage), nil
 }
 
 func (c *Client) readStream(id int, conn net.Conn, r *bufio.Reader) {
 	defer conn.Close()
 	cancelled := false
-	streamErr := fastrpc.ReadStream(r, func(code uint8, wire io.Reader) (*wireMessage, error) {
-		if code != defs.RPC_TABLE {
-			return nil, fmt.Errorf("unexpected KCensus RPC code %d", code)
-		}
-		w := &wireMessage{}
-		err := w.Unmarshal(wire)
+	if id < 0 {
+		// Resolve an incoming mesh connection once using its first normal frame.
+		first, err := fastrpc.ReadMessage(r, decodeClientMessage)
 		if err != nil {
-			c.Printf("KCENSUS_CLIENT_STREAM peer=%d error=%q", id, err)
+			return
 		}
-		return w, err
-	}, func(w *wireMessage) bool {
-		if id < 0 {
-			// Incoming mesh connections identify themselves in their first frame.
-			if w.From < c.engine.n || w.From >= c.engine.id || !c.attachMesh(w.From, conn) {
-				c.Printf("KCENSUS_CLIENT_STREAM rejected_from=%d self=%d", w.From, c.engine.id)
-				return false
-			}
-			id = w.From
-			_ = conn.SetReadDeadline(time.Time{})
+		if first.From < c.engine.n || first.From >= c.engine.id || c.bindStream(first.From, conn, nil) != nil {
+			c.Printf("KCENSUS_CLIENT_STREAM rejected_from=%d self=%d", first.From, c.engine.id)
+			return
 		}
-		if w.From != id {
-			c.Printf("KCENSUS_CLIENT_STREAM peer=%d unexpected_from=%d", id, w.From)
-			return false
+		id = first.From
+		_ = conn.SetReadDeadline(time.Time{})
+		if !c.deliver(first.message) {
+			return
 		}
+	}
+	streamErr := fastrpc.ReadStream(r, decodeClientMessage, func(w *wireMessage) bool {
+		w.From = id // The established stream supplies its source identity.
 		cancelled = !c.deliver(w.message)
 		return !cancelled
 	})
@@ -126,34 +136,15 @@ func (c *Client) readStream(id int, conn net.Conn, r *bufio.Reader) {
 	if id < c.engine.n {
 		c.MarkPeerFailed(id)
 	}
-	c.sendMu.Lock()
-	c.peers[id].Close()
-	c.sendMu.Unlock()
+	c.peers.ClosePeer(id)
 }
 
-// The caller holds sendMu while publishing the sender and flushing early frames.
-func (c *Client) startStreamSender(id int, conn net.Conn, w *bufio.Writer) {
-	_ = conn.SetWriteDeadline(time.Time{})
+func (c *Client) bindStream(id int, conn net.Conn, w *bufio.Writer) error {
 	options := replica.SenderOptions{Capacity: -1, Writer: w}
 	if id < c.engine.n {
 		options.Locker = c.WriteMutex(id)
 	}
-	_ = c.peers[id].Bind(replica.NewSender(conn, options))
-}
-
-func (c *Client) attachMesh(id int, conn net.Conn) bool {
-	c.sendMu.Lock()
-	defer c.sendMu.Unlock()
-	select {
-	case <-c.stop:
-		return false
-	default:
-	}
-	if c.peers[id].Sender != nil {
-		return false
-	}
-	c.startStreamSender(id, conn, bufio.NewWriter(conn))
-	return true
+	return c.peers.BindConnection(id, conn, options)
 }
 
 func (c *Client) acceptMesh() {
@@ -182,18 +173,11 @@ func (c *Client) confirmMesh(id int, conn net.Conn) (*bufio.Reader, message, err
 		return nil, message{}, io.ErrShortWrite
 	}
 	r := bufio.NewReader(conn)
-	code, err := r.ReadByte()
+	w, err := fastrpc.ReadMessage(r, decodeClientMessage)
 	if err != nil {
 		return nil, message{}, err
 	}
-	if code != defs.RPC_TABLE {
-		return nil, message{}, fmt.Errorf("unexpected KCensus RPC code %d", code)
-	}
-	var w wireMessage
-	if err := w.Unmarshal(r); err != nil {
-		return nil, message{}, err
-	}
-	if w.From != id || w.Kind == heartbeat && w.Digest != c.engine.plan.Digest {
+	if w.From != id {
 		return nil, message{}, fmt.Errorf("invalid KCensus mesh peer %d (expected %d)", w.From, id)
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
@@ -214,7 +198,7 @@ func (c *Client) dialMesh(id int) {
 		conn, err := net.DialTimeout("tcp", defs.DialAddress(c.topology.Listeners[id]), time.Second)
 		if err == nil {
 			r, first, confirmErr := c.confirmMesh(id, conn)
-			if confirmErr == nil && c.attachMesh(id, conn) {
+			if confirmErr == nil && c.bindStream(id, conn, nil) == nil {
 				if !c.deliver(first) {
 					conn.Close()
 					return

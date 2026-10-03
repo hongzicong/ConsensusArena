@@ -4,6 +4,7 @@ package kcensus
 import (
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -49,7 +50,7 @@ func (c *core) apply(k state.Key) {
 	c.propose(k)
 }
 
-func (c *core) finishRead(id CommandID, q *pendingRead) {
+func (c *core) finishRead(id defs.RequestID, q *pendingRead) {
 	c.readyRead(q)
 	if !q.quorum {
 		return
@@ -78,7 +79,7 @@ func (c *core) executed(k state.Key) uint64 {
 	return 0
 }
 
-func (c *core) recordWriteCompletion(id CommandID, slot uint64) {
+func (c *core) recordWriteCompletion(id defs.RequestID, slot uint64) {
 	a, ok := c.localWrites[id]
 	if !ok {
 		return

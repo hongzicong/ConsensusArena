@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
@@ -119,31 +120,6 @@ type byteReader interface {
 	ReadByte() (c byte, err error)
 }
 
-func (t *CommandId) BinarySize() (nbytes int, sizeKnown bool) {
-	return 8, true
-}
-
-func (t *CommandId) Marshal(wire io.Writer) {
-	var b [8]byte
-	var bs []byte
-	bs = b[:8]
-	binary.LittleEndian.PutUint32(bs[0:], uint32(t.ClientId))
-	binary.LittleEndian.PutUint32(bs[4:], uint32(t.SeqNum))
-	wire.Write(bs)
-}
-
-func (t *CommandId) Unmarshal(wire io.Reader) error {
-	var b [8]byte
-	var bs []byte
-	bs = b[:8]
-	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
-		return err
-	}
-	t.ClientId = int32(binary.LittleEndian.Uint32(bs[0:]))
-	t.SeqNum = int32(binary.LittleEndian.Uint32(bs[4:]))
-	return nil
-}
-
 func (t *SHash) BinarySize() (nbytes int, sizeKnown bool) {
 	return 32, true
 }
@@ -169,8 +145,8 @@ func (t *Ack) Marshal(wire io.Writer) {
 	var b [10]byte
 	var bs []byte
 	bs = b[:8]
-	binary.LittleEndian.PutUint32(bs[0:], uint32(t.CmdId.ClientId))
-	binary.LittleEndian.PutUint32(bs[4:], uint32(t.CmdId.SeqNum))
+	binary.LittleEndian.PutUint32(bs[0:], uint32(t.CmdId.Client))
+	binary.LittleEndian.PutUint32(bs[4:], uint32(t.CmdId.Sequence))
 	wire.Write(bs)
 	writeCommandIds(wire, b[:], t.Dep)
 	writeHashes(wire, b[:], t.Checksum)
@@ -187,8 +163,8 @@ func (t *Ack) Unmarshal(rr io.Reader) error {
 	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
 		return err
 	}
-	t.CmdId.ClientId = int32(binary.LittleEndian.Uint32(bs[0:]))
-	t.CmdId.SeqNum = int32(binary.LittleEndian.Uint32(bs[4:]))
+	t.CmdId.Client = int32(binary.LittleEndian.Uint32(bs[0:]))
+	t.CmdId.Sequence = int32(binary.LittleEndian.Uint32(bs[4:]))
 	dep, err := readCommandIds(wire, b[:])
 	if err != nil {
 		return err
@@ -269,8 +245,8 @@ func (t *MFastAck) Marshal(wire io.Writer) {
 	bs = b[:16]
 	binary.LittleEndian.PutUint32(bs[0:], uint32(t.Replica))
 	binary.LittleEndian.PutUint32(bs[4:], uint32(t.Ballot))
-	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.ClientId))
-	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.SeqNum))
+	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.Client))
+	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.Sequence))
 	wire.Write(bs)
 	writeCommandIds(wire, b[:], t.Dep)
 	writeHashes(wire, b[:], t.Checksum)
@@ -289,8 +265,8 @@ func (t *MFastAck) Unmarshal(rr io.Reader) error {
 	}
 	t.Replica = int32(binary.LittleEndian.Uint32(bs[0:]))
 	t.Ballot = int32(binary.LittleEndian.Uint32(bs[4:]))
-	t.CmdId.ClientId = int32(binary.LittleEndian.Uint32(bs[8:]))
-	t.CmdId.SeqNum = int32(binary.LittleEndian.Uint32(bs[12:]))
+	t.CmdId.Client = int32(binary.LittleEndian.Uint32(bs[8:]))
+	t.CmdId.Sequence = int32(binary.LittleEndian.Uint32(bs[12:]))
 	dep, err := readCommandIds(wire, b[:])
 	if err != nil {
 		return err
@@ -319,8 +295,8 @@ func (t *MFastAckClient) Marshal(wire io.Writer) {
 	bs = b[:16]
 	binary.LittleEndian.PutUint32(bs[0:], uint32(t.Replica))
 	binary.LittleEndian.PutUint32(bs[4:], uint32(t.Ballot))
-	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.ClientId))
-	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.SeqNum))
+	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.Client))
+	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.Sequence))
 	wire.Write(bs)
 	writeHashes(wire, b[:], t.Checksum)
 }
@@ -335,8 +311,8 @@ func (t *MFastAckClient) Unmarshal(rr io.Reader) error {
 	}
 	t.Replica = int32(binary.LittleEndian.Uint32(bs[0:]))
 	t.Ballot = int32(binary.LittleEndian.Uint32(bs[4:]))
-	t.CmdId.ClientId = int32(binary.LittleEndian.Uint32(bs[8:]))
-	t.CmdId.SeqNum = int32(binary.LittleEndian.Uint32(bs[12:]))
+	t.CmdId.Client = int32(binary.LittleEndian.Uint32(bs[8:]))
+	t.CmdId.Sequence = int32(binary.LittleEndian.Uint32(bs[12:]))
 	checksum, err := readHashes(wire)
 	if err != nil {
 		return err
@@ -355,8 +331,8 @@ func (t *MLightSlowAck) Marshal(wire io.Writer) {
 	bs = b[:16]
 	binary.LittleEndian.PutUint32(bs[0:], uint32(t.Replica))
 	binary.LittleEndian.PutUint32(bs[4:], uint32(t.Ballot))
-	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.ClientId))
-	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.SeqNum))
+	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.Client))
+	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.Sequence))
 	wire.Write(bs)
 }
 
@@ -369,8 +345,8 @@ func (t *MLightSlowAck) Unmarshal(wire io.Reader) error {
 	}
 	t.Replica = int32(binary.LittleEndian.Uint32(bs[0:]))
 	t.Ballot = int32(binary.LittleEndian.Uint32(bs[4:]))
-	t.CmdId.ClientId = int32(binary.LittleEndian.Uint32(bs[8:]))
-	t.CmdId.SeqNum = int32(binary.LittleEndian.Uint32(bs[12:]))
+	t.CmdId.Client = int32(binary.LittleEndian.Uint32(bs[8:]))
+	t.CmdId.Sequence = int32(binary.LittleEndian.Uint32(bs[12:]))
 	return nil
 }
 
@@ -384,8 +360,8 @@ func (t *MAccept) Marshal(wire io.Writer) {
 	bs = b[:16]
 	binary.LittleEndian.PutUint32(bs[0:], uint32(t.Replica))
 	binary.LittleEndian.PutUint32(bs[4:], uint32(t.Ballot))
-	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.ClientId))
-	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.SeqNum))
+	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.Client))
+	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.Sequence))
 	wire.Write(bs)
 	bs = b[:]
 	alen1 := int64(len(t.Rep))
@@ -409,8 +385,8 @@ func (t *MAccept) Unmarshal(rr io.Reader) error {
 	}
 	t.Replica = int32(binary.LittleEndian.Uint32(bs[0:]))
 	t.Ballot = int32(binary.LittleEndian.Uint32(bs[4:]))
-	t.CmdId.ClientId = int32(binary.LittleEndian.Uint32(bs[8:]))
-	t.CmdId.SeqNum = int32(binary.LittleEndian.Uint32(bs[12:]))
+	t.CmdId.Client = int32(binary.LittleEndian.Uint32(bs[8:]))
+	t.CmdId.Sequence = int32(binary.LittleEndian.Uint32(bs[12:]))
 	alen1, err := binary.ReadVarint(wire)
 	if err != nil {
 		return err
@@ -573,8 +549,8 @@ func (t *MSlowAck) Marshal(wire io.Writer) {
 	bs = b[:16]
 	binary.LittleEndian.PutUint32(bs[0:], uint32(t.Replica))
 	binary.LittleEndian.PutUint32(bs[4:], uint32(t.Ballot))
-	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.ClientId))
-	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.SeqNum))
+	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.Client))
+	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.Sequence))
 	wire.Write(bs)
 	writeCommandIds(wire, b[:], t.Dep)
 	writeHashes(wire, b[:], t.Checksum)
@@ -590,8 +566,8 @@ func (t *MSlowAck) Unmarshal(rr io.Reader) error {
 	}
 	t.Replica = int32(binary.LittleEndian.Uint32(bs[0:]))
 	t.Ballot = int32(binary.LittleEndian.Uint32(bs[4:]))
-	t.CmdId.ClientId = int32(binary.LittleEndian.Uint32(bs[8:]))
-	t.CmdId.SeqNum = int32(binary.LittleEndian.Uint32(bs[12:]))
+	t.CmdId.Client = int32(binary.LittleEndian.Uint32(bs[8:]))
+	t.CmdId.Sequence = int32(binary.LittleEndian.Uint32(bs[12:]))
 	dep, err := readCommandIds(wire, b[:])
 	if err != nil {
 		return err
@@ -631,9 +607,9 @@ func (t *MAcks) Marshal(wire io.Writer) {
 		wire.Write(bs)
 		binary.LittleEndian.PutUint32(bs[0:], uint32(t.LightSlowAcks[i].Ballot))
 		wire.Write(bs)
-		binary.LittleEndian.PutUint32(bs[0:], uint32(t.LightSlowAcks[i].CmdId.ClientId))
+		binary.LittleEndian.PutUint32(bs[0:], uint32(t.LightSlowAcks[i].CmdId.Client))
 		wire.Write(bs)
-		binary.LittleEndian.PutUint32(bs[0:], uint32(t.LightSlowAcks[i].CmdId.SeqNum))
+		binary.LittleEndian.PutUint32(bs[0:], uint32(t.LightSlowAcks[i].CmdId.Sequence))
 		wire.Write(bs)
 	}
 }
@@ -668,11 +644,11 @@ func (t *MAcks) Unmarshal(rr io.Reader) error {
 		if _, err := io.ReadAtLeast(wire, bs, 4); err != nil {
 			return err
 		}
-		t.LightSlowAcks[i].CmdId.ClientId = int32(binary.LittleEndian.Uint32(bs[0:]))
+		t.LightSlowAcks[i].CmdId.Client = int32(binary.LittleEndian.Uint32(bs[0:]))
 		if _, err := io.ReadAtLeast(wire, bs, 4); err != nil {
 			return err
 		}
-		t.LightSlowAcks[i].CmdId.SeqNum = int32(binary.LittleEndian.Uint32(bs[0:]))
+		t.LightSlowAcks[i].CmdId.Sequence = int32(binary.LittleEndian.Uint32(bs[0:]))
 	}
 	return nil
 }
@@ -687,8 +663,8 @@ func (t *MReply) Marshal(wire io.Writer) {
 	bs = b[:16]
 	binary.LittleEndian.PutUint32(bs[0:], uint32(t.Replica))
 	binary.LittleEndian.PutUint32(bs[4:], uint32(t.Ballot))
-	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.ClientId))
-	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.SeqNum))
+	binary.LittleEndian.PutUint32(bs[8:], uint32(t.CmdId.Client))
+	binary.LittleEndian.PutUint32(bs[12:], uint32(t.CmdId.Sequence))
 	wire.Write(bs)
 	writeHashes(wire, b[:], t.Checksum)
 	bs = b[:]
@@ -713,8 +689,8 @@ func (t *MReply) Unmarshal(rr io.Reader) error {
 	}
 	t.Replica = int32(binary.LittleEndian.Uint32(bs[0:]))
 	t.Ballot = int32(binary.LittleEndian.Uint32(bs[4:]))
-	t.CmdId.ClientId = int32(binary.LittleEndian.Uint32(bs[8:]))
-	t.CmdId.SeqNum = int32(binary.LittleEndian.Uint32(bs[12:]))
+	t.CmdId.Client = int32(binary.LittleEndian.Uint32(bs[8:]))
+	t.CmdId.Sequence = int32(binary.LittleEndian.Uint32(bs[12:]))
 	checksum, err := readHashes(wire)
 	if err != nil {
 		return err
@@ -893,29 +869,29 @@ func writeCount(w io.Writer, b []byte, n int) {
 	w.Write(b[:size])
 }
 
-func writeCommandIds(w io.Writer, b []byte, ids []CommandId) {
+func writeCommandIds(w io.Writer, b []byte, ids []defs.RequestID) {
 	writeCount(w, b, len(ids))
 	b = b[:8]
 	for _, id := range ids {
-		binary.LittleEndian.PutUint32(b[:4], uint32(id.ClientId))
-		binary.LittleEndian.PutUint32(b[4:], uint32(id.SeqNum))
+		binary.LittleEndian.PutUint32(b[:4], uint32(id.Client))
+		binary.LittleEndian.PutUint32(b[4:], uint32(id.Sequence))
 		w.Write(b[:])
 	}
 }
 
-func readCommandIds(r byteReader, b []byte) ([]CommandId, error) {
+func readCommandIds(r byteReader, b []byte) ([]defs.RequestID, error) {
 	n, err := binary.ReadVarint(r)
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]CommandId, n)
+	ids := make([]defs.RequestID, n)
 	b = b[:8]
 	for i := range ids {
 		if _, err := io.ReadFull(r, b[:]); err != nil {
 			return nil, err
 		}
-		ids[i].ClientId = int32(binary.LittleEndian.Uint32(b[:4]))
-		ids[i].SeqNum = int32(binary.LittleEndian.Uint32(b[4:]))
+		ids[i].Client = int32(binary.LittleEndian.Uint32(b[:4]))
+		ids[i].Sequence = int32(binary.LittleEndian.Uint32(b[4:]))
 	}
 	return ids, nil
 }

@@ -20,10 +20,11 @@ func (r *Replica) run() {
 	for id := 0; id < r.N; id++ {
 		r.engine.markConnected(id)
 	}
-	r.peers = make([]replica.PendingSender, r.engine.m)
+	r.peers = replica.NewPeerStreams(r.engine.m)
+	defer r.peers.Close()
 	for id := 0; id < r.N; id++ {
 		if id != int(r.Id) {
-			_ = r.peers[id].Bind(r.PeerSenders[id])
+			_ = r.peers.Bind(id, func() *replica.Sender { return r.PeerSenders[id] })
 		}
 	}
 	go r.WaitForClientConnections()
@@ -75,20 +76,13 @@ func (r *Replica) receiveObserved(m message) {
 }
 
 func (r *Replica) receive(m message) {
-	if m.ClientConn != nil {
-		if m.From < r.engine.n || m.From >= r.engine.m || r.topology.Identities[m.From] != m.ClientIdentity {
-			m.ClientConn.Close()
+	if connection := m.ClientConnection; connection != nil {
+		id, err := connection.BindPeer(func() (int, error) { return r.bindClient(m) })
+		if err != nil || r.engine.peerFailed(id) {
+			connection.Conn.Close()
 			return
 		}
-		if r.engine.peerFailed(m.From) {
-			m.ClientConn.Close()
-			return
-		}
-		if !r.engine.connected[m.From] {
-			// Bind the reply stream on the first ordinary client message.
-			r.startConnectionSender(m.From, m.ClientConn)
-			r.engine.markConnected(m.From)
-		}
+		m.From = id
 	}
 	r.engine.step(m)
 }
@@ -142,13 +136,7 @@ func (c *Client) run() {
 		case m := <-c.resultInbox:
 			c.receiveResult(m)
 		case now := <-ticker.C:
-			c.sendMu.Lock()
-			for id, p := range c.peers {
-				if p.Sender != nil && p.Sender.Closed() {
-					c.engine.markFailed(id)
-				}
-			}
-			c.sendMu.Unlock()
+			c.peers.Failed().Range(func(id int) bool { c.engine.markFailed(id); return true })
 			for id := 0; id < c.engine.n; id++ {
 				if c.PeerFailed(id) {
 					c.engine.markFailed(id)
@@ -193,11 +181,11 @@ func (r *Replica) Propose(p *defs.GPropose, _ time.Time) error {
 	if err := protocol.ValidateProposal(p); err != nil {
 		return err
 	}
-	id := CommandID{p.ClientId, p.CommandId}
+	id := p.RequestID()
 	r.proposals[id] = p
 	if err := r.engine.submit(Record{id, p.Command}); err != nil {
-		r.Printf("KCENSUS_REJECT replica=%d client=%d request=%d error=%q", r.Id, id.Client, id.Seq, err)
-		r.pendingReplies[id] = replyJob{p, defs.ProposeReplyTS{OK: defs.FALSE, CommandId: id.Seq, Timestamp: p.Timestamp}}
+		r.Printf("KCENSUS_REJECT replica=%d client=%d request=%d error=%q", r.Id, id.Client, id.Sequence, err)
+		r.pendingReplies[id] = replyJob{p, defs.ProposeReplyTS{OK: defs.FALSE, CommandId: id.Sequence, Timestamp: p.Timestamp}}
 	}
 	return nil
 }
@@ -227,17 +215,11 @@ func (r *Replica) Tick(t protocol.Tick) error {
 	for id := 0; id < r.N; id++ {
 		if id != int(r.Id) && !r.Alive[id] {
 			r.engine.markFailed(id)
-			if s := r.peers[id].Sender; s != nil {
-				s.Close()
-			}
+			r.peers.ClosePeer(id)
 		}
 	}
 	r.M.Unlock()
-	for id, p := range r.peers {
-		if p.Sender != nil && p.Sender.Closed() {
-			r.engine.markFailed(id)
-		}
-	}
+	r.peers.Failed().Range(func(id int) bool { r.engine.markFailed(id); return true })
 	tickStart := time.Now()
 	r.engine.tick(t.Elapsed)
 	elapsed := uint64(time.Since(tickStart))

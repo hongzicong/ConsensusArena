@@ -6,6 +6,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -17,7 +19,7 @@ func (c *Core) Begin(now time.Time) {
 	c.Recoveries++
 	c.pages = map[int32]map[int32]Packet{}
 	c.promises = map[int32]bool{}
-	c.votes = map[int64]uint64{}
+	c.votes = map[int64]replicaset.Set{}
 	c.lastSend = now
 	p := &Packet{Kind: packetPrepare, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1}
 	c.broadcast(p)
@@ -118,8 +120,8 @@ func (c *Core) promiseReply(p *Packet) {
 		return
 	}
 	selected := map[int64]Record{}
-	witnessVotes := map[Key]uint64{}
-	witness := map[Key]Request{}
+	witnessVotes := map[defs.RequestID]uint64{}
+	witness := map[defs.RequestID]Request{}
 	high := c.Executed
 	for peer := range c.promises {
 		for _, page := range c.pages[peer] {
@@ -140,7 +142,7 @@ func (c *Core) promiseReply(p *Packet) {
 	}
 	c.Preparing = false
 	c.High = high
-	c.Assigned = map[Key]int64{}
+	c.Assigned = map[defs.RequestID]int64{}
 	c.pendingIndex = newConflictIndex()
 	for slot, r := range c.Log {
 		if slot <= c.Executed {
@@ -150,7 +152,7 @@ func (c *Core) promiseReply(p *Packet) {
 	for slot := c.Executed + 1; slot <= high; slot++ {
 		r, ok := selected[slot]
 		if !ok {
-			r = Record{Slot: slot, Request: Request{ID: Key{Client: -1, Sequence: int32(slot)}, Command: state.Command{Op: state.NONE}}}
+			r = Record{Slot: slot, Request: Request{ID: defs.RequestID{Client: -1, Sequence: int32(slot)}, Command: state.Command{Op: state.NONE}}}
 		}
 		r.Ballot = c.Ballot
 		r.Committed = false
@@ -158,7 +160,7 @@ func (c *Core) promiseReply(p *Packet) {
 		c.pendingIndex.add(r.Request)
 		c.Assigned[r.Request.ID] = slot
 	}
-	keys := []Key{}
+	keys := []defs.RequestID{}
 	for id := range witness {
 		keys = append(keys, id)
 	}
@@ -186,7 +188,7 @@ func (c *Core) promiseReply(p *Packet) {
 		c.Assigned[id] = c.High
 	}
 	c.recoveryEnd = c.High
-	c.votes = map[int64]uint64{}
+	c.votes = map[int64]replicaset.Set{}
 	c.sendSuffix(c.ID, c.Executed+1, false)
 	if c.Executed >= c.recoveryEnd {
 		c.activate()

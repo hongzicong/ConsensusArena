@@ -53,14 +53,14 @@ func (r roster) allResponders() uint64 {
 	return mask
 }
 
-type requestID struct{ Client, Command int32 }
-
 type request struct {
 	Proposal defs.Propose
 	Origin   int
 }
 
-func (r request) id() requestID { return requestID{r.Proposal.ClientId, r.Proposal.CommandId} }
+func (r request) id() defs.RequestID {
+	return r.Proposal.RequestID()
+}
 
 type entry struct {
 	Slot, Ballot uint64

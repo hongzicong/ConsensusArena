@@ -2,7 +2,6 @@ package swift
 
 import (
 	"github.com/hongzicong/ConsensusArena/client"
-	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
@@ -14,18 +13,18 @@ type Client struct {
 	val       state.Value
 	ready     chan struct{}
 	ballot    int32
-	delivered map[CommandId]struct{}
+	delivered map[defs.RequestID]struct{}
 
-	SQ         replica.QuorumI
-	FQ         replica.QuorumI
-	slowPathH  map[CommandId]*replica.MsgSet
-	fastPathH  map[CommandId]*replica.MsgSet
-	ackBallots map[CommandId]int32
+	SQ         QuorumI
+	FQ         QuorumI
+	slowPathH  map[defs.RequestID]*MsgSet
+	fastPathH  map[defs.RequestID]*MsgSet
+	ackBallots map[defs.RequestID]int32
 
 	fixedMajority bool
 
 	slowPaths   int
-	alreadySlow map[CommandId]struct{}
+	alreadySlow map[defs.RequestID]struct{}
 
 	cs CommunicationSupply
 }
@@ -37,24 +36,24 @@ func NewClient(b *client.BufferClient, repNum int) *Client {
 		val:       nil,
 		ready:     make(chan struct{}, 1),
 		ballot:    -1,
-		delivered: make(map[CommandId]struct{}),
+		delivered: make(map[defs.RequestID]struct{}),
 
-		SQ: replica.NewMajorityOf(repNum),
-		FQ: replica.NewThreeQuartersOf(repNum),
+		SQ: NewMajorityOf(repNum),
+		FQ: NewThreeQuartersOf(repNum),
 
-		slowPathH:  make(map[CommandId]*replica.MsgSet),
-		fastPathH:  make(map[CommandId]*replica.MsgSet),
-		ackBallots: make(map[CommandId]int32),
+		slowPathH:  make(map[defs.RequestID]*MsgSet),
+		fastPathH:  make(map[defs.RequestID]*MsgSet),
+		ackBallots: make(map[defs.RequestID]int32),
 
 		fixedMajority: true,
 
 		slowPaths:   0,
-		alreadySlow: make(map[CommandId]struct{}),
+		alreadySlow: make(map[defs.RequestID]struct{}),
 	}
 
 	if c.fixedMajority {
 		// TODO: it has to be the correct majority
-		c.FQ = replica.NewMajorityOf(repNum)
+		c.FQ = NewMajorityOf(repNum)
 	}
 
 	c.Println("SQ:", c.SQ)
@@ -65,7 +64,7 @@ func NewClient(b *client.BufferClient, repNum int) *Client {
 	return c
 }
 
-func (c *Client) initMsgSets(cmdId CommandId) {
+func (c *Client) initMsgSets(cmdId defs.RequestID) {
 	m, exists := c.slowPathH[cmdId]
 	initSlow := !exists || m == nil
 	m, exists = c.fastPathH[cmdId]
@@ -238,7 +237,7 @@ func (c *Client) handleFastAndSlowAcks(leaderMsg interface{}, msgs []interface{}
 		return
 	}
 	c.delivered[cmdId] = struct{}{}
-	c.RegisterReply(c.val, cmdId.SeqNum)
+	c.RegisterReply(c.val, cmdId.Sequence)
 
 	c.Println("Slow Paths:", c.slowPaths)
 }
@@ -271,7 +270,7 @@ func (c *Client) handleAccept(a *MAccept) {
 	c.delivered[a.CmdId] = struct{}{}
 
 	c.val = a.Rep
-	c.RegisterReply(c.val, a.CmdId.SeqNum)
+	c.RegisterReply(c.val, a.CmdId.Sequence)
 	c.Println("Slow Paths:", c.slowPaths)
 }
 

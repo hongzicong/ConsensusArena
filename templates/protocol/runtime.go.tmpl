@@ -32,7 +32,7 @@ var _ protocol.Machine = (*Replica)(nil)
 
 func (r *Replica) Propose(p *defs.GPropose, now time.Time) error {
 	if err := protocol.ValidateProposal(p); err != nil { return err }
-	id := commandID{p.ClientId, p.CommandId}
+	id := p.RequestID()
 	r.pending[id] = p
 	out, err := r.engine.Propose(request{id, p.Command}, now)
 	if err != nil { return err }

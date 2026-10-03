@@ -18,7 +18,7 @@ func (r *Replica) BeTheLeader(_ *defs.BeTheLeaderArgs, reply *defs.BeTheLeaderRe
 	} else {
 		reply.Leader = r.leader()
 	}
-	reply.NextLeader = replica.Leader(r.qs.BallotAt(1), r.N)
+	reply.NextLeader = Leader(r.qs.BallotAt(1), r.N)
 	if reply.Leader == 0 {
 		reply.Leader = -2
 	}
@@ -167,7 +167,7 @@ func (r *Replica) Handle(event any, _ time.Time) error {
 		r.handleNewLeaderAckN(m)
 	case recoveryEvent:
 		r.beginRecovery(int32(m))
-	case CommandId:
+	case defs.RequestID:
 		r.getCmdDesc(m, "deliver", nil)
 	default:
 		return protocol.UnsupportedEvent("swiftpaxos", event)

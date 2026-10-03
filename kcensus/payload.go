@@ -1,6 +1,9 @@
 package kcensus
 
-import "github.com/hongzicong/ConsensusArena/state"
+import (
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/state"
+)
 
 // A census may select input whose original payload tree was interrupted. Phase
 // 2 must carry the complete immutable object, not depend on bounded cache repair.
@@ -30,7 +33,7 @@ type payloadWaitKey struct {
 	From, Proposer               int
 	Key                          state.Key
 	Slot, Ballot, AcceptedBallot uint64
-	ID                           CommandID
+	ID                           defs.RequestID
 	GraphTime                    int64
 	Value, Fast                  uint64
 	HasValue, HasFast            bool

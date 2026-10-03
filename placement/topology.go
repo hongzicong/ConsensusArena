@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/config"
+	"github.com/hongzicong/ConsensusArena/replicaset"
 )
 
 type Topology struct {
@@ -34,8 +35,8 @@ type Topology struct {
 // Without a matrix, local deployments use a documented uniform 1ms one-way model.
 func Load(c *config.Config, configPath string) (*Topology, error) {
 	n := len(c.ReplicaAliases)
-	if n < 3 || n%2 == 0 {
-		return nil, fmt.Errorf("planning requires an odd membership of at least 3 replicas")
+	if n < 3 || n%2 == 0 || n > replicaset.MaxSize {
+		return nil, fmt.Errorf("planning requires odd membership of 3..63 replicas")
 	}
 	t := &Topology{Objective: "slow-first", ConfigDir: filepath.Dir(configPath)}
 	if v := os.Getenv("CONSENSUSARENA_QUORUM_OBJECTIVE"); v != "" {

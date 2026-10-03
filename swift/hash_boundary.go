@@ -10,7 +10,7 @@ import (
 // explicit across both MAcks and MOptAcks without changing the wire layout.
 const recoveryAckSeqnum = -1
 
-func newRecoveryFastAck(replica, ballot int32, cmdId CommandId, dep Dep) *MFastAck {
+func newRecoveryFastAck(replica, ballot int32, cmdId defs.RequestID, dep Dep) *MFastAck {
 	msg := newFastAck()
 	msg.Replica, msg.Ballot, msg.CmdId = replica, ballot, cmdId
 	msg.Dep = dep
@@ -22,16 +22,16 @@ func newRecoveryFastAck(replica, ballot int32, cmdId CommandId, dep Dep) *MFastA
 	return msg
 }
 
-func (r *Replica) installRecoveryHashBoundary(phases map[CommandId]int) {
+func (r *Replica) installRecoveryHashBoundary(phases map[defs.RequestID]int) {
 	log.Printf("swift_recovery_hash_boundary ballot=%d installed_commands=%d discarded_pending_updates=%d", r.ballot, len(phases), len(r.pendingHashUpds))
 	log.Printf("swift_proposal_batches batches=%d commands=%d max=%d", r.proposalBatches, r.proposalBatchCommands, r.proposalBatchMax)
 	log.Printf("swift_deferred_hash_elisions commands=%d", r.deferredHashElisions)
 	log.Printf("swift_hash_backlog_deferrals commands=%d", r.hashBacklogDeferrals)
 	r.recoveryCmds = phases
-	r.proposedInBallot = make(map[CommandId]struct{})
+	r.proposedInBallot = make(map[defs.RequestID]struct{})
 	// These entries were received in the previous ballot. Their leader/sequence
 	// context must not be applied when a delayed proposal arrives after Sync.
-	r.pendingHashUpds = make(map[CommandId]*UpdateEntry)
+	r.pendingHashUpds = make(map[defs.RequestID]*UpdateEntry)
 	removed := 0
 	for _, log := range r.hlog {
 		removed += log.BeginBallot(r.ballot)
@@ -70,8 +70,8 @@ func (r *Replica) receiveFastAck(msg *MFastAck) {
 // Send the same recovery acknowledgements whether the proposal was present at
 // Sync or arrives later. Return local processing so Sync can defer it until all
 // recovered descriptors have been installed, as in the original recovery path.
-func (r *Replica) sendRecoveryAck(cmdId CommandId, dep Dep, propose *defs.GPropose, desc *commandDesc) func() {
-	if !r.SQ.Contains(r.Id) {
+func (r *Replica) sendRecoveryAck(cmdId defs.RequestID, dep Dep, propose *defs.GPropose, desc *commandDesc) func() {
+	if !r.SQ.Contains(int(r.Id)) {
 		return func() {}
 	}
 	if r.Id == r.leader() {

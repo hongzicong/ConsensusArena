@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/hongzicong/ConsensusArena/replicaset"
 )
 
 type graphEdge struct {
@@ -15,7 +17,7 @@ type graphEdge struct {
 
 type graphState struct {
 	Time         time.Duration
-	Knowledge    []uint64
+	Knowledge    []replicaset.Set
 	Remote       []time.Duration
 	Dependencies map[graphEdge]bool
 	Outgoing     []graphEdge
@@ -66,7 +68,7 @@ func buildPropagation(latency [][]time.Duration, rs []Requirement, budgets []tim
 		g.Payload, g.Edges = make(map[graphEdge]bool), make(map[graphEdge]bool)
 		states := make([]map[time.Duration]*graphState, n)
 		for v := range states {
-			s := &graphState{Knowledge: make([]uint64, n), Remote: make([]time.Duration, n), Dependencies: make(map[graphEdge]bool)}
+			s := &graphState{Knowledge: make([]replicaset.Set, n), Remote: make([]time.Duration, n), Dependencies: make(map[graphEdge]bool)}
 			if v == p && p < voters {
 				s.Knowledge[p] = 1 << p
 			}
@@ -120,7 +122,7 @@ func buildPropagation(latency [][]time.Duration, rs []Requirement, budgets []tim
 					dest := states[dst][at]
 					if dest == nil {
 						prev := previous(dst, at)
-						dest = &graphState{Time: at, Knowledge: append([]uint64(nil), prev.Knowledge...), Remote: append([]time.Duration(nil), prev.Remote...), Dependencies: make(map[graphEdge]bool)}
+						dest = &graphState{Time: at, Knowledge: append([]replicaset.Set(nil), prev.Knowledge...), Remote: append([]time.Duration(nil), prev.Remote...), Dependencies: make(map[graphEdge]bool)}
 						if dst < voters {
 							dest.Knowledge[dst] |= 1 << dst
 						}
@@ -203,7 +205,7 @@ func buildPropagation(latency [][]time.Duration, rs []Requirement, budgets []tim
 			return nil, fmt.Errorf("graph commit time %s differs from budget %s", last.Time, budgets[p])
 		}
 		for w, required := range rs[p] {
-			if required & ^last.Knowledge[w] != 0 {
+			if !last.Knowledge[w].Covers(required) {
 				return nil, fmt.Errorf("graph misses witness %d for proposer %d", w, p)
 			}
 			ss := g.States[w]
