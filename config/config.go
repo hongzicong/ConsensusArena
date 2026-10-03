@@ -55,12 +55,17 @@ const (
 )
 
 type Config struct {
-	Protocol string
+	Protocol        string
+	Topology        string
+	Plan            DeploymentPlan
+	KCensusTopology string
+	KCensusFailure  time.Duration
 
 	// Bodega: default responders and optional per-key/range overrides by alias.
 	BodegaResponders                                                        string
 	BodegaResponderRanges                                                   string
 	BodegaLease, BodegaMargin, BodegaHeartbeat, BodegaFailure, BodegaUnhold time.Duration
+	BodegaFailureMax                                                        time.Duration
 
 	Alias       string
 	MachineType Machine
@@ -87,8 +92,7 @@ type Config struct {
 	// replicas send replies directly to clients
 	Fast bool
 	// address of the leader or nil
-	// this is ignored by Swift, as it uses its own quorum configuration file
-	// TODO: it would be better if we could use an alias instead of the address
+	// Set from the protocol's startup plan, shared with the advisory master.
 	Leader *string
 
 	// -- client info --
@@ -110,6 +114,8 @@ type Config struct {
 	ArrivalRate float64
 	// number of keys accessed by the client workload
 	KeyCount int
+	// Give every request a new key from its client's disjoint preloaded range.
+	UniqueKeys bool
 	// exponent of the Zipfian key-access distribution
 	ZipfSkew     float64
 	Preload      bool
@@ -120,10 +126,7 @@ type Config struct {
 	Syncs int
 	// when pipelining the maximal number of pending commands
 	Pendings int
-	// quorum config file
-	Quorum string
-
-	Proxy *ProxyInfo
+	Proxy    *ProxyInfo
 }
 
 func Read(filename, alias string) (*Config, error) {
@@ -219,6 +222,15 @@ func Read(filename, alias string) (*Config, error) {
 			case "protocol":
 				c.Protocol, err = expectString(words)
 				ok = true
+			case "topology":
+				c.Topology, err = expectString(strings.Fields(s.Text()))
+				ok = true
+			case "kcensustopology":
+				c.KCensusTopology, err = expectString(strings.Fields(s.Text()))
+				ok = true
+			case "kcensusfailure":
+				c.KCensusFailure, err = expectDuration(words)
+				ok = true
 			case "bodegaresponders":
 				c.BodegaResponders, err = expectString(words)
 				ok = true
@@ -236,6 +248,9 @@ func Read(filename, alias string) (*Config, error) {
 				ok = true
 			case "bodegafailure":
 				c.BodegaFailure, err = expectDuration(words)
+				ok = true
+			case "bodegafailuremax":
+				c.BodegaFailureMax, err = expectDuration(words)
 				ok = true
 			case "bodegaunhold":
 				c.BodegaUnhold, err = expectDuration(words)
@@ -282,6 +297,9 @@ func Read(filename, alias string) (*Config, error) {
 				ok = true
 			case "keycount":
 				c.KeyCount, err = expectInt(words)
+				ok = true
+			case "uniquekeys":
+				c.UniqueKeys, err = expectBool(words)
 				ok = true
 			case "zipfskew":
 				c.ZipfSkew, err = expectFloat(words)
@@ -330,6 +348,9 @@ func Read(filename, alias string) (*Config, error) {
 		}
 	}
 
+	if c.KCensusFailure < 0 || (c.KCensusFailure > 0 && c.KCensusFailure < 30*time.Millisecond) {
+		return c, Err("kcensusFailure", "must be zero (default) or at least 30ms")
+	}
 	if c.ArrivalRate <= 0 || math.IsNaN(c.ArrivalRate) || math.IsInf(c.ArrivalRate, 0) {
 		return c, Err("arrivalRate", "must be finite and greater than zero")
 	}

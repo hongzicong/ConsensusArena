@@ -1,0 +1,21 @@
+package __PACKAGE__
+
+import (
+	"errors"
+	"github.com/hongzicong/ConsensusArena/state"
+)
+
+var ErrNotImplemented = errors.New("__PACKAGE__: implement the protocol design before enabling it")
+
+type commandID struct { Client, Sequence int32 }
+type request struct { ID commandID; Command state.Command }
+
+// This is only a header example. Define ballot, instance, value, and evidence
+// fields from the finalized design, then extend wire.go accordingly.
+type message struct { From int32; Kind uint8 }
+type outbound struct { To int; Message message }
+type completion struct { ID commandID; Value state.Value }
+
+// Outputs are owned by the runtime once a transition returns. The protocol
+// decides recipients and completion evidence; transport only delivers outputs.
+type effects struct { Sends []outbound; Replies []completion }

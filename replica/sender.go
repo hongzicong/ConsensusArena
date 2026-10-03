@@ -1,206 +1,274 @@
 package replica
 
 import (
-	"github.com/hongzicong/ConsensusArena/replica/defs"
-	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
+	"bufio"
+	"bytes"
+	"errors"
+	"io"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
-const (
-	SEND_ALL = iota
-	SEND_QUORUM
-	SEND_EXCEPT
-	SEND_SINGLE
-	SEND_CLIENT
-	SEND_ALL_EXCEPT
+const DefaultSendCapacity = 16384
+
+var (
+	ErrSendFull   = errors.New("sender queue full")
+	ErrSendClosed = errors.New("sender closed")
+	ErrSendSource = errors.New("sender uses a protocol-owned source")
 )
 
-type SendType int32
-
-const ARGS_NUM = defs.CHAN_BUFFER_SIZE
-
-type SendArg struct {
-	msg      fastrpc.Serializable
-	rpc      uint8
-	quorum   Quorum
-	sendType SendType
-	id       int32
-	free     func()
+// Frame owns an immutable wire image. Tag is local metadata, not a wire field.
+// A successful enqueue transfers ownership of Data to the sender.
+type Frame struct {
+	Data []byte
+	Tag  uint8
 }
 
-type Sender chan SendArg
+// Encode freezes a message before the next protocol transition can mutate it.
+func Encode(code uint8, msg interface{ Marshal(io.Writer) }, tagged bool) Frame {
+	var b bytes.Buffer
+	if tagged {
+		b.WriteByte(code)
+	}
+	msg.Marshal(&b)
+	return Frame{Data: b.Bytes()}
+}
 
-func NewSender(r *Replica) Sender {
-	s := Sender(make(chan SendArg, ARGS_NUM))
+// FrameSource supplies protocol-specific scheduling, not socket I/O. Take
+// blocks until work or closure; nil ends the stream. Close must wake Take and
+// tolerate repeated calls. Returned frames must remain immutable.
+type FrameSource interface {
+	Take() []Frame
+	Close()
+}
 
-	go func() {
-		for !r.Shutdown {
-			arg := <-s
-			switch arg.sendType {
-			case SEND_ALL:
-				sendToAll(r, arg.msg, arg.rpc)
-			case SEND_QUORUM:
-				sendToQuorum(r, arg.quorum, arg.msg, arg.rpc)
-			case SEND_EXCEPT:
-				sendExcept(r, arg.quorum, arg.msg, arg.rpc)
-			case SEND_CLIENT:
-				r.SendClientMsg(arg.id, arg.rpc, arg.msg)
-			case SEND_SINGLE:
-				r.SendMsg(arg.id, arg.rpc, arg.msg)
-			case SEND_ALL_EXCEPT:
-				sendToAllExcept(r, arg.id, arg.msg, arg.rpc)
-			}
-			if arg.free != nil {
-				arg.free()
-			}
+type SenderOptions struct {
+	Capacity     int // 0: default bounded FIFO; -1: explicit unbounded FIFO
+	BatchSize    int // 0: one frame per flush
+	Source       FrameSource
+	Writer       *bufio.Writer
+	Locker       sync.Locker      // for a stream also used by pre-existing client code
+	WriteTimeout time.Duration    // 0: rely on closure, not a short WAN timeout
+	OnFrame      func(Frame, int) // bytes accepted by the buffer, before flush
+	OnBatch      func(int, int)   // frames/bytes after successful flush (not peer ACKs)
+	OnError      func(error)
+}
+
+// Sender is the sole writer for one connection. No lock shared with another
+// connection is held during network I/O. Queue admission never waits for I/O.
+type Sender struct {
+	conn                    net.Conn
+	w                       *bufio.Writer
+	options                 SenderOptions
+	source                  FrameSource
+	queue                   *frameQueue
+	once                    sync.Once
+	done                    chan struct{}
+	closed                  atomic.Bool
+	frames, bytes, failures atomic.Uint64
+}
+
+func NewSender(conn net.Conn, o SenderOptions) *Sender {
+	s := &Sender{conn: conn, options: o, w: o.Writer, done: make(chan struct{})}
+	if s.w == nil && conn != nil {
+		s.w = bufio.NewWriter(conn)
+	}
+	if o.Source != nil {
+		s.source = o.Source
+	} else {
+		capacity := o.Capacity
+		if capacity == 0 {
+			capacity = DefaultSendCapacity
 		}
-	}()
-
+		batch := o.BatchSize
+		if batch <= 0 {
+			batch = 1
+		}
+		s.queue = newFrameQueue(capacity, batch)
+		s.source = s.queue
+	}
+	go s.run()
 	return s
 }
 
-func (s Sender) SendToAllAndFree(msg fastrpc.Serializable,
-	rpc uint8, free func()) {
-	s <- SendArg{
-		msg:      msg,
-		rpc:      rpc,
-		sendType: SEND_ALL,
-		free:     free,
+func (s *Sender) Enqueue(f Frame) error {
+	if s == nil || s.closed.Load() {
+		return ErrSendClosed
 	}
-}
-
-func (s Sender) SendToAllExecptAndFree(except int32, msg fastrpc.Serializable, rpc uint8, free func()) {
-	s <- SendArg{
-		msg:      msg,
-		rpc:      rpc,
-		sendType: SEND_ALL_EXCEPT,
-		free:     free,
-		id:       except,
+	if s.queue == nil {
+		return ErrSendSource
 	}
+	return s.queue.enqueue(f)
 }
 
-func (s Sender) SendToQuorumAndFree(q Quorum,
-	msg fastrpc.Serializable, rpc uint8, free func()) {
-	s <- SendArg{
-		msg:      msg,
-		rpc:      rpc,
-		quorum:   q,
-		sendType: SEND_QUORUM,
-		free:     free,
+// PendingSender retains immutable frames until a connection's Sender is bound.
+// The owner serializes access. Sender retains its identity after closure; this
+// helper does not reconnect or change the protocol's admission/retry policy.
+type PendingSender struct {
+	Sender  *Sender
+	pending []Frame
+}
+
+func (p *PendingSender) Enqueue(f Frame) error {
+	if p.Sender == nil {
+		p.pending = append(p.pending, f)
+		return nil
 	}
+	return p.Sender.Enqueue(f)
 }
 
-func (s Sender) SendExceptAndFree(q Quorum,
-	msg fastrpc.Serializable, rpc uint8, free func()) {
-	s <- SendArg{
-		msg:      msg,
-		rpc:      rpc,
-		quorum:   q,
-		sendType: SEND_EXCEPT,
-		free:     free,
-	}
-}
-
-func (s Sender) SendToClientAndFree(cid int32,
-	msg fastrpc.Serializable, rpc uint8, free func()) {
-	s <- SendArg{
-		msg:      msg,
-		rpc:      rpc,
-		id:       cid,
-		sendType: SEND_CLIENT,
-		free:     free,
-	}
-}
-
-func (s Sender) SendToAndFree(id int32,
-	msg fastrpc.Serializable, rpc uint8, free func()) {
-	s <- SendArg{
-		msg:      msg,
-		rpc:      rpc,
-		id:       id,
-		sendType: SEND_SINGLE,
-		free:     free,
-	}
-}
-
-func (s Sender) SendToAll(msg fastrpc.Serializable, rpc uint8) {
-	s.SendToAllAndFree(msg, rpc, nil)
-}
-
-func (s Sender) SendToAllExecpt(except int32, msg fastrpc.Serializable, rpc uint8) {
-	s.SendToAllExecptAndFree(except, msg, rpc, nil)
-}
-
-func (s Sender) SendToQuorum(q Quorum, msg fastrpc.Serializable, rpc uint8) {
-	s.SendToQuorumAndFree(q, msg, rpc, nil)
-}
-
-func (s Sender) SendExcept(q Quorum, msg fastrpc.Serializable, rpc uint8) {
-	s.SendExceptAndFree(q, msg, rpc, nil)
-}
-
-func (s Sender) SendToClient(cid int32, msg fastrpc.Serializable, rpc uint8) {
-	s.SendToClientAndFree(cid, msg, rpc, nil)
-}
-
-func (s Sender) SendTo(id int32, msg fastrpc.Serializable, rpc uint8) {
-	s.SendToAndFree(id, msg, rpc, nil)
-}
-
-func sendToAll(r *Replica, msg fastrpc.Serializable, rpc uint8) {
-	for p := int32(0); p < int32(r.N); p++ {
-		r.M.Lock()
-		if r.Alive[p] {
-			r.M.Unlock()
-			r.SendMsg(p, rpc, msg)
-			r.M.Lock()
+// Bind hands early frames to the sender in FIFO order and reports the first
+// admission failure. The protocol owns recovery of rejected frames.
+func (p *PendingSender) Bind(s *Sender) error {
+	p.Sender = s
+	var first error
+	for _, f := range p.pending {
+		if err := s.Enqueue(f); err != nil && first == nil {
+			first = err
 		}
-		r.M.Unlock()
 	}
+	p.pending = nil
+	return first
 }
 
-func sendToAllExcept(r *Replica, except int32, msg fastrpc.Serializable, rpc uint8) {
-	for p := int32(0); p < int32(r.N); p++ {
-		if p == except {
-			continue
-		}
-		r.M.Lock()
-		if r.Alive[p] {
-			r.M.Unlock()
-			r.SendMsg(p, rpc, msg)
-			r.M.Lock()
-		}
-		r.M.Unlock()
+func (p *PendingSender) Close() {
+	if p.Sender != nil {
+		p.Sender.Close()
 	}
+	p.pending = nil
 }
 
-func sendToQuorum(r *Replica, q Quorum,
-	msg fastrpc.Serializable, rpc uint8) {
-	for p := int32(0); p < int32(r.N); p++ {
-		if !q.Contains(p) {
-			continue
+func (s *Sender) Closed() bool          { return s == nil || s.closed.Load() }
+func (s *Sender) Done() <-chan struct{} { return s.done }
+
+// Close aborts queued work and unblocks a socket write. Wait on Done separately.
+// No reconnect is implied. Callbacks must not wait on Done.
+func (s *Sender) Close() {
+	s.once.Do(func() {
+		s.closed.Store(true)
+		s.source.Close()
+		if s.conn != nil {
+			_ = s.conn.Close()
 		}
-		r.M.Lock()
-		if r.Alive[p] {
-			r.M.Unlock()
-			r.SendMsg(p, rpc, msg)
-			r.M.Lock()
+	})
+}
+func (s *Sender) Stats() (frames, bytes, failures uint64) {
+	return s.frames.Load(), s.bytes.Load(), s.failures.Load()
+}
+func (s *Sender) run() {
+	defer close(s.done)
+	defer s.Close()
+	for {
+		batch := s.source.Take()
+		if batch == nil || s.closed.Load() {
+			return
 		}
-		r.M.Unlock()
+		n, err := s.write(batch)
+		if err != nil {
+			s.failures.Add(1)
+			s.Close()
+			if s.options.OnError != nil {
+				s.options.OnError(err)
+			}
+			return
+		}
+		s.frames.Add(uint64(len(batch)))
+		s.bytes.Add(uint64(n))
+		if s.options.OnBatch != nil {
+			s.options.OnBatch(len(batch), n)
+		}
 	}
 }
-
-func sendExcept(r *Replica, q Quorum,
-	msg fastrpc.Serializable, rpc uint8) {
-	for p := int32(0); p < int32(r.N); p++ {
-		if q.Contains(p) {
-			continue
-		}
-		r.M.Lock()
-		if r.Alive[p] {
-			r.M.Unlock()
-			r.SendMsg(p, rpc, msg)
-			r.M.Lock()
-		}
-		r.M.Unlock()
+func (s *Sender) write(batch []Frame) (int, error) {
+	if s.w == nil {
+		return 0, ErrSendClosed
 	}
+	if s.options.Locker != nil {
+		s.options.Locker.Lock()
+		defer s.options.Locker.Unlock()
+	}
+	if s.conn != nil && s.options.WriteTimeout > 0 {
+		if err := s.conn.SetWriteDeadline(time.Now().Add(s.options.WriteTimeout)); err != nil {
+			return 0, err
+		}
+	}
+	total := 0
+	for _, f := range batch {
+		n, err := s.w.Write(f.Data)
+		total += n
+		if s.options.OnFrame != nil {
+			s.options.OnFrame(f, n)
+		}
+		if err != nil {
+			return total, err
+		}
+		if n != len(f.Data) {
+			return total, io.ErrShortWrite
+		}
+	}
+	return total, s.w.Flush()
+}
+
+type frameQueue struct {
+	mu                    sync.Mutex
+	ready                 *sync.Cond
+	frames                []Frame
+	head, capacity, batch int
+	closed                bool
+}
+
+func newFrameQueue(capacity, batch int) *frameQueue {
+	q := &frameQueue{capacity: capacity, batch: batch}
+	q.ready = sync.NewCond(&q.mu)
+	return q
+}
+func (q *frameQueue) enqueue(f Frame) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return ErrSendClosed
+	}
+	if q.capacity >= 0 && len(q.frames)-q.head >= q.capacity {
+		return ErrSendFull
+	}
+	q.frames = append(q.frames, f)
+	q.ready.Signal()
+	return nil
+}
+func (q *frameQueue) Take() []Frame {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for !q.closed && q.head == len(q.frames) {
+		q.ready.Wait()
+	}
+	if q.closed {
+		return nil
+	}
+	n := len(q.frames) - q.head
+	if n > q.batch {
+		n = q.batch
+	}
+	batch := append([]Frame(nil), q.frames[q.head:q.head+n]...)
+	for i := q.head; i < q.head+n; i++ {
+		q.frames[i] = Frame{}
+	}
+	q.head += n
+	if q.head == len(q.frames) {
+		q.frames = q.frames[:0]
+		q.head = 0
+	} else if q.head >= 1024 && q.head >= len(q.frames)/2 {
+		q.frames = append([]Frame(nil), q.frames[q.head:]...)
+		q.head = 0
+	}
+	return batch
+}
+func (q *frameQueue) Close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.closed = true
+	q.frames = nil
+	q.head = 0
+	q.ready.Broadcast()
 }

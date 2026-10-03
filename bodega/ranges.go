@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
@@ -64,25 +63,4 @@ func responderRanges(text string, c *config.Config, n int) ([]defs.BodegaRespond
 		return nil, fmt.Errorf("Bodega ranges must be nonoverlapping inclusive intervals with start <= end")
 	}
 	return ranges, nil
-}
-
-func (e *engine) proposeRosterRanges(leader int, responders uint64, ranges []defs.BodegaResponderRange, now time.Time) {
-	b := maxSlot(e.current.Ballot, e.pending.Ballot)
-	r := roster{Ballot: (b/uint64(e.n)+1)*uint64(e.n) + uint64(e.id) + 1,
-		Leader: leader, Responders: responders | bit(leader), Ranges: slices.Clone(ranges)}
-	e.observe(r, now)
-	e.broadcast(message{Kind: heartbeat})
-}
-
-func (e *engine) proposeFilteredRoster(leader int, healthy uint64, now time.Time) {
-	e.tracePeerAges("BODEGA_ROSTER_FILTER", now, healthy)
-	mask, ranges := e.current.Responders, e.current.Ranges
-	if e.current.Ballot == 0 {
-		mask, ranges = e.opt.Responders, e.opt.Ranges
-	}
-	ranges = slices.Clone(ranges)
-	for i := range ranges {
-		ranges[i].Responders &= healthy
-	}
-	e.proposeRosterRanges(leader, mask&healthy, ranges, now)
 }

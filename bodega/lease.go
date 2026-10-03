@@ -1,6 +1,8 @@
 package bodega
 
-import "time"
+import (
+	"time"
+)
 
 func (e *engine) revokeLeases(now time.Time) {
 	if e.pending.Ballot == 0 {

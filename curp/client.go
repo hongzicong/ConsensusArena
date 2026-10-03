@@ -1,11 +1,12 @@
 package curp
 
 import (
+	"math/bits"
+
 	"github.com/hongzicong/ConsensusArena/client"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
-	"math/bits"
 )
 
 type completion struct {
@@ -13,8 +14,9 @@ type completion struct {
 	value       state.Value
 	leaderReply bool
 }
+
 type Client struct {
-	*client.BufferClient
+	client.StandardClient
 	N         int
 	cs        CommunicationSupply
 	ballot    int32
@@ -23,13 +25,12 @@ type Client struct {
 }
 
 func NewClient(b *client.BufferClient, n int) *Client {
-	c := &Client{BufferClient: b, N: n, ballot: -1, pending: map[CommandId]*completion{}, delivered: map[int32]struct{}{}}
-	table := fastrpc.NewTableId(defs.RPC_TABLE)
-	initCs(&c.cs, table)
-	c.RegisterRPCTable(table)
-	go c.handleMsgs()
+	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, N: n, ballot: -1, pending: map[CommandId]*completion{}, delivered: map[int32]struct{}{}}
+	b.MonitorRPCFailures = true
+	b.SetProtocol(c)
 	return c
 }
+
 func (c *Client) evidence(id CommandId, ballot, replica int32) *completion {
 	if id.ClientId != c.ClientId || replica < 0 || int(replica) >= c.N || ballot < c.ballot {
 		return nil
@@ -49,17 +50,20 @@ func (c *Client) evidence(id CommandId, ballot, replica int32) *completion {
 	}
 	return p
 }
+
 func (c *Client) finish(id CommandId, v state.Value) {
 	c.delivered[id.SeqNum] = struct{}{}
 	delete(c.pending, id)
 	c.RegisterReply(v, id.SeqNum)
 }
+
 func (c *Client) tryFast(id CommandId, p *completion) {
 	f := c.N / 2
 	if p.leaderReply && bits.OnesCount64(p.votes) >= f+(f+1)/2+1 {
 		c.finish(id, p.value)
 	}
 }
+
 func (c *Client) handleReply(r *MReply) {
 	p := c.evidence(r.CmdId, r.Ballot, r.Replica)
 	if p == nil || r.Ok != TRUE || r.Replica != r.Ballot%int32(c.N) {
@@ -70,6 +74,7 @@ func (c *Client) handleReply(r *MReply) {
 	p.votes |= uint64(1) << r.Replica
 	c.tryFast(r.CmdId, p)
 }
+
 func (c *Client) handleRecordAck(r *MRecordAck) {
 	p := c.evidence(r.CmdId, r.Ballot, r.Replica)
 	if p == nil || r.Ok != TRUE {
@@ -78,6 +83,7 @@ func (c *Client) handleRecordAck(r *MRecordAck) {
 	p.votes |= uint64(1) << r.Replica
 	c.tryFast(r.CmdId, p)
 }
+
 func (c *Client) handleSyncReply(r *MSyncReply) {
 	if c.evidence(r.CmdId, r.Ballot, r.Replica) == nil {
 		return
@@ -85,6 +91,7 @@ func (c *Client) handleSyncReply(r *MSyncReply) {
 	// Sent only after a majority-chosen command executes, including cached replay.
 	c.finish(r.CmdId, append(state.Value(nil), r.Rep...))
 }
+
 func (c *Client) handleMsgs() {
 	for {
 		select {
@@ -95,5 +102,24 @@ func (c *Client) handleMsgs() {
 		case m := <-c.cs.syncReplyChan:
 			c.handleSyncReply(m.(*MSyncReply))
 		}
+	}
+}
+
+var _ client.Adapter = (*Client)(nil)
+
+func (c *Client) WaitReplies(_ int) {
+	table := fastrpc.NewTableId(defs.RPC_TABLE)
+	initCs(&c.cs, table)
+	c.RegisterRPCTable(table)
+	go c.handleMsgs()
+}
+
+// Broadcast to surviving connections; a failed write is not replayed.
+func (c *Client) SendProposal(p defs.Propose) {
+	for id := 0; id < c.PeerCount(); id++ {
+		if c.Connection(id) == nil || c.PeerFailed(id) {
+			continue
+		}
+		c.WriteProposalTo(id, p)
 	}
 }

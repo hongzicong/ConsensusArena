@@ -1,0 +1,8 @@
+package __PACKAGE__
+
+// executeReady must enforce the protocol's execution order and deduplication,
+// use c.execute only when authorized, and cache results as required by recovery.
+// Emit completion only when the design's client completion condition holds.
+func (c *core) executeReady() (effects, error) {
+	return effects{}, ErrNotImplemented
+}

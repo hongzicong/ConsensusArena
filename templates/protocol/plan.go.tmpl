@@ -1,0 +1,13 @@
+package __PACKAGE__
+
+import (
+	"github.com/hongzicong/ConsensusArena/config"
+	"github.com/hongzicong/ConsensusArena/placement"
+)
+
+// PlanDeployment owns initial roles, ingress, and any fixed voting sets.
+// Even a fixed deployment should state its policy here. Return a plan only once
+// it agrees with the design; never delegate quorum policy to a launch script.
+func PlanDeployment(c *config.Config, topology *placement.Topology) (config.DeploymentPlan, error) {
+	return config.DeploymentPlan{}, ErrNotImplemented
+}

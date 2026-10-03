@@ -21,6 +21,12 @@ import (
 )
 
 type Replica struct {
+	senderMu          sync.Mutex
+	senders           map[*bufio.Writer]*Sender
+	connectionSenders map[net.Conn]*Sender
+	sendersClosed     bool
+	clientConns       map[*bufio.Writer]net.Conn
+
 	*dlog.Logger
 
 	M     sync.Mutex
@@ -29,14 +35,18 @@ type Replica struct {
 	Id    int32
 	Alias string
 
-	PeerAddrList       []string
-	Peers              []net.Conn
-	PeerReaders        []*bufio.Reader
-	PeerWriters        []*bufio.Writer
-	ClientWriters      map[int32]*bufio.Writer
-	Config             *config.Config
-	Alive              []bool
-	PreferredPeerOrder []int32
+	PeerAddrList        []string
+	Peers               []net.Conn
+	PeerReaders         []*bufio.Reader
+	PeerWriters         []*bufio.Writer
+	PeerSenders         []*Sender
+	PeerSendOptions     SenderOptions // configure before ConnectToPeers
+	PeerSendOptionsFor  func(int) SenderOptions
+	ClientWriters       map[int32]*bufio.Writer
+	ClientReplyCapacity int // configure before accepting client proposals
+	Config              *config.Config
+	Alive               []bool
+	PreferredPeerOrder  []int32
 
 	State       *state.State
 	RPC         *fastrpc.Table
@@ -78,14 +88,15 @@ func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, con
 		Id:    int32(id),
 		Alias: alias,
 
-		PeerAddrList:       addrs,
-		Peers:              make([]net.Conn, n),
-		PeerReaders:        make([]*bufio.Reader, n),
-		PeerWriters:        make([]*bufio.Writer, n),
-		ClientWriters:      make(map[int32]*bufio.Writer),
-		Config:             config,
-		Alive:              make([]bool, n),
-		PreferredPeerOrder: make([]int32, n),
+		PeerAddrList:        addrs,
+		Peers:               make([]net.Conn, n),
+		PeerReaders:         make([]*bufio.Reader, n),
+		PeerWriters:         make([]*bufio.Writer, n),
+		ClientWriters:       make(map[int32]*bufio.Writer),
+		ClientReplyCapacity: -1,
+		Config:              config,
+		Alive:               make([]bool, n),
+		PreferredPeerOrder:  make([]int32, n),
 
 		State:       stateMachine,
 		RPC:         fastrpc.NewTableId(defs.RPC_TABLE),
@@ -177,6 +188,7 @@ func (r *Replica) connectToPeers(concurrent bool) {
 	r.Printf("Replica %d: done connecting to peers", r.Id)
 	r.Printf("Node list %v", r.PeerAddrList)
 
+	r.initPeerSenders()
 	for rid, reader := range r.PeerReaders {
 		if int32(rid) == r.Id {
 			continue
@@ -198,6 +210,7 @@ func (r *Replica) ConnectToPeersNoListeners() {
 	}
 	<-done
 	r.Printf("Replica id: %d. Done connecting to peers\n", r.Id)
+	r.initPeerSenders()
 }
 
 const peerHandshakeAck = byte(0xca)
@@ -242,87 +255,25 @@ func (r *Replica) WaitForClientConnections() {
 	}
 }
 
-func (r *Replica) SendMsg(peerId int32, code uint8, msg fastrpc.Serializable) {
-	r.M.Lock()
-	defer r.M.Unlock()
-
-	w := r.PeerWriters[peerId]
-	if w == nil {
-		r.Printf("Connection to %d lost!", peerId)
+// The void convenience entry point uses the preconfigured peer capacity.
+// Protocols needing admission feedback call Sender.Enqueue directly.
+func (r *Replica) SendMsg(peerId int32, code uint8, msg interface{ Marshal(io.Writer) }) {
+	if peerId == r.Id {
 		return
 	}
-	w.WriteByte(code)
-	msg.Marshal(w)
-	w.Flush()
+	_ = r.PeerSender(int(peerId)).Enqueue(Encode(code, msg, true))
 }
-
 func (r *Replica) SendClientMsg(id int32, code uint8, msg fastrpc.Serializable) {
-	r.M.Lock()
-	defer r.M.Unlock()
-
-	w := r.ClientWriters[id]
-	if w == nil {
-		r.Printf("Connection to client %d lost!", id)
-		return
-	}
-	w.WriteByte(code)
-	msg.Marshal(w)
-	w.Flush()
+	_ = r.ClientSender(id, nil, -1).Enqueue(Encode(code, msg, true))
 }
-
-func (r *Replica) SendMsgNoFlush(peerId int32, code uint8, msg fastrpc.Serializable) {
-	r.M.Lock()
-	defer r.M.Unlock()
-
-	w := r.PeerWriters[peerId]
-	if w == nil {
-		r.Printf("Connection to %d lost!", peerId)
-		return
-	}
-	w.WriteByte(code)
-	msg.Marshal(w)
-}
-
 func (r *Replica) ReplyProposeTS(reply *defs.ProposeReplyTS, w *bufio.Writer, lock *sync.Mutex) {
-	r.M.Lock()
-	defer r.M.Unlock()
-
-	reply.Marshal(w)
-	w.Flush()
+	_ = r.ReplySender(w, lock, -1).Enqueue(Encode(0, reply, false))
 }
-
 func (r *Replica) SendBeacon(peerId int32) {
-	r.M.Lock()
-	defer r.M.Unlock()
-
-	w := r.PeerWriters[peerId]
-	if w == nil {
-		r.Printf("Connection to %d lost!", peerId)
-		return
-	}
-	w.WriteByte(defs.GENERIC_SMR_BEACON)
-	beacon := &defs.Beacon{
-		Timestamp: time.Now().UnixNano(),
-	}
-	beacon.Marshal(w)
-	w.Flush()
+	r.SendMsg(peerId, defs.GENERIC_SMR_BEACON, &defs.Beacon{Timestamp: time.Now().UnixNano()})
 }
-
 func (r *Replica) ReplyBeacon(beacon *defs.GBeacon) {
-	r.M.Lock()
-	defer r.M.Unlock()
-
-	w := r.PeerWriters[beacon.Rid]
-	if w == nil {
-		r.Printf("Connection to %d lost!", beacon.Rid)
-		return
-	}
-	w.WriteByte(defs.GENERIC_SMR_BEACON_REPLY)
-	rb := &defs.BeaconReply{
-		Timestamp: beacon.Timestamp,
-	}
-	rb.Marshal(w)
-	w.Flush()
+	r.SendMsg(beacon.Rid, defs.GENERIC_SMR_BEACON_REPLY, &defs.BeaconReply{Timestamp: beacon.Timestamp})
 }
 
 func (r *Replica) UpdatePreferredPeerOrder(quorum []int32) {
@@ -449,6 +400,8 @@ func (r *Replica) waitForPeerConnections(done chan bool) {
 }
 
 func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
+	defer r.closeConnectionSender(r.Peers[rid])
+	defer r.Peers[rid].Close()
 	var (
 		msgType      uint8
 		err          error = nil
@@ -502,6 +455,7 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 }
 
 func (r *Replica) clientListener(conn net.Conn) {
+	defer r.closeConnectionSender(conn)
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 
@@ -534,6 +488,21 @@ func (r *Replica) clientListener(conn net.Conn) {
 	}
 	isProxy := r.Config.Proxy.IsProxy(r.Alias, addr)
 
+	r.senderMu.Lock()
+	if r.clientConns == nil {
+		r.clientConns = make(map[*bufio.Writer]net.Conn)
+	}
+	r.clientConns[writer] = conn
+	r.senderMu.Unlock()
+	defer func() {
+		r.senderMu.Lock()
+		sender := r.senders[writer]
+		delete(r.clientConns, writer)
+		r.senderMu.Unlock()
+		if sender != nil {
+			sender.Close()
+		}
+	}()
 	mutex := &sync.Mutex{}
 	for !r.Shutdown && err == nil {
 		if msgType, err = reader.ReadByte(); err != nil {
@@ -549,6 +518,9 @@ func (r *Replica) clientListener(conn net.Conn) {
 			r.M.Lock()
 			r.ClientWriters[propose.ClientId] = writer
 			r.M.Unlock()
+			// Identity is now known. Install the reply sender before the
+			// proposal can produce any protocol output on this connection.
+			r.ReplySender(writer, mutex, r.ClientReplyCapacity)
 			op := propose.Command.Op
 			if r.LRead && (op == state.GET || op == state.SCAN) {
 				r.ReplyProposeTS(&defs.ProposeReplyTS{
@@ -586,8 +558,7 @@ func (r *Replica) clientListener(conn net.Conn) {
 			r.M.Lock()
 			b, _ := json.Marshal(r.Stats)
 			r.M.Unlock()
-			writer.Write(b)
-			writer.Flush()
+			_ = r.ReplySender(writer, mutex, -1).Enqueue(Frame{Data: b})
 
 		default:
 			p, exists := r.RPC.Get(msgType)
@@ -595,6 +566,11 @@ func (r *Replica) clientListener(conn net.Conn) {
 				obj := p.Obj.New()
 				if err = obj.Unmarshal(reader); err != nil {
 					break
+				}
+				// Protocol adapters may need the configured endpoint and its
+				// return stream without adding transport fields to their wire format.
+				if bound, ok := obj.(interface{ BindClient(net.Conn, string) }); ok {
+					bound.BindClient(conn, addr)
 				}
 				notify := p.Chan
 				notify <- obj

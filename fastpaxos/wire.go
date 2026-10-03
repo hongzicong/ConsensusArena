@@ -1,17 +1,20 @@
 package fastpaxos
 
+// Message factories, wire encoding, and wire decoding.
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
+
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
-	"io"
 )
 
 // Versioned bounded frames. Fast votes carry IDs; classic messages carry data.
 type wireMessage struct{ message }
 
 func (*wireMessage) New() fastrpc.Serializable { return &wireMessage{} }
+
 func (m *wireMessage) Marshal(w io.Writer) {
 	var h [31]byte
 	h[0] = 1
@@ -49,6 +52,7 @@ func (m *wireMessage) Marshal(w io.Writer) {
 		}
 	}
 }
+
 func (m *wireMessage) Unmarshal(r io.Reader) error {
 	var h [31]byte
 	if _, err := io.ReadFull(r, h[:]); err != nil {

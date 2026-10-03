@@ -1,0 +1,34 @@
+package __PACKAGE__
+
+import (
+	"fmt"
+	"time"
+	"github.com/hongzicong/ConsensusArena/state"
+)
+
+// All protocol transitions run on the replica event loop. Keep sockets,
+// goroutines, sleeps, and wall-clock reads outside this structure.
+type core struct {
+	id, n int
+	execute func(state.Command) state.Value
+	// TODO: accepted, committed, executed, ballots, unique voters, and evidence.
+}
+
+func newCore(id, n int) (*core, error) {
+	if n <= 0 || id < 0 || id >= n { return nil, fmt.Errorf("invalid membership") }
+	// TODO: validate the design's fault model/quorums and initialize its state.
+	// Remove this guard LAST, after normal, recovery, and completion paths work.
+	return nil, ErrNotImplemented
+}
+
+func (c *core) Propose(r request, now time.Time) (effects, error) {
+	return effects{}, ErrNotImplemented // TODO: admission and normal-case transitions.
+}
+
+func (c *core) Handle(m message, now time.Time) (effects, error) {
+	return effects{}, ErrNotImplemented // TODO: validate sender/ballot/evidence first.
+}
+
+func (c *core) Tick(now time.Time) (effects, error) {
+	return effects{}, ErrNotImplemented // TODO: design-specific timers and retries.
+}

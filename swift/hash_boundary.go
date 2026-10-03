@@ -1,8 +1,9 @@
 package swift
 
 import (
-	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"log"
+
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 )
 
 // A recovery confirmation is not an ordinary hash-log update. Keep this
@@ -60,7 +61,6 @@ func (r *Replica) recordLeaderAck(msg *MFastAck) {
 
 func (r *Replica) receiveFastAck(msg *MFastAck) {
 	if r.status != NORMAL || msg.Ballot != r.ballot {
-		releaseFastAck(msg)
 		return
 	}
 	r.recordLeaderAck(msg)
@@ -77,7 +77,7 @@ func (r *Replica) sendRecoveryAck(cmdId CommandId, dep Dep, propose *defs.GPropo
 	if r.Id == r.leader() {
 		ack := newRecoveryFastAck(r.Id, r.ballot, cmdId, dep)
 		r.batcher.SendFastAck(copyFastAck(ack))
-		r.sender.SendToClient(propose.ClientId, &MReply{Replica: r.Id, Ballot: r.ballot, CmdId: cmdId}, r.cs.replyRPC)
+		r.SendClientMsg(propose.ClientId, r.cs.replyRPC, &MReply{Replica: r.Id, Ballot: r.ballot, CmdId: cmdId})
 		if desc != nil {
 			return func() { r.handleFastAck(ack, desc) }
 		}

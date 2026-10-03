@@ -1,12 +1,6 @@
 package replica
 
-import (
-	"bufio"
-	"errors"
-	"os"
-	"sort"
-	"strings"
-)
+import "fmt"
 
 type QuorumI interface {
 	Size() int
@@ -46,11 +40,6 @@ type Quorum map[int32]struct{}
 type QuorumsOfLeader map[int32]Quorum
 
 type QuorumSet map[int32]QuorumsOfLeader
-
-var (
-	NO_QUORUM_FILE = errors.New("Quorum file is not provided")
-	THREE_QUARTERS = errors.New("ThreeQuarters")
-)
 
 func NewQuorum(size int) Quorum {
 	return make(map[int32]struct{}, size)
@@ -102,37 +91,22 @@ type QuorumSystem struct {
 	ballots []int32
 }
 
-func NewQuorumSystem(quorumSize int, r *Replica, qfile string) (*QuorumSystem, error) {
-	AQs, leaders, err := NewQuorumsFromFile(qfile, r)
-	if err == NO_QUORUM_FILE {
-		return &QuorumSystem{
-			qs:      NewQuorumSet(quorumSize, r.N),
-			ballots: nil,
-		}, nil
-	} else if err != nil && err != THREE_QUARTERS {
-		return nil, err
+// NewQuorumSystem binds the protocol's initial plan to the existing ballot space.
+func NewQuorumSystem(quorumSize int, r *Replica, initial Quorum, leader int32) (*QuorumSystem, error) {
+	if initial.Size() != quorumSize || !initial.Contains(leader) {
+		return nil, fmt.Errorf("invalid initial Swift quorum")
 	}
-
-	sys := &QuorumSystem{
-		ballots: nil,
-	}
-	ids := make(map[int32]int)
-	qs := newQuorumSetAdvance(quorumSize, r.N, func(l, qid int32, q Quorum) {
-		for i, leader := range leaders {
-			if leader != l || !q.Equals(AQs[i]) {
-				continue
-			}
-			ballot := qid*int32(r.N) + l
-			ids[ballot] = i
-			sys.ballots = append(sys.ballots, ballot)
+	for id := range initial {
+		if id < 0 || int(id) >= r.N {
+			return nil, fmt.Errorf("invalid quorum member %d", id)
 		}
-	})
-	sort.Slice(sys.ballots, func(i, j int) bool {
-		return ids[sys.ballots[i]] < ids[sys.ballots[j]]
-	})
-
-	sys.qs = qs
-	return sys, err
+	}
+	qs := NewQuorumSet(quorumSize, r.N)
+	ballot := qs.BallotOf(leader, initial)
+	if ballot < 0 {
+		return nil, fmt.Errorf("initial quorum has no ballot")
+	}
+	return &QuorumSystem{qs: qs, ballots: []int32{ballot}}, nil
 }
 
 func (sys *QuorumSystem) SameHigher(sameAs, higherThan int32) int32 {
@@ -154,68 +128,6 @@ func (sys *QuorumSystem) BallotOf(leader int32, q Quorum) int32 {
 
 func (sys QuorumSystem) AQ(ballot int32) Quorum {
 	return sys.qs.AQ(ballot)
-}
-
-func NewQuorumsFromFile(qfile string, r *Replica) ([]Quorum, []int32, error) {
-	if qfile == "" {
-		return nil, nil, NO_QUORUM_FILE
-	}
-
-	f, err := os.Open(qfile)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer f.Close()
-
-	i := 0
-	leaders := []int32{0}
-	AQs := []Quorum{NewQuorum(r.N/2 + 1)}
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		id := int32(-1)
-		isLeader := false
-		addr := ""
-
-		data := strings.Split(s.Text(), " ")
-		if len(data) == 1 {
-			if data[0] == "---" {
-				i++
-				leaders = append(leaders, 0)
-				AQs = append(AQs, NewQuorum(r.N/2+1))
-				continue
-			} else if data[0] == "3/4" {
-				err = THREE_QUARTERS
-				continue
-			}
-			addr = data[0]
-		} else {
-			isLeader = true
-			addr = data[1]
-		}
-
-		addr = r.Config.ReplicaAddrs[addr]
-
-		for rid := int32(0); rid < int32(r.N); rid++ {
-			peerAddr := r.PeerAddrList[rid]
-			peerHost := strings.Split(peerAddr, ":")[0]
-			if addr == peerAddr || (!strings.Contains(addr, ":") && addr == peerHost) {
-				id = rid
-				break
-			}
-		}
-
-		if id != -1 {
-			AQs[i][id] = struct{}{}
-			if isLeader {
-				leaders[i] = id
-			}
-		}
-	}
-
-	if serr := s.Err(); serr != nil {
-		err = serr
-	}
-	return AQs, leaders, err
 }
 
 func NewQuorumsOfLeader() QuorumsOfLeader {

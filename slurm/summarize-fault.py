@@ -26,7 +26,8 @@ def add(target, stats):
 def export(path, rows):
     if not rows: return
     with Path(path).open('w',newline='') as f:
-        w=csv.DictWriter(f,fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+        w=csv.DictWriter(f,fieldnames=list(rows[0])); w.writeheader()
+        w.writerows({key:str(value).lower() if isinstance(value,bool) else value for key,value in row.items()} for row in rows)
 
 def recovery_window(seconds, start, end, reference, valid):
     """Completion-window observations; not a claim that new requests committed."""
@@ -60,11 +61,16 @@ def summarize(base):
         (base/'validation.json').write_text(json.dumps(outcomes,indent=2)+'\n')
         return outcomes
     protocol=metadata['protocol']
-    duration=int(metadata.get('measurement_s',60))
+    origin=metadata.get('timeline_origin','measurement_start')
+    warmup=int(metadata.get('warmup_s',0)) if origin=='run_start' else 0
+    duration=int(metadata.get('observation_s',metadata.get('measurement_s',60)))
     maximum=metadata.get('max_crash_s',35)
     first=int(metadata.get('crash_s',10))
-    if (first,maximum,duration)!=(10,35,60):
-        raise ValueError('expected crash-only schedule 10/35/60; historical runs require their original summarizer')
+    if (first,maximum,duration) not in ((5,20,40),(10,35,60)):
+        raise ValueError('expected crash-only schedule 5/20/40 or historical 10/35/60')
+    if origin not in ('run_start','measurement_start') or (origin=='run_start' and
+            ((first,maximum,duration)!=(5,20,40) or warmup!=5 or metadata.get('measurement_s')!=35)):
+        raise ValueError('new schedule requires 5 s warmup within 40 s total, with 35 s measurement')
     leader_end=maximum if maximum is not None else duration
     summaries=[]; series=[]; cohorts=[]; outcomes=[]
     for run in sorted(base.glob('ycsb-*/repetition-*')):
@@ -73,9 +79,12 @@ def summarize(base):
             continue
         outcome=json.loads((run/'outcome.json').read_text())
         meta=json.loads((run/'metadata.json').read_text())
-        if (meta.get('crash_s',first),meta.get('max_crash_s',maximum),meta.get('measurement_s',duration))!=(first,maximum,duration):
+        if (meta.get('crash_s',first),meta.get('max_crash_s',maximum),meta.get('observation_s',meta.get('measurement_s',duration)),
+                meta.get('timeline_origin','measurement_start'),meta.get('warmup_s',0) if origin=='run_start' else 0)!=(first,maximum,duration,origin,warmup):
             raise ValueError('run schedule differs from experiment metadata: '+str(run))
-        identity=dict(protocol=protocol,replicas=meta['replicas'],profile=meta['profile'],repetition=meta['repetition'],valid=outcome['valid'])
+        identity=dict(protocol=protocol,replicas=meta['replicas'],profile=meta['profile'],repetition=meta['repetition'],valid=outcome['valid'],
+                      timeline_origin=origin,warmup_s=warmup,observation_s=duration,
+                      crash_s=first,max_crash_s=maximum,measurement_s=duration-warmup)
         seconds=collections.defaultdict(bucket)
         cohort=collections.defaultdict(bucket)
         unresolved=collections.Counter()
@@ -84,8 +93,13 @@ def summarize(base):
         for file in sorted((run/'results').glob('*-fault.jsonl')):
             rows=[json.loads(line) for line in file.read_text().splitlines()]
             for row in rows:
-                if row['type']=='start': continue
-                # Samples share an absolute measurement epoch. Assign the tiny
+                if row['type']=='start':
+                    if row.get('timeline_origin','measurement_start')!=origin:
+                        accounting_errors.append(file.name+': client timeline differs from metadata; rebuild executable')
+                    if origin=='run_start' and (row.get('warmup_s'),row.get('duration_s'),row.get('observation_s'))!=(warmup,duration-warmup,duration):
+                        accounting_errors.append(file.name+': client timing differs from metadata')
+                    continue
+                # Samples share the configured timeline origin. Assign the tiny
                 # scheduling jitter to the nearest one-second interval.
                 sec=math.floor((row['start_s']+row['end_s'])/2)
                 if 0<=sec<duration:
@@ -104,8 +118,9 @@ def summarize(base):
         if missing_seconds: accounting_errors.append('incomplete client coverage in seconds '+str(missing_seconds))
         valid=bool(outcome['valid'] and not accounting_errors)
         identity['valid']=valid
-        pre=sum(seconds[s]['completed'] for s in range(first-10,first))/10
-        pre_offered=sum(seconds[s]['offered'] for s in range(first-10,first))/10
+        reference_s=min(10,first)
+        pre=sum(seconds[s]['completed'] for s in range(first-reference_s,first))/reference_s
+        pre_offered=sum(seconds[s]['offered'] for s in range(first-reference_s,first))/reference_s
         stable=pre_offered>0 and .9*pre_offered<=pre<=1.1*pre_offered
         leader=recovery_window(seconds,first,leader_end,pre,valid and stable)
         recovery=leader['first_s'];sustained_from=leader['sustained_from_s']
@@ -122,7 +137,7 @@ def summarize(base):
                                  premaximum_last10_rps=local_ref,premaximum_stable=local_stable,
                                  final20_mean_rps=(sum(seconds[s]['completed'] for s in range(duration-20,duration))/20 if valid else None),
                                  observation_end_s=duration)
-        outcomes.append(dict(**identity,accounting_errors=accounting_errors,baseline_last10_rps=pre,baseline_last10_offered_rps=pre_offered,baseline_stable=stable,
+        outcomes.append(dict(**identity,accounting_errors=accounting_errors,baseline_reference_s=reference_s,baseline_rps=pre,baseline_offered_rps=pre_offered,baseline_stable=stable,
                              recovery_90pct_3seconds_s=recovery,send_errors=send_errors,
                              sustained_recovery=leader['stays_after_first'],
                              sustained_recovery_from_s=sustained_from,
@@ -133,7 +148,7 @@ def summarize(base):
             covered=len(coverage[sec])==10
             series.append(dict(**identity,second=sec,completed=n if covered else None,offered=b['offered'] if covered else None,issued=b['issued'] if covered else None,dropped=b['dropped'] if covered else None,
                                mean_ms=b['latency_sum_ms']/n if n else None,p99_ms=percentile(b['hist'],.99),pending=b['pending'],queue=b['queue']))
-        phases=[('normal',0,first),('crashed',first,leader_end)]
+        phases=[('warmup' if origin=='run_start' else 'normal',0,first),('crashed',first,leader_end)]
         if maximum is not None: phases.append(('maximum_crashes',maximum,duration))
         for phase,lo,hi in phases:
             b=bucket()

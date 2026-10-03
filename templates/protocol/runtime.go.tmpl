@@ -1,0 +1,69 @@
+package __PACKAGE__
+
+import (
+	"time"
+	"github.com/hongzicong/ConsensusArena/protocol"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+)
+
+func (r *Replica) run() {
+	r.ClientReplyCapacity = 8192
+	r.ConnectToPeers()
+	r.peers = r.PeerSenders
+ defer r.CloseSenders()
+	go r.WaitForClientConnections()
+	ticker := time.NewTicker(runtimeInterval)
+	defer ticker.Stop()
+	for {
+		var err error
+		select {
+		case p := <-r.ProposeChan:
+			err = r.Propose(p, time.Now())
+		case raw := <-r.inbox:
+			err = r.Handle(raw, time.Now())
+		case now := <-ticker.C:
+			err = r.Tick(protocol.Tick{Now: now})
+		}
+		if err != nil { r.Printf("PROTOCOL_ERROR error=%q", err); return }
+	}
+}
+
+var _ protocol.Machine = (*Replica)(nil)
+
+func (r *Replica) Propose(p *defs.GPropose, now time.Time) error {
+	if err := protocol.ValidateProposal(p); err != nil { return err }
+	id := commandID{p.ClientId, p.CommandId}
+	r.pending[id] = p
+	out, err := r.engine.Propose(request{id, p.Command}, now)
+	if err != nil { return err }
+	return r.dispatch(out)
+}
+
+func (r *Replica) Handle(event any, now time.Time) error {
+	m, ok := event.(*message)
+	if !ok || m == nil { return protocol.UnsupportedEvent("__PACKAGE__", event) }
+	out, err := r.engine.Handle(*m, now)
+	if err != nil { return err }
+	return r.dispatch(out)
+}
+
+func (r *Replica) Tick(t protocol.Tick) error {
+	if t.Kind != protocol.Maintenance { return protocol.UnsupportedTimer("__PACKAGE__", t.Kind) }
+	out, err := r.engine.Tick(t.Now)
+	if err != nil { return err }
+	return r.dispatch(out)
+}
+
+func (r *Replica) dispatch(out effects) error {
+	for _, send := range out.Sends {
+		// TODO: choose and test the design's self-delivery ordering explicitly.
+		if err := r.send(send); err != nil { return err }
+	}
+	for _, reply := range out.Replies {
+		if p := r.pending[reply.ID]; p != nil {
+			if err := r.reply(p, defs.ProposeReplyTS{OK: defs.TRUE, CommandId: reply.ID.Sequence, Value: reply.Value, Timestamp: p.Timestamp}); err != nil { return err }
+			delete(r.pending, reply.ID)
+		}
+	}
+	return nil
+}

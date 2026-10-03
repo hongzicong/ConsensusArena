@@ -1,5 +1,6 @@
 package bodega
 
+// Protocol-specific message or proposal batching.
 import (
 	"time"
 
@@ -7,7 +8,9 @@ import (
 )
 
 const batchInterval = time.Millisecond
+
 const maxBatchCommands = 5000
+
 const maxBatchBytes = 8 << 20
 
 func (v entry) requests() []request {
@@ -29,6 +32,7 @@ func (v entry) lastWrite(key state.Key) (state.Value, bool) {
 }
 
 func requestBytes(r request) int { return 30 + len(r.Proposal.Command.V) }
+
 func entryBytes(v entry) int {
 	n := 21
 	for _, r := range v.requests() {

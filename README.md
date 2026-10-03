@@ -16,8 +16,7 @@ and [Egalitarian Paxos](https://github.com/otrack/epaxos) codebases.
 | --- | --- |
 | SwiftPaxos | Geo-replicated protocol described in the NSDI '24 paper. |
 | Paxos | Classic leader-based Paxos. |
-| N²Paxos | All-to-all Paxos variant. |
-| CURP | CURP implemented over N²Paxos. |
+| CURP | CURP with an independent N²Paxos-style all-to-all consensus extension. |
 | Fast Paxos | Fast Paxos with uncoordinated collision recovery. |
 | EPaxos | Corrected EPaxos implementation. |
 | Bodega | Roster leases for local reads; crash-stop core prototype. |
@@ -65,10 +64,16 @@ Launch participants with a deployment configuration:
 ./consensusarena -run master -config deployment.conf -alias m0
 
 ./consensusarena -run replica -config deployment.conf \
-  -latency latency.conf -quorum quorum.conf -alias replica-name
+  -alias replica-name
 
 ./consensusarena -run client -config deployment.conf \
-  -latency latency.conf -alias client-name
+  -alias client-name
+```
+
+Inspect the protocol's deployment plan without starting participants:
+
+```bash
+./consensusarena -run plan -config deployment.conf
 ```
 
 Important command-line options:
@@ -77,11 +82,9 @@ Important command-line options:
 | --- | --- |
 | `-alias` | Participant alias from the deployment configuration. |
 | `-config` | Deployment and workload configuration file. |
-| `-latency` | Artificial network-latency matrix. |
 | `-log` | Application log path. |
 | `-protocol` | Override the protocol selected in the configuration. |
-| `-quorum` | Custom quorum configuration. |
-| `-run` | Participant type: `master`, `replica`, or `client`. |
+| `-run` | Participant type: `master`, `replica`, or `client`; `plan` prints the deployment plan. |
 
 ## Select a protocol
 
@@ -92,7 +95,6 @@ ConsensusArena accepts these case-insensitive protocol values:
 | `SwiftPaxos` | SwiftPaxos |
 | `CURP` | CURP |
 | `FastPaxos` | Fast Paxos |
-| `N2Paxos` | N²Paxos |
 | `Paxos` | Classic Paxos |
 | `EPaxos` | EPaxos |
 | `Bodega` | Bodega |
@@ -126,14 +128,22 @@ before `-- Proxy --`:
 
 ```text
 bodegaResponders: all // or leader, or comma-separated replica aliases
-bodegaLease: 2s
+bodegaLease: 2500ms
 bodegaMargin: 100ms
-bodegaHeartbeat: 100ms
+bodegaHeartbeat: 120ms
 bodegaFailure: 1200ms
+bodegaFailureMax: 2400ms
 bodegaUnhold: 250ms
 ```
 
-These are defaults. Optional `bodegaResponderRanges: 0..999=r1,r3;1000..1999=r2;2000=leader`
+These timing defaults match the authors' YCSB experiment script at Summerset
+`16c6f352`. Failure detection samples a timeout uniformly from 1200–2400 ms
+on each peer-timer refresh; checks reuse that deadline. Setting only
+`bodegaFailure` retains the legacy fixed timeout; set `bodegaFailureMax` as well
+to configure a range. Failure deadlines do not renew leases. `BODEGA_TIMING`
+logs effective timing values at startup. Existing archived benchmark results
+predate this timing change and require remeasurement to describe these defaults.
+Optional `bodegaResponderRanges: 0..999=r1,r3;1000..1999=r2;2000=leader`
 overrides the default mask on inclusive, nonoverlapping key ranges (or a single key).
 Unlisted keys use `bodegaResponders`; the current leader is always included.
 Writes use 1 ms batches and require a majority plus the union of responders for
@@ -194,7 +204,15 @@ The SCITAS experiment uses these configuration files:
 - `slurm/workload.conf`: five replicas, ten regional clients, protocol and
   workload parameters.
 - `latency.conf`: a 15-endpoint, 225-entry round-trip latency matrix.
-- `quorum.conf`: the custom C2 quorum definition.
+
+Each protocol's `plan.go` selects its initial leader, quorums, responders, or
+client ingress from the topology and workload at startup. All participants use
+the same deployment configuration and topology inputs; no generated `quorum.conf`
+or `leader.conf` is required. The topology matrix defaults to `latency.conf`
+beside the deployment configuration, or can be set with `topology: path` relative
+to that configuration. Placement planning does not inject network delay;
+Toxiproxy applies the latency matrix separately in experiments. See
+[topology selection](slurm/TOPOLOGY.md) for placement policies and plan inspection.
 
 The workload is open-loop. Each logical client generates requests according to
 a Poisson process. Keys are selected with a Zipfian distribution.
@@ -206,8 +224,8 @@ writes: 50
 commandSize: 1000
 clones: 0
 arrivalRate: 2000
-warmup: 10s
-duration: 20s
+warmup: 5s
+duration: 10s
 repetitions: 3
 keyCount: 1000000
 zipfSkew: 0.9
@@ -231,8 +249,8 @@ particular, they use ConsensusArena's blob values instead of field-oriented
 records.
 
 Every profile runs three repetitions. Each repetition generates warm-up traffic
-for 10 seconds without recording latency, records requests generated during the
-following 20 seconds, and then waits for all in-flight replies. The Slurm job
+for 5 seconds without recording latency, records requests generated during the
+following 10 seconds, and then waits for all in-flight replies. The Slurm job
 restarts the master, replicas, and clients before every repetition.
 
 `workloadSeed` makes request generation reproducible across protocol runs. Each
@@ -282,7 +300,7 @@ directory in Windows PowerShell:
 
 ```powershell
 ssh zihong@jed.hpc.epfl.ch "mkdir -p ~/ConsensusArena"
-scp consensusarena-linux-amd64 latency.conf quorum.conf zihong@jed.hpc.epfl.ch:~/ConsensusArena/
+scp consensusarena-linux-amd64 latency.conf zihong@jed.hpc.epfl.ch:~/ConsensusArena/
 scp -r slurm zihong@jed.hpc.epfl.ch:~/ConsensusArena/
 ssh zihong@jed.hpc.epfl.ch
 ```
@@ -363,26 +381,34 @@ sbatch --account=dcl \
 
 ## Crash recovery experiment
 
-`slurm/run-fault.sbatch` now runs a crash-only fault schedule. After 10 seconds
-of warmup, measure for 60 seconds: normal operation at 0–10 seconds, kill the
-protocol-specific target at 10 seconds, then kill additional replicas at
-35 seconds to reach a cumulative `f = (n - 1) / 2` crashes. Keep observing
-through 60 seconds. 
+`slurm/run-fault.sbatch` runs for 40 seconds in total, including 5 seconds of
+warmup. All times are from workload start: warmup at 0–5 seconds, kill the
+protocol-specific target at 5 seconds, then kill additional replicas at
+20 seconds to reach a cumulative `f = (n - 1) / 2` crashes. End at 40 seconds.
+The post-warmup measurement window is 5–40 seconds (35 seconds); the generated
+client configuration therefore uses `warmup: 5s` and `duration: 35s`.
 
 Rebuild the executable before running this schedule so client request cohorts
-use the matching `normal`, `crashed`, and `maximum_crashes` phases. The
-summarizer accepts only the 10/35/60-second schedule.
+use the matching `warmup`, `crashed`, and `maximum_crashes` phases and timestamps
+relative to workload start. The summarizer validates this timeline and also
+accepts historical runs with timestamps relative to measurement start.
 
 Existing recovery figures describe historical experiments and remain unchanged.
-After replacing their data with new 60-second measurements, render with
+After replacing their data with new 40-second measurements, including the
+`timeline_origin`, `warmup_s`, `observation_s`, `crash_s`, `max_crash_s`, and
+`measurement_s` columns exported by the summarizer,
+render with
 `python report/plot_recovery.py --baselines-only` from the parent repository. The plotter does
 not relabel or truncate historical data. Existing XPaxos figures are not
-redrawn by this command. The recovery reference is the ten
-measurement seconds immediately before the first crash (0–10 seconds).
+redrawn by this command. New plots show 0–40 seconds from workload start,
+with the 0–5-second warmup shaded. This pre-crash interval supplies the recovery
+reference; it must pass the existing stability check before recovery can be claimed.
 
 ### Ordered-log recovery and lagging replicas
 
-N2Paxos, CURP's consensus extension, and Paxos use `recoverylog`. An acceptor
+CURP's consensus extension and Paxos each own their ordered-log core,
+message codec, event loop, and output queues in their package. See
+`BASELINE_LAYOUT.md` for the common file organization. An acceptor
 may accept a current-ballot slot even when earlier slots are missing. Its
 vote records that slot's value; execution and client completion still wait
 for a contiguous committed prefix. This lets the surviving majority finish
@@ -398,10 +424,12 @@ Compare these with `accepted`, `executed`, `active`, and `send_drops` to
 distinguish background catch-up from blocked leader recovery. These counters
 add constant-time updates; they do not log every message.
 
-`go test ./recoverylog` checks recovery after two leader crashes with prefix
-repair deliberately delayed, continued service, ordered catch-up, stale-ballot
-rejection, and duplicate-vote handling. This remains an in-memory crash-stop
-prototype; these checks do not establish durable crash-restart recovery.
+The runtime split was checked against the previous implementation using 5/9/13
+replicas, leader replacement with a pending request, cumulative 2/4/6 failures,
+continued service, duplicate evidence, and stale ballots. Codec cross-decoding
+also passed. Temporary checks were removed after validation. These remain
+in-memory crash-stop prototypes; the checks do not establish durable
+crash-restart recovery or measure WAN performance.
 
 ## License
 

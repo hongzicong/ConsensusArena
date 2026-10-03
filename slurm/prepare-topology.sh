@@ -10,28 +10,19 @@ mkdir -p "$output"
 if (( replica_count == 5 )); then
     cp "$script_dir/workload.conf" "$output/workload.conf"
     cp "$repo_root/latency.conf" "$output/latency.conf"
-    cp "$repo_root/quorum.conf" "$output/quorum.conf"
 else
     # Add sites already represented by clients in the original measured matrix.
-    # Move only those clients to their new local replica; preserve other routes.
     awk -v n="$replica_count" '
         BEGIN {
             added[6]="eu-west-1"; added[7]="us-east-1"
             added[8]="ap-southeast-2"; added[9]="sa-east-1"
             added[10]="ap-east-1"; added[11]="ca-central-1"
             added[12]="us-east-2"; added[13]="us-west-2"
-            for (i=6; i<=n; i++) local_site[added[i]]=1
         }
         { sub(/\r$/, "") }
         $0 == "-- Clients --" {
             for (i=6; i<=n; i++) print added[i], "0.0.0." i
             print ""
-        }
-        $0 == "-- Proxy --" { in_proxy=1 }
-        in_proxy && ($1 in local_site) { next }
-        in_proxy && $0 == "---" {
-            for (i=6; i<=n; i++)
-                printf "\nserver_alias %s\n%s (local)\n", added[i], added[i]
         }
         { print }
     ' "$script_dir/workload.conf" > "$output/workload.conf"
@@ -60,12 +51,8 @@ else
             }
         }
     ' "$repo_root/latency.conf" > "$output/latency.conf"
-    # Preserve the original C2 leader and members, extending the fixed majority.
-    awk '{ sub(/\r$/, ""); print }' "$repo_root/quorum.conf" > "$output/quorum.conf"
-    for ((i=5; i<5 + replica_count / 2 - 2; i++)); do
-        printf '%s\n' "${replicas[$i]}" >> "$output/quorum.conf"
-    done
 fi
-printf 'replica_count=%s\nclient_count=%s\nfault_budget=%s\nfixed_quorum_size=%s\nlatency_source=latency.conf\n' \
+printf 'replica_count=%s\nclient_count=%s\nfault_budget=%s\nmajority_size=%s\nlatency_source=latency.conf\n' \
     "$replica_count" "$client_count" "$((replica_count / 2))" "$((replica_count / 2 + 1))" \
     > "$output/topology-metadata.txt"
+printf 'placement=protocol-plan.go\n' >> "$output/topology-metadata.txt"

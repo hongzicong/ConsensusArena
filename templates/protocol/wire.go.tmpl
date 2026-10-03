@@ -1,0 +1,26 @@
+package __PACKAGE__
+
+import (
+	"encoding/binary"
+	"io"
+	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
+)
+
+var _ fastrpc.Serializable = (*message)(nil)
+
+func (*message) New() fastrpc.Serializable { return &message{} }
+
+func (m *message) Marshal(w io.Writer) {
+	var frame [5]byte
+	binary.LittleEndian.PutUint32(frame[:4], uint32(m.From))
+	frame[4] = m.Kind
+	_, _ = w.Write(frame[:])
+}
+
+func (m *message) Unmarshal(r io.Reader) error {
+	var frame [5]byte
+	if _, err := io.ReadFull(r, frame[:]); err != nil { return err }
+	m.From = int32(binary.LittleEndian.Uint32(frame[:4]))
+	m.Kind = frame[4]
+	return nil
+}

@@ -1,0 +1,9 @@
+package __PACKAGE__
+
+import "time"
+
+// Recover must gather the design's evidence, choose a safe value/order, and
+// restore progress. A timeout alone is never a commit certificate.
+func (c *core) Recover(now time.Time) (effects, error) {
+	return effects{}, ErrNotImplemented
+}

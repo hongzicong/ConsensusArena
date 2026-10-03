@@ -1,8 +1,9 @@
 package client
 
 // Opt-in fault-experiment transport and observer. Protocol voting, certificates,
-// caches and completion predicates are deliberately unchanged. Unanswered
-// operations are censored, never resubmitted under a new consensus instance.
+// caches and completion predicates are deliberately unchanged. The observer
+// never resubmits requests; adapters may retry the same logical request, and
+// report that policy explicitly. Unanswered operations remain censored.
 import (
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,11 +174,9 @@ func (b *faultBucket) complete(latency, sendLatency float64) {
 }
 func faultPhase(sec float64) string {
 	switch {
-	case sec < 0:
+	case sec < 5:
 		return "warmup"
-	case sec < 10:
-		return "normal"
-	case sec < 35:
+	case sec < 20:
 		return "crashed"
 	default:
 		return "maximum_crashes"
@@ -219,13 +217,17 @@ func (c *BufferClient) loopFault(getKey func() int64) {
 	}
 	defer file.Close()
 	enc := json.NewEncoder(file)
-	if err := enc.Encode(map[string]interface{}{"type": "start", "epoch_ns": epoch.UnixNano(), "measurement_ns": measurement.UnixNano(), "actual_start_ns": time.Now().UnixNano(), "duration_s": c.duration.Seconds(), "client": f.alias, "client_id": c.ClientId, "retry_policy": "none; unresolved requests are censored", "histogram_resolution_ms": 1}); err != nil {
+	retryPolicy := "none; unresolved requests are censored"
+	if c.protocol != nil {
+		retryPolicy = c.protocol.RetryPolicy()
+	}
+	if err := enc.Encode(map[string]interface{}{"type": "start", "epoch_ns": epoch.UnixNano(), "measurement_ns": measurement.UnixNano(), "actual_start_ns": time.Now().UnixNano(), "duration_s": c.duration.Seconds(), "timeline_origin": "run_start", "warmup_s": c.warmup.Seconds(), "observation_s": end.Sub(epoch).Seconds(), "client": f.alias, "client_id": c.ClientId, "retry_policy": retryPolicy, "histogram_resolution_ms": 1}); err != nil {
 		panic(err)
 	}
 	var mu sync.Mutex
 	stats := faultBucket{}
 	cohorts := map[string]*faultBucket{}
-	for _, p := range []string{"warmup", "normal", "crashed", "maximum_crashes"} {
+	for _, p := range []string{"warmup", "crashed", "maximum_crashes"} {
 		for _, op := range []string{"READ", "UPDATE"} {
 			cohorts[p+"/"+op] = &faultBucket{}
 		}
@@ -263,7 +265,7 @@ func (c *BufferClient) loopFault(getKey func() int64) {
 			stats.Offered++
 			totalOffered++
 			unissued++
-			cohorts[faultPhase(next.Sub(measurement).Seconds())+"/"+op].Offered++
+			cohorts[faultPhase(next.Sub(epoch).Seconds())+"/"+op].Offered++
 			mu.Unlock()
 			select {
 			case <-stop:
@@ -274,7 +276,7 @@ func (c *BufferClient) loopFault(getKey func() int64) {
 				stats.Dropped++
 				totalDropped++
 				unissued--
-				cohorts[faultPhase(next.Sub(measurement).Seconds())+"/"+op].Dropped++
+				cohorts[faultPhase(next.Sub(epoch).Seconds())+"/"+op].Dropped++
 				mu.Unlock()
 			}
 		}
@@ -292,7 +294,7 @@ func (c *BufferClient) loopFault(getKey func() int64) {
 				if req.write {
 					op = "UPDATE"
 				}
-				timing := faultTiming{req.offered, time.Now(), op, faultPhase(req.offered.Sub(measurement).Seconds())}
+				timing := faultTiming{req.offered, time.Now(), op, faultPhase(req.offered.Sub(epoch).Seconds())}
 				mu.Lock()
 				pending[int(c.seqnum+1)] = timing
 				stats.Issued++
@@ -313,7 +315,7 @@ func (c *BufferClient) loopFault(getKey func() int64) {
 		encodeStart := time.Now()
 		mu.Lock()
 		defer mu.Unlock()
-		row := map[string]interface{}{"type": "sample", "start_s": last.Sub(measurement).Seconds(), "end_s": now.Sub(measurement).Seconds(), "stats": stats, "pending": len(pending), "queue": len(queue), "send_errors": f.errors.Load(), "total_offered": totalOffered, "total_issued": totalIssued, "total_completed": totalCompleted, "total_dropped": totalDropped, "duplicate_or_unknown_replies": duplicates}
+		row := map[string]interface{}{"type": "sample", "start_s": last.Sub(epoch).Seconds(), "end_s": now.Sub(epoch).Seconds(), "stats": stats, "pending": len(pending), "queue": len(queue), "send_errors": f.errors.Load(), "total_offered": totalOffered, "total_issued": totalIssued, "total_completed": totalCompleted, "total_dropped": totalDropped, "duplicate_or_unknown_replies": duplicates}
 		row["unissued"] = unissued
 		if final {
 			unresolved := map[string]int{}
@@ -326,6 +328,9 @@ func (c *BufferClient) loopFault(getKey func() int64) {
 			row["completion_observer_samples"] = observerSamples
 			row["completion_observer_sample_ns"] = observerSampleNS
 			row["prior_sample_serialization_ns"] = encodeNS
+			if adapter, ok := c.protocol.(interface{ RetryStats() map[string]uint64 }); ok {
+				row["protocol_retry_stats"] = adapter.RetryStats()
+			}
 		}
 		if err := enc.Encode(row); err != nil {
 			panic(err)
@@ -366,24 +371,4 @@ func (c *BufferClient) loopFault(getKey func() int64) {
 			return
 		}
 	}
-}
-
-// Nearest-rank percentile on mergeable millisecond-ceiling histogram values.
-func faultPercentile(hist map[int]int, fraction float64) int {
-	keys := make([]int, 0, len(hist))
-	total := 0
-	for k, n := range hist {
-		keys = append(keys, k)
-		total += n
-	}
-	sort.Ints(keys)
-	target := int(math.Ceil(float64(total) * fraction))
-	sum := 0
-	for _, k := range keys {
-		sum += hist[k]
-		if sum >= target {
-			return k
-		}
-	}
-	return 0
 }

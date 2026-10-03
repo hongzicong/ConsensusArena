@@ -1,0 +1,46 @@
+# __PACKAGE__ implementation checklist
+
+This package is a **non-running skeleton**, not a consensus algorithm. Constructors
+and every protocol transition reject use with `ErrNotImplemented`. The example
+wire header and runtime plumbing do not supply a commit rule, quorum, recovery
+algorithm, or client routing policy. Do not remove the startup guard until the
+design and the implementation below agree.
+
+| File | Fill in from the finalized design |
+| --- | --- |
+| `defs.go` | Commands, messages, identities, ballots, evidence, output types. |
+| `wire.go` | Factories and encoding for every message, with bounded allocations. |
+| `core.go` | Local state, Propose/Handle/Tick, unique voters, normal commit rule. |
+| `recovery.go` | Evidence collection, safe selection, fallback, missing-data repair. |
+| `execute.go` | Executable order, deduplication, result retention, client completion. |
+| `replica.go` | Configuration validation, stable replica IDs, callback setup, RPC registration. |
+| `plan.go` | Initial leader/quorum/responder/ingress policy from deployment inputs, including fixed policies. |
+| `runtime.go` | Serialized event delivery, explicit time, output dispatch, observability. |
+| `transport.go` | Ownership of queued data, queue bounds, failure/retry policy, self-delivery. |
+| `client.go` | Ingress choice, routing, and exact completion evidence. |
+
+`Replica` implements the shared `protocol.Machine` event interface through
+`Propose(*defs.GPropose, time.Time) error`, `Handle(any, time.Time) error`, and
+`Tick(protocol.Tick) error`. Its live loop uses these methods. The core's private
+`effects` are dispatched inside the method; they are not a framework-wide output
+barrier. Match the ownership and timer rules in `protocol/README.md` at the
+repository root when replacing the guards.
+
+The fixed-header codec is only an example; extend it with the message definition.
+Transport currently rejects self-delivery and exits its event loop on queue errors;
+choose retry policies before enabling
+the implementation. The membership check and `(n-1)/2` framework argument are not
+a substitute for the design's fault/quorum validation. Persistence, restart,
+reconnect, and complete process shutdown are not implemented by this skeleton;
+its runtime does close registered senders when the event loop exits.
+
+Keep the protocol's state transitions free of sockets, goroutines, and wall-clock
+reads. Feed time into transitions and execute every transition on one event loop.
+The `execute` hook applies a state-machine command; the core must establish the
+required execution condition before invoking it. `effects.Replies` means the
+protocol has authorized client completion, not merely received a proposal.
+
+Run `go build ./__PACKAGE__` and `go vet -composites=false ./__PACKAGE__` after
+generating into the default directory. Add one entry and an import in the root
+`protocols.go` when implementation is ready; see `templates/README.md` for the
+integration contract. Registration is intentionally not performed by the generator.

@@ -9,7 +9,7 @@ import (
 )
 
 type Client struct {
-	*client.BufferClient
+	client.StandardClient
 
 	val       state.Value
 	ready     chan struct{}
@@ -32,7 +32,7 @@ type Client struct {
 
 func NewClient(b *client.BufferClient, repNum int) *Client {
 	c := &Client{
-		BufferClient: b,
+		StandardClient: client.StandardClient{BufferClient: b},
 
 		val:       nil,
 		ready:     make(chan struct{}, 1),
@@ -52,10 +52,6 @@ func NewClient(b *client.BufferClient, repNum int) *Client {
 		alreadySlow: make(map[CommandId]struct{}),
 	}
 
-	t := fastrpc.NewTableId(defs.RPC_TABLE)
-	initCs(&c.cs, t)
-	c.RegisterRPCTable(t)
-
 	if c.fixedMajority {
 		// TODO: it has to be the correct majority
 		c.FQ = replica.NewMajorityOf(repNum)
@@ -64,7 +60,7 @@ func NewClient(b *client.BufferClient, repNum int) *Client {
 	c.Println("SQ:", c.SQ)
 	c.Println("FQ:", c.FQ)
 
-	go c.handleMsgs()
+	b.SetProtocol(c)
 
 	return c
 }
@@ -101,18 +97,11 @@ func (c *Client) initMsgSets(cmdId CommandId) {
 		return fastAck.Checksum == nil || hashEq
 	}
 
-	free := func(msg interface{}) {
-		switch f := msg.(type) {
-		case *MFastAck:
-			releaseFastAck(f)
-		}
-	}
-
 	if initSlow {
-		c.slowPathH[cmdId] = c.slowPathH[cmdId].ReinitMsgSet(c.SQ, accept, free, c.handleFastAndSlowAcks)
+		c.slowPathH[cmdId] = c.slowPathH[cmdId].ReinitMsgSet(c.SQ, accept, func(interface{}) {}, c.handleFastAndSlowAcks)
 	}
 	if initFast {
-		c.fastPathH[cmdId] = c.fastPathH[cmdId].ReinitMsgSet(c.FQ, accept, free, c.handleFastAndSlowAcks)
+		c.fastPathH[cmdId] = c.fastPathH[cmdId].ReinitMsgSet(c.FQ, accept, func(interface{}) {}, c.handleFastAndSlowAcks)
 	}
 }
 
@@ -285,3 +274,15 @@ func (c *Client) handleAccept(a *MAccept) {
 	c.RegisterReply(c.val, a.CmdId.SeqNum)
 	c.Println("Slow Paths:", c.slowPaths)
 }
+
+var _ client.Adapter = (*Client)(nil)
+
+func (c *Client) WaitReplies(_ int) {
+	t := fastrpc.NewTableId(defs.RPC_TABLE)
+	initCs(&c.cs, t)
+	c.RegisterRPCTable(t)
+
+	go c.handleMsgs()
+}
+
+func (c *Client) SendProposal(p defs.Propose) { c.SendDefaultProposal(p) }

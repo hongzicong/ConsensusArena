@@ -1,0 +1,20 @@
+package __PACKAGE__
+
+import (
+	"github.com/hongzicong/ConsensusArena/client"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+)
+
+type Client struct { client.StandardClient }
+// Override RetryPolicy if the client retries, hedges, or repairs pending requests.
+var _ client.Adapter = (*Client)(nil)
+
+func NewClient(b *client.BufferClient, n int) (*Client, error) {
+	// TODO: choose ingress/routing and completion policy; then call b.SetProtocol(c).
+	// StandardClient.WaitReplies only fits protocols completing on executed results.
+	return nil, ErrNotImplemented
+}
+
+func (c *Client) SendProposal(p defs.Propose) {
+	panic(ErrNotImplemented) // Never silently inherit a different protocol's routing.
+}

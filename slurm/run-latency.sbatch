@@ -195,7 +195,7 @@ run_scale() {
     fi
     if [[ -n "${CONSENSUSARENA_PROTOCOL:-}" ]]; then
         case "${CONSENSUSARENA_PROTOCOL,,}" in
-            swiftpaxos|curp|fastpaxos|n2paxos|paxos|epaxos|bodega) ;;
+            swiftpaxos|curp|fastpaxos|paxos|epaxos|bodega|kcensus) ;;
             *) echo "Unsupported protocol: $CONSENSUSARENA_PROTOCOL" >&2; exit 1 ;;
         esac
         awk -v protocol="$CONSENSUSARENA_PROTOCOL" \
@@ -206,7 +206,6 @@ run_scale() {
     awk -f "$script_dir/remap-addresses.awk" \
         "$run_dir/config/address-map.txt" "$run_dir/config/logical/latency.conf" \
         > "$run_dir/config/latency.conf"
-    cp "$run_dir/config/logical/quorum.conf" "$run_dir/config/quorum.conf"
 
     repetitions=$(awk '$1 == "repetitions:" { print $2; exit }' "$run_dir/config/cluster.conf" | tr -d '\r')
     if [[ ! "$repetitions" =~ ^[1-9][0-9]*$ ]]; then
@@ -260,7 +259,7 @@ run_scale() {
         cp "$profile_dir/config/cluster.conf" "$repetition_dir/config/cluster.conf"
         cp "$profile_dir/config/address-map.txt" "$repetition_dir/config/address-map.txt"
         cp "$profile_dir/config/latency.conf" "$repetition_dir/config/latency.conf"
-        cp "$profile_dir/config/quorum.conf" "$repetition_dir/config/quorum.conf"
+        cp "$profile_dir/plan.json" "$repetition_dir/plan.json"
         printf 'ycsb_profile=%s\nwrite_ratio_percent=%s\nworkload_seed=%s\npreload_enabled=%s\n' \
             "$profile" "$write_ratio" "$workload_seed" "$preload_enabled" > "$repetition_dir/metadata.txt"
 
@@ -373,7 +372,8 @@ run_scale() {
             "$run_dir/config/cluster.conf" > "$profile_dir/config/cluster.conf"
         cp "$run_dir/config/address-map.txt" "$profile_dir/config/address-map.txt"
         cp "$run_dir/config/latency.conf" "$profile_dir/config/latency.conf"
-        cp "$run_dir/config/quorum.conf" "$profile_dir/config/quorum.conf"
+        # Inspect the executable's own plan for provenance, never feed it back as config.
+        "$binary" -run plan -config "$profile_dir/config/cluster.conf" > "$profile_dir/plan.json"
         printf 'ycsb_profile=%s\nread_ratio_percent=%s\nwrite_ratio_percent=%s\nrepetitions=%s\nworkload_seed=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \
             "$profile" "$read_ratio" "$write_ratio" "$repetitions" "$workload_seed" "$preload_enabled" \
             "$preload_records" "$preload_value_size" "$preload_seed" > "$profile_dir/metadata.txt"

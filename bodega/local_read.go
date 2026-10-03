@@ -8,17 +8,6 @@ import (
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
-func (e *engine) markCommitted(s uint64) {
-	e.committed[s] = true
-	for _, r := range e.log[s].requests() {
-		cmd := r.Proposal.Command
-		if cmd.Op == state.PUT && s > e.latestCommitted[cmd.K] {
-			e.latestCommitted[cmd.K] = s
-		}
-	}
-	e.queueFastSlot(s)
-}
-
 func (e *engine) localReadAuthority(now time.Time) bool {
 	return (e.current.Leader != e.id || e.prepared) && e.stable(now)
 }
@@ -83,4 +72,39 @@ func (e *engine) releaseSlot(s uint64, now time.Time) bool {
 	}
 	delete(e.holdWaiters, s)
 	return true
+}
+
+// readSlots orders hold targets, so a protocol message need not scan every
+// blocked reader while the executed prefix has not reached its slot.
+type readSlots []uint64
+
+func (q readSlots) Len() int { return len(q) }
+
+func (q readSlots) Less(i, j int) bool { return q[i] < q[j] }
+
+func (q readSlots) Swap(i, j int) { q[i], q[j] = q[j], q[i] }
+
+func (q *readSlots) Push(x any) { *q = append(*q, x.(uint64)) }
+
+func (q *readSlots) Pop() any { old := *q; x := old[len(old)-1]; *q = old[:len(old)-1]; return x }
+
+func (e *engine) release(now time.Time) {
+	if !e.stable(now) {
+		return
+	}
+	for len(e.holdSlots) > 0 && e.holdSlots[0] <= e.prefix {
+		s := e.holdSlots[0]
+		if !e.releaseSlot(s, now) {
+			return
+		}
+		heap.Pop(&e.holdSlots)
+	}
+	for len(e.fastSlots) > 0 && e.fastSlots[0] <= e.readPrefix {
+		s := e.fastSlots[0]
+		if !e.releaseSlot(s, now) {
+			return
+		}
+		heap.Pop(&e.fastSlots)
+		delete(e.fastQueued, s)
+	}
 }

@@ -25,19 +25,12 @@ import (
 )
 
 type Client struct {
-	// FastPaxos accepts an executed result from any surviving replica.
-	FastPaxos            bool
-	EPaxos               bool
-	Paxos                bool
-	paxosLookup          time.Time // owned by the proposal sender
-	RecoverableBroadcast bool      // N2Paxos and CURP: broadcast past failed sockets.
-	fastPaxosDead        []atomic.Bool
-	// Optional protocol interception; configured before the workload starts.
-	ProposalHook func(defs.Propose) bool
-	// BodegaRouting selects local GETs and direct-to-roster-leader writes.
-	// Set before Connect; other protocols retain their existing transport.
-	BodegaRouting bool
-	BodegaUnhold  time.Duration // zero selects the 250 ms artifact default
+	protocol Adapter
+	peerDead []atomic.Bool
+	// Set before Connect by an adapter that measures its own peer distances.
+	SkipPing bool
+	// Custom RPC readers report failed streams to the proposal transport.
+	MonitorRPCFailures bool
 	*dlog.Logger
 
 	ClientId  int32
@@ -56,7 +49,6 @@ type Client struct {
 	writers []*bufio.Writer
 	writeMu []sync.Mutex
 	fault   *faultTransport
-	bodega  *bodegaRouting
 
 	seqnum     int32
 	server     string // co-located with
@@ -156,31 +148,19 @@ func (c *Client) Connect() error {
 		c.writers[i] = bufio.NewWriter(c.servers[i])
 	}
 
-	if c.BodegaRouting {
-		if err := c.startBodegaRouting(); err != nil {
+	c.peerDead = make([]atomic.Bool, len(c.servers))
+	if c.protocol != nil {
+		if err := c.protocol.Start(); err != nil {
 			c.Disconnect()
 			return err
 		}
-	}
-	if c.FastPaxos || c.EPaxos || c.RecoverableBroadcast || c.Paxos {
-		c.fastPaxosDead = make([]atomic.Bool, len(c.servers))
 	}
 	return nil
 }
 
 func (c *Client) Disconnect() {
-	if c.bodega != nil {
-		c.bodega.closeOnce.Do(func() {
-			close(c.bodega.stop)
-			c.stopBodegaReads()
-			c.Printf("BODEGA_CLIENT_ROUTES local_reads=%d leader_commands=%d discovery_forwards=%d\n", c.bodega.reads.Load(), c.bodega.writes.Load(), c.bodega.forwarded.Load())
-			counts := make([]uint64, len(c.bodega.readDestinations))
-			for i := range counts {
-				counts[i] = c.bodega.readDestinations[i].Load()
-			}
-			c.Printf("BODEGA_CLIENT_DESTINATIONS read_attempts=%v\n", counts)
-			c.Printf("BODEGA_CLIENT_HEDGES sent=%d wins=%d duplicate_replies=%d cancels=%d\n", c.bodega.hedges.Load(), c.bodega.hedgeWins.Load(), c.bodega.duplicates.Load(), c.bodega.cancels.Load())
-		})
+	if c.protocol != nil {
+		c.protocol.Close()
 	}
 	for _, s := range c.servers {
 		if s != nil {
@@ -215,25 +195,16 @@ func (c *Client) Reconnect() error {
 }
 
 func (c *Client) SendProposal(cmd defs.Propose) {
-	if c.Paxos {
-		c.sendPaxos(cmd)
+	if c.protocol != nil {
+		c.protocol.SendProposal(cmd)
 		return
 	}
-	if c.EPaxos {
-		c.sendEPaxos(cmd)
-		return
-	}
-	if c.FastPaxos || c.RecoverableBroadcast {
-		c.sendFastPaxos(cmd)
-		return
-	}
-	if c.ProposalHook != nil && c.ProposalHook(cmd) {
-		return
-	}
-	if c.bodega != nil {
-		c.sendBodegaProposal(cmd)
-		return
-	}
+	c.SendDefaultProposal(cmd)
+}
+
+// SendDefaultProposal preserves the configured leader/local/broadcast routing
+// and the optional fault transport. Adapters may explicitly select this policy.
+func (c *Client) SendDefaultProposal(cmd defs.Propose) {
 	if c.fault != nil {
 		c.sendFaultProposal(cmd)
 		return
@@ -329,33 +300,25 @@ func (c *Client) RegisterRPCTable(t *fastrpc.Table) {
 			if reader == nil {
 				return
 			}
-			for {
-				var (
-					msgType uint8
-					err     error
-				)
-				if msgType, err = reader.ReadByte(); err != nil {
-					if c.RecoverableBroadcast {
-						c.fastPaxosDead[i].Store(true)
-					}
-					c.markFaultPeer(i)
-					break
-				}
+			err := fastrpc.ReadStream(reader, func(msgType uint8, wire io.Reader) (fastrpc.Pair, error) {
 				p, exists := t.Get(msgType)
 				if !exists {
 					c.Println("error: received unknown message:", msgType)
-					continue
+					return fastrpc.Pair{}, nil
 				}
-				obj := p.Obj.New()
-				if err = obj.Unmarshal(reader); err != nil {
-					if c.RecoverableBroadcast {
-						c.fastPaxosDead[i].Store(true)
-					}
-					c.markFaultPeer(i)
-					break
+				p.Obj = p.Obj.New()
+				return p, p.Obj.Unmarshal(wire)
+			}, func(p fastrpc.Pair) bool {
+				if p.Obj != nil {
+					p.Chan <- p.Obj
 				}
-				notify := p.Chan
-				notify <- obj
+				return true
+			})
+			if err != nil {
+				if c.MonitorRPCFailures {
+					c.peerDead[i].Store(true)
+				}
+				c.markFaultPeer(i)
 			}
 		}(i, reader)
 	}
@@ -441,8 +404,8 @@ func (c *Client) findClosest(alive []bool) error {
 		if c.replicas[i] == c.server || (!hasPort(c.server) && addr == c.server) {
 			c.ClosestId = i
 		}
-		if c.BodegaRouting {
-			continue // Bodega ranks other peers by proxied control RPCs after connecting.
+		if c.SkipPing {
+			continue // The adapter measures peer distances after connecting.
 		}
 
 		out, err := exec.Command("ping", addr, "-c 3", "-q").Output()
@@ -456,7 +419,7 @@ func (c *Client) findClosest(alive []bool) error {
 		}
 	}
 
-	if c.ClosestId == -1 && !c.BodegaRouting {
+	if c.ClosestId == -1 && !c.SkipPing {
 		min := math.MaxFloat64
 		for i, l := range c.Ping {
 			if l < min {

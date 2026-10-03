@@ -1,11 +1,13 @@
 package swift
 
+// Protocol recovery transitions.
 import (
 	"log"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
@@ -33,7 +35,7 @@ func (r *Replica) handleNewLeader(msg *MNewLeader) {
 	r.fillNewLeaderAckN(newLeaderAckN)
 
 	if msg.Replica != r.Id {
-		r.sender.SendTo(msg.Replica, newLeaderAckN, r.cs.newLeaderAckNRPC)
+		r.SendMsg(msg.Replica, r.cs.newLeaderAckNRPC, newLeaderAckN)
 	} else {
 		r.handleNewLeaderAckN(newLeaderAckN)
 	}
@@ -42,16 +44,13 @@ func (r *Replica) handleNewLeader(msg *MNewLeader) {
 	for r.status == RECOVERING {
 		select {
 		case m := <-r.cs.newLeaderChan:
-			newLeader := m.(*MNewLeader)
-			r.handleNewLeader(newLeader)
+			protocol.Must(r.Handle(m, time.Time{}))
 
 		case m := <-r.cs.newLeaderAckNChan:
-			newLeaderAck := m.(*MNewLeaderAckN)
-			r.handleNewLeaderAckN(newLeaderAck)
+			protocol.Must(r.Handle(m, time.Time{}))
 
 		case m := <-r.cs.syncChan:
-			sync := m.(*MSync)
-			r.handleSync(sync)
+			protocol.Must(r.Handle(m, time.Time{}))
 		}
 	}
 }
@@ -101,7 +100,7 @@ func (r *Replica) handleNewLeaderAckNs(_ interface{}, msgs []interface{}) {
 		Cmds:    cmds,
 		Deps:    deps,
 	}
-	r.sender.SendToAll(sync, r.cs.syncRPC)
+	r.SendToAll(sync, r.cs.syncRPC)
 	r.handleSync(sync)
 }
 
@@ -246,7 +245,7 @@ func (r *Replica) handleSync(msg *MSync) {
 			Ballot:  r.ballot,
 			CmdId:   cmdId,
 		}
-		r.sender.SendToClient(propose.ClientId, acc, r.cs.acceptRPC)
+		r.SendClientMsg(propose.ClientId, r.cs.acceptRPC, acc)
 	}
 
 	log.Println("Recovered!")
@@ -276,4 +275,34 @@ func (r *Replica) reinitNewLeaderAckNs() {
 	free := func(_ interface{}) {}
 	Q := replica.NewMajorityOf(r.N)
 	r.newLeaderAckNs = r.newLeaderAckNs.ReinitMsgSet(Q, accept, free, r.handleNewLeaderAckNs)
+}
+
+func (r *Replica) beginRecovery(newBallot int32) {
+	newLeader := &MNewLeader{
+		Replica: r.Id,
+		Ballot:  r.ballot,
+	}
+	if newBallot != -1 {
+		if newBallot > newLeader.Ballot {
+			newLeader.Ballot = newBallot
+		} else {
+			newLeader.Ballot = r.qs.SameHigher(newBallot, newLeader.Ballot)
+		}
+	} else {
+		newLeader.Ballot = replica.NextBallotOf(r.Id, newLeader.Ballot, r.N)
+	}
+	for quorumIsAlive := false; r.fixedMajority && !quorumIsAlive; {
+		quorumIsAlive = true
+		for rid := range r.qs.AQ(newLeader.Ballot) {
+			if rid != r.Id && !r.Alive[rid] {
+				newLeader.Ballot = replica.NextBallotOf(r.Id, newLeader.Ballot, r.N)
+				quorumIsAlive = false
+				break
+			}
+		}
+	}
+	r.SendToAll(newLeader, r.cs.newLeaderRPC)
+	r.reinitNewLeaderAckNs()
+	r.handleNewLeader(newLeader)
+
 }

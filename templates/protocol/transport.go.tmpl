@@ -1,0 +1,19 @@
+package __PACKAGE__
+
+// Stored outputs can use protocol.Drain to preserve reentrant FIFO delivery.
+// Late connections can use replica.PendingSender; tagged client streams can
+// use rpc.ReadStream with protocol-owned decoding and identity validation.
+import (
+ "fmt"
+ "github.com/hongzicong/ConsensusArena/replica"
+ "github.com/hongzicong/ConsensusArena/replica/defs"
+)
+func (r *Replica) send(out outbound) error {
+ if out.To < 0 || out.To >= r.N { return fmt.Errorf("invalid recipient %d", out.To) }
+ if out.To == int(r.Id) { return ErrNotImplemented } // Define local delivery ordering.
+ // Enqueue returns ErrSendFull or ErrSendClosed; the protocol owns retry policy.
+ return r.peers[out.To].Enqueue(replica.Encode(r.code, &out.Message, true))
+}
+func (r *Replica) reply(p *defs.GPropose, reply defs.ProposeReplyTS) error {
+ return r.ReplyProposal(p, &reply, 8192)
+}

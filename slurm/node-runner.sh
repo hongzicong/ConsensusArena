@@ -6,7 +6,6 @@ binary=$2
 toxiproxy_server=$3
 rank=${SLURM_PROCID:?SLURM_PROCID is not set}
 config="$run_dir/config/cluster.conf"
-quorum="$run_dir/config/quorum.conf"
 script_dir=$(cd "$(dirname "$0")" && pwd)
 
 source "$script_dir/topology.sh"
@@ -72,7 +71,7 @@ fi
 
 if [[ -n "$replica_alias" ]]; then
     run_app -run replica -config "$config" \
-        -alias "$replica_alias" -quorum "$quorum" \
+        -alias "$replica_alias" \
         -log "$run_dir/logs/${replica_alias}-replica.log" \
         > "$run_dir/stdout/${replica_alias}-replica.out" 2>&1 &
     pids+=("$!")

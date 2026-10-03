@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"math"
 	"math/rand"
@@ -38,6 +39,10 @@ type BufferClient struct {
 	valueRand     *rand.Rand
 	workloadSeed  int64
 	updateVersion uint64
+	uniqueKeys    bool
+	keyStart      int64
+	keyEnd        int64
+	uniqueIssued  int64
 }
 
 type zipfParameters struct {
@@ -95,6 +100,18 @@ func (c *BufferClient) MeasureFor(warmup, duration time.Duration) {
 	c.duration = duration
 }
 
+// UniqueKeysFor keeps all requests, including bootstrap and warmup, distinct.
+// Membership order must be stable and independent of the protocol's client ID.
+func (c *BufferClient) UniqueKeysFor(ordinal, clients int) error {
+	if clients <= 0 || ordinal < 0 || ordinal >= clients || clients > c.keyCount {
+		return fmt.Errorf("invalid unique-key membership %d/%d for %d keys", ordinal, clients, c.keyCount)
+	}
+	c.uniqueKeys = true
+	c.keyStart = int64(c.keyCount) * int64(ordinal) / int64(clients)
+	c.keyEnd = int64(c.keyCount) * int64(ordinal+1) / int64(clients)
+	return nil
+}
+
 func (c *BufferClient) RegisterReply(val state.Value, seqnum int32) {
 	t := time.Now()
 	c.Reply <- &ReqReply{
@@ -124,6 +141,11 @@ func (c *BufferClient) Scan(key, count int64) []byte {
 // Assumed to be connected
 func (c *BufferClient) Loop() {
 	getKey := c.genGetKey()
+	defer func() {
+		if c.uniqueKeys {
+			c.Printf("WORKLOAD_UNIQUE_KEYS start=%d end=%d issued=%d", c.keyStart, c.keyEnd, c.uniqueIssued)
+		}
+	}()
 	if c.fault != nil {
 		c.loopFault(getKey)
 		return
@@ -265,12 +287,8 @@ func (c *BufferClient) nextUpdateValue(key int64) state.Value {
 }
 
 func (c *BufferClient) WaitReplies(waitFrom int) {
-	if c.FastPaxos || c.EPaxos || c.RecoverableBroadcast || c.Paxos {
-		c.waitFastPaxos()
-		return
-	}
-	if c.bodega != nil {
-		c.waitBodegaReplies()
+	if c.protocol != nil {
+		c.protocol.WaitReplies(waitFrom)
 		return
 	}
 	if c.fault != nil {
@@ -304,6 +322,20 @@ func (c *BufferClient) WaitReplies(waitFrom int) {
 }
 
 func (c *BufferClient) genGetKey() func() int64 {
+	if c.uniqueKeys {
+		c.Printf("WORKLOAD_KEY_MODE mode=unique start=%d end=%d", c.keyStart, c.keyEnd)
+		return func() int64 {
+			// Preserve the shared workload's RNG consumption so arrival and
+			// operation streams stay identical across key modes and protocols.
+			c.rand.Float64()
+			key := c.keyStart + c.uniqueIssued
+			if key >= c.keyEnd {
+				panic("unique-key range exhausted; refusing to reuse a key")
+			}
+			c.uniqueIssued++
+			return key
+		}
+	}
 	cdf := sharedZipfCDF(c.keyCount, c.zipfSkew)
 	c.Printf("Zipfian key distribution: keyCount=%d skew=%v\n", c.keyCount, c.zipfSkew)
 	getKey := func() int64 {

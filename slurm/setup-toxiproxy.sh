@@ -91,17 +91,53 @@ done
 curl --fail --silent "http://127.0.0.1:$control_port/version" >/dev/null
 
 traffic_types=(data)
+kcensus=false
+if awk 'tolower($1) == "protocol:" && tolower($2) == "kcensus" { found=1 } END { exit !found }' "$run_dir/config/cluster.conf"; then
+    kcensus=true
+    # Space for every voting/non-voting process, including configured clones.
+    proxy_port_base=$((20000 + rank * 64))
+fi
+targets="$run_dir/config/toxiproxy-targets-$rank.txt"
+: > "$targets"
+for ((target_index=0; target_index<replica_count; target_index++)); do
+    logical="0.0.0.$((target_index + 1))"
+    endpoint=$(lookup_endpoint "$logical")
+    printf '%s %s\n' "$endpoint" "$endpoint" >> "$targets"
+done
+if $kcensus; then
+    # Match configuredTopology's sorted client alias / clone identities exactly.
+    "${CONSENSUSARENA_PYTHON:-python3}" - "$run_dir/config/cluster.conf" >> "$targets" <<'PY'
+import sys
+sys.stdout.reconfigure(newline="\n")
+clients = {}
+section = None
+clones = 0
+for line in open(sys.argv[1]):
+    fields = line.lower().split('//', 1)[0].split()
+    if len(fields) >= 2 and fields[0] == '--':
+        section = fields[1]
+    elif fields and fields[0] == 'clones:':
+        clones = int(fields[1])
+    elif section == 'clients' and len(fields) == 2 and not fields[0].endswith(':'):
+        clients[fields[0]] = fields[1]
+for ordinal, alias in enumerate(sorted(clients)):
+    endpoint = clients[alias]
+    host = endpoint.rsplit(':', 1)[0] if ':' in endpoint else endpoint
+    for clone in range(clones + 1):
+        port = 7170 + ordinal * (clones + 1) + clone
+        print(endpoint, f'{host}:{port}')
+PY
+fi
 # Bodega discovers the installed roster on the replica control port. Shape
 # these hints with the same geographic links as its requests, not an oracle.
 if awk 'tolower($1) == "protocol:" && tolower($2) == "bodega" { found=1 } END { exit !found }' "$run_dir/config/cluster.conf"; then
     traffic_types+=(control)
 fi
-for ((target_index=0; target_index<replica_count; target_index++)); do
-    target_logical="0.0.0.$((target_index + 1))"
-    target_endpoint=$(lookup_endpoint "$target_logical")
+target_index=0
+while read -r latency_endpoint target_endpoint; do
     proxy_port=$((proxy_port_base + target_index))
-    upstream_ms=$(lookup_rtt_ms "$source_endpoint" "$target_endpoint")
-    downstream_ms=$(lookup_rtt_ms "$target_endpoint" "$source_endpoint")
+    upstream_ms=$(lookup_rtt_ms "$source_endpoint" "$latency_endpoint")
+    downstream_ms=$(lookup_rtt_ms "$latency_endpoint" "$source_endpoint")
     upstream_ms=$(( (upstream_ms + 1) / 2 ))
     downstream_ms=$(( (downstream_ms + 1) / 2 ))
 
@@ -131,7 +167,8 @@ for ((target_index=0; target_index<replica_count; target_index++)); do
             "{\"name\":\"bandwidth-downstream\",\"type\":\"bandwidth\",\"stream\":\"downstream\",\"toxicity\":1.0,\"attributes\":{\"rate\":$bandwidth_kbps}}"
         printf '%s %s\n' "$target_endpoint" "$listen" >> "$dial_map"
     done
-done
+    target_index=$((target_index + 1))
+done < "$targets"
 
 curl --fail --silent "http://127.0.0.1:$control_port/proxies" > "$proxy_snapshot"
 trap - EXIT
