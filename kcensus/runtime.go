@@ -117,7 +117,7 @@ func (c *Client) run() {
 		case <-c.stop:
 			return
 		case r := <-c.proposals:
-			if c.requests[r.ID] != nil || c.done[r.ID] {
+			if c.requests[r.ID] != nil || c.ReplyCompleted(r.ID) {
 				continue
 			}
 			delegate := c.selectedDelegate()
@@ -145,7 +145,7 @@ func (c *Client) run() {
 			c.engine.tick(now.Sub(start))
 			if c.engine.now-lastStats >= 5*time.Second {
 				data, _ := json.Marshal(c.engine.stats)
-				c.Printf("KCENSUS_CLIENT_STATS pid=%d pending=%d completed=%d write_replies=%d write_reply_ns=%d graph_messages=%d payload_waits=%d graph_usable=%t stats=%s", c.engine.id, len(c.requests), len(c.done), c.engine.stats.LocalWrites, c.engine.stats.LocalWriteNanos, c.engine.stats.GraphMessages, c.engine.stats.PayloadWaits, c.engine.graphUsable(c.engine.id), data)
+				c.Printf("KCENSUS_CLIENT_STATS pid=%d pending=%d completed=%d write_replies=%d write_reply_ns=%d graph_messages=%d payload_waits=%d graph_usable=%t stats=%s", c.engine.id, len(c.requests), c.CompletedReplies(), c.engine.stats.LocalWrites, c.engine.stats.LocalWriteNanos, c.engine.stats.GraphMessages, c.engine.stats.PayloadWaits, c.engine.graphUsable(c.engine.id), data)
 				lastStats = c.engine.now
 			}
 			c.queryResults()

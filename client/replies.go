@@ -1,10 +1,6 @@
 package client
 
-import (
-	"sync"
-
-	"github.com/hongzicong/ConsensusArena/replica/defs"
-)
+import "github.com/hongzicong/ConsensusArena/replica/defs"
 
 // WaitAnyReplies accepts an executed result from any connection and delivers
 // each command ID once. The protocol adapter selects this completion policy.
@@ -15,8 +11,6 @@ func (c *BufferClient) WaitAnyReplies() {
 // The handler runs once per completed command, before workload notification.
 // Adapters use it to release requests retained for retransmission.
 func (c *BufferClient) WaitAnyRepliesWithHandler(onReply func(*defs.ProposeReplyTS)) {
-	var mu sync.Mutex
-	completed := make(map[int32]bool)
 	for id, reader := range c.readers {
 		if reader == nil {
 			continue
@@ -26,16 +20,11 @@ func (c *BufferClient) WaitAnyRepliesWithHandler(onReply func(*defs.ProposeReply
 				if r.OK != defs.TRUE {
 					return true
 				}
-				mu.Lock()
-				seen := completed[r.CommandId]
-				completed[r.CommandId] = true
-				mu.Unlock()
-				if !seen {
+				c.CompleteReply(defs.RequestID{Client: c.ClientId, Sequence: r.CommandId}, r.Value, func() {
 					if onReply != nil {
 						onReply(r)
 					}
-					c.RegisterReply(r.Value, r.CommandId)
-				}
+				}, nil)
 				return true
 			})
 			if err != nil {

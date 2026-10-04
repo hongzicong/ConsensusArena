@@ -195,6 +195,9 @@ func (c *Client) Reconnect() error {
 }
 
 func (c *Client) SendProposal(cmd defs.Propose) {
+	if err := (state.CommandPolicy{}).Validate(cmd.Command); err != nil {
+		panic(err)
+	}
 	if c.protocol != nil {
 		c.protocol.SendProposal(cmd)
 		return

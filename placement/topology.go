@@ -45,20 +45,20 @@ func Load(c *config.Config, configPath string) (*Topology, error) {
 	if t.Objective != "slow-first" && t.Objective != "fast-first" {
 		return nil, fmt.Errorf("unknown plan objective %q", t.Objective)
 	}
-	endpoints := []string{}
-	for i, a := range c.ReplicaAliases {
-		t.Replicas = append(t.Replicas, config.PlannedReplica{Alias: a, Endpoint: c.ReplicaAddrs[a], Rank: i})
-		endpoints = append(endpoints, c.ReplicaAddrs[a])
+	membership, err := c.Membership()
+	if err != nil {
+		return nil, err
 	}
-	for a := range c.ClientAddrs {
-		t.Clients = append(t.Clients, a)
+	t.Replicas, t.Clients = membership.Replicas, membership.Clients
+	endpoints := make([]string, 0, n+len(t.Clients))
+	for _, r := range t.Replicas {
+		endpoints = append(endpoints, r.Endpoint)
 	}
-	sort.Strings(t.Clients)
 	if len(t.Clients) == 0 {
 		return nil, fmt.Errorf("planning requires at least one client")
 	}
 	for _, a := range t.Clients {
-		endpoints = append(endpoints, c.ClientAddrs[a])
+		endpoints = append(endpoints, membership.ClientEndpoint(a))
 	}
 	weights := map[string]float64{}
 	weightPath := os.Getenv("CONSENSUSARENA_CLIENT_WEIGHTS")

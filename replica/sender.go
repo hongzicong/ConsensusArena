@@ -33,7 +33,11 @@ func Encode(code uint8, msg interface{ Marshal(io.Writer) }, tagged bool) Frame 
 		b.WriteByte(code)
 	}
 	msg.Marshal(&b)
-	return Frame{Data: b.Bytes()}
+	f := Frame{Data: b.Bytes()}
+	if tagged, ok := msg.(interface{ FrameTag() uint8 }); ok {
+		f.Tag = tagged.FrameTag()
+	}
+	return f
 }
 
 // FrameSource supplies protocol-specific scheduling, not socket I/O. Take
@@ -98,6 +102,9 @@ func (s *Sender) Enqueue(f Frame) error {
 		return ErrSendClosed
 	}
 	if s.queue == nil {
+		if source, ok := s.source.(interface{ Enqueue(Frame) error }); ok {
+			return source.Enqueue(f)
+		}
 		return ErrSendSource
 	}
 	return s.queue.enqueue(f)

@@ -90,9 +90,7 @@ func (c *core) slot(s int) *slotState {
 func (c *core) send(to int, m message) { m.From = c.id; c.out = append(c.out, envelope{to, m}) }
 
 func (c *core) broadcast(m message) {
-	for i := 0; i < c.n; i++ {
-		c.send(i, m)
-	}
+	c.send(-1, m) // Runtime delivers one ordered fanout, including local output.
 }
 
 func (c *core) owner() int { return int(c.promise % uint64(c.n)) }

@@ -7,37 +7,10 @@ import (
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 )
 
-// Protocol-specific peer messaging.
-func (r *Replica) replyPrepare(replicaId int32, reply *PrepareReply) {
-	r.SendMsg(replicaId, r.prepareReplyRPC, reply)
-}
-
-func (r *Replica) replyPreAccept(replicaId int32, reply *PreAcceptReply) {
-	r.SendMsg(replicaId, r.preAcceptReplyRPC, reply)
-}
-
-func (r *Replica) replyAccept(replicaId int32, reply *AcceptReply) {
-	r.SendMsg(replicaId, r.acceptReplyRPC, reply)
-}
-
-func (r *Replica) replyTryPreAccept(replicaId int32, reply *TryPreAcceptReply) {
-	r.SendMsg(replicaId, r.tryPreAcceptReplyRPC, reply)
-}
-
-// Each phase supplies its own recipient order and attempt limit. Count calls
-// to SendMsg, including failed queue admission, just as the original loops did.
+// Each phase supplies its own recipient order and attempt limit. Failed queue
+// admission still consumes an attempt, just as the original loops did.
 func (r *Replica) broadcast(order []int32, limit int, code uint8, msg fastrpc.Serializable) {
-	sent := 0
-	for _, peer := range order {
-		if !r.peerAlive(peer) {
-			continue
-		}
-		r.SendMsg(peer, code, msg)
-		sent++
-		if sent >= limit {
-			break
-		}
-	}
+	r.Stats.M["sendQueueDrops"] += r.Replica.SendToAll(msg, code, replica.SendPlan{Order: order, Limit: limit})
 }
 
 func (r *Replica) recoverBroadcast(phase string) {
@@ -74,7 +47,7 @@ func (r *Replica) bcastTryPreAccept(replica int32, instance int32) {
 		LeaderId: r.Id, Replica: replica, Instance: instance,
 		Ballot: lb.lastTriedBallot, Command: lb.cmds, Seq: lb.seq, Deps: lb.deps,
 	}
-	r.broadcast(r.ascendingPeers, r.N-1, r.tryPreAcceptRPC, msg)
+	r.broadcast(nil, r.N-1, r.tryPreAcceptRPC, msg)
 }
 
 func (r *Replica) bcastAccept(replica int32, instance int32) {
@@ -101,32 +74,18 @@ func (r *Replica) bcastCommit(replica int32, instance int32) {
 	r.broadcast(r.PreferredPeerOrder[:r.N-1], r.N-1, r.commitRPC, msg)
 }
 
-func (r *Replica) SendMsg(id int32, code uint8, msg fastrpc.Serializable) {
-	if r.sendHook != nil {
-		r.sendHook(id, code, msg)
-		return
-	}
-	if id == r.Id || !r.peerAlive(id) {
-		return
-	}
-	if r.sends[id].Enqueue(replica.Encode(code, msg, true)) != nil {
+func (r *Replica) Send(id int32, code uint8, msg fastrpc.Serializable) {
+	if r.Replica.Send(id, code, msg) != nil {
 		r.Stats.M["sendQueueDrops"]++
 	}
 }
 
 type transportState struct {
-	ascendingPeers, cyclicPeers []int32
-	sends                       []*replica.Sender
-	sendHook                    func(int32, uint8, fastrpc.Serializable)
+	cyclicPeers []int32
 }
 
 func newTransportState(id, n int) transportState {
-	t := transportState{ascendingPeers: make([]int32, 0, n-1), cyclicPeers: make([]int32, 0, n-1)}
-	for peer := 0; peer < n; peer++ {
-		if peer != id {
-			t.ascendingPeers = append(t.ascendingPeers, int32(peer))
-		}
-	}
+	t := transportState{cyclicPeers: make([]int32, 0, n-1)}
 	for offset := 1; offset < n; offset++ {
 		t.cyclicPeers = append(t.cyclicPeers, int32((id+offset)%n))
 	}

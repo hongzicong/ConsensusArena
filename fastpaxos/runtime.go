@@ -12,7 +12,6 @@ func (r *Replica) run() {
 	r.ClientReplyCapacity = 8192
 	r.ConnectToPeers()
 	defer r.CloseSenders()
-	r.peerQueues = r.PeerSenders
 	go r.WaitForClientConnections()
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()

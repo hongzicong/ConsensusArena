@@ -5,6 +5,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"io"
 	"time"
 )
 
@@ -14,11 +15,16 @@ type replyJob struct {
 }
 
 func (r *Replica) drain() {
+	sender := r.Messages()
+	sender.Local = func(m interface{ Marshal(io.Writer) }) {
+		protocol.Must(r.Handle(m.(*wireMessage).message, time.Time{}))
+	}
 	protocol.Drain(&r.engine.out, func(e envelope) bool {
-		if e.To == int(r.Id) {
-			protocol.Must(r.Handle(e.Message, time.Time{}))
+		m := &wireMessage{e.Message}
+		if e.To == -1 {
+			sender.SendToAll(m, r.code, replica.SendPlan{IncludeSelf: true})
 		} else {
-			_ = r.peerQueues[e.To].Enqueue(replica.Encode(r.code, &wireMessage{e.Message}, true))
+			_ = sender.Send(e.To, r.code, m)
 			// Retransmission, heartbeat catch-up and stalled-fast recovery repair drops.
 		}
 		return true

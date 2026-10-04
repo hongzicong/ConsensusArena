@@ -34,7 +34,7 @@ func (r *Replica) handleNewLeader(msg *MNewLeader) {
 	r.fillNewLeaderAckN(newLeaderAckN)
 
 	if msg.Replica != r.Id {
-		r.SendMsg(msg.Replica, r.cs.newLeaderAckNRPC, newLeaderAckN)
+		_ = r.Messages().Send(int(msg.Replica), r.cs.newLeaderAckNRPC, newLeaderAckN)
 	} else {
 		r.handleNewLeaderAckN(newLeaderAckN)
 	}

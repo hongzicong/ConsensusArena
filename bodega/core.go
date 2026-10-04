@@ -97,8 +97,8 @@ type engine struct {
 	inflight                      map[defs.RequestID]uint64
 	completed                     map[defs.RequestID]state.Value
 	stats                         statistics
-	send                          func(int, message)
 	trySend                       func(int, message) bool
+	tryBroadcast                  func(message) int
 	reply                         func(request, state.Value)
 	execute                       func(state.Command) state.Value
 	clock                         func() time.Time
@@ -139,7 +139,7 @@ func bit(id int) uint64 { return uint64(1) << uint(id) }
 
 func (e *engine) active() bool { return e.current.Ballot != 0 && e.pending.Ballot == 0 }
 
-func (e *engine) emit(to int, m message) bool {
+func (e *engine) prepareMessage(m message) message {
 	m.From = e.id
 	m.Roster = e.current
 	if e.pending.Ballot > m.Roster.Ballot {
@@ -148,19 +148,20 @@ func (e *engine) emit(to int, m message) bool {
 	if e.active() && e.id == e.current.Leader {
 		m.ReadPrefix = e.readPrefix
 	}
+	return m
+}
+
+func (e *engine) emit(to int, m message) bool {
+	m = e.prepareMessage(m)
 	e.stats.Messages++
-	if e.trySend != nil {
-		return e.trySend(to, m)
-	}
-	e.send(to, m)
-	return true
+	return e.trySend(to, m)
 }
 
 func (e *engine) broadcast(m message) {
-	for i := 0; i < e.n; i++ {
-		if i != e.id {
-			e.emit(i, m)
-		}
+	e.stats.Messages += uint64(e.n - 1)
+	drops := e.tryBroadcast(e.prepareMessage(m))
+	if m.Kind != promise {
+		e.stats.DroppedMessages += uint64(drops)
 	}
 }
 

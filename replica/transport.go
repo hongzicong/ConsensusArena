@@ -11,6 +11,97 @@ import (
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
+// MessageSender shares encoding and fanout without choosing a protocol's
+// recipients, failure detector, local transition, or queue policy.
+type MessageSender struct {
+	ID, N    int
+	Eligible func(int) bool
+	Enqueue  func(int, Frame) error
+	Local    func(interface{ Marshal(io.Writer) })
+}
+
+type SendPlan struct {
+	Order       []int32 // nil uses ascending process IDs
+	Limit       int     // <= 0 attempts every eligible recipient
+	IncludeSelf bool
+	Encode      func() Frame // optional immutable image or observed encoder
+}
+
+func (s MessageSender) deliver(id int, msg interface{ Marshal(io.Writer) }, encode func() Frame) (bool, error) {
+	if id < 0 || id >= s.N {
+		return true, ErrPeerID
+	}
+	if id == s.ID {
+		if s.Local == nil {
+			return false, nil
+		}
+		s.Local(msg)
+		return true, nil
+	}
+	if s.Eligible != nil && !s.Eligible(id) {
+		return false, nil
+	}
+	return true, s.Enqueue(id, encode())
+}
+
+// Send returns queue admission errors; skipped destinations return nil.
+func (s MessageSender) Send(id int, code uint8, msg interface{ Marshal(io.Writer) }, image ...func() Frame) error {
+	encode := func() Frame { return Encode(code, msg, true) }
+	if len(image) != 0 {
+		encode = image[0]
+	}
+	_, err := s.deliver(id, msg, encode)
+	return err
+}
+
+// SendToAll encodes once and preserves the supplied attempt order. Failed
+// admissions count towards Limit; they are never replaced by extra voters.
+func (s MessageSender) SendToAll(msg interface{ Marshal(io.Writer) }, code uint8, plans ...SendPlan) int {
+	var plan SendPlan
+	if len(plans) != 0 {
+		plan = plans[0]
+	}
+	var frame Frame
+	encoded := false
+	image := func() Frame {
+		if !encoded {
+			if plan.Encode != nil {
+				frame = plan.Encode()
+			} else {
+				frame = Encode(code, msg, true)
+			}
+			encoded = true
+		}
+		return frame
+	}
+	count := s.N
+	if plan.Order != nil {
+		count = len(plan.Order)
+	}
+	attempts, drops := 0, 0
+	for i := 0; i < count; i++ {
+		id := i
+		if plan.Order != nil {
+			id = int(plan.Order[i])
+		}
+		if id == s.ID && !plan.IncludeSelf {
+			continue
+		}
+		attempted, err := s.deliver(id, msg, image)
+		if !attempted {
+			continue
+		}
+		attempts++
+		if err != nil {
+			drops++
+		}
+		if plan.Limit > 0 && attempts >= plan.Limit {
+			break
+		}
+	}
+	return drops
+}
+
 // SenderFor registers one sender per connection (or writer when no connection
 // is available). The first caller selects its queue policy; protocol setup must
 // precede traffic. Socket I/O never holds M.
@@ -130,7 +221,6 @@ func (r *Replica) ReplyResult(p *defs.GPropose, value state.Value, capacity int)
 // local delivery. Local supplies the protocol transition; counters track admission.
 type Transport struct {
 	Base               *Replica
-	Peers              []*Sender
 	Local              func(fastrpc.Serializable)
 	SendDrops, Replies int
 }
@@ -140,12 +230,14 @@ func (t *Transport) Send(id int32, code uint8, msg fastrpc.Serializable) {
 		t.Local(msg)
 		return
 	}
-	t.Base.M.Lock()
-	alive := t.Base.Alive[id]
-	t.Base.M.Unlock()
-	if alive && t.Peers[id].Enqueue(Encode(code, msg, true)) != nil {
+	if t.Base.Send(id, code, msg) != nil {
 		t.SendDrops++
 	}
+}
+
+// SendToAll uses the same admission counter as single-peer sends.
+func (t *Transport) SendToAll(msg fastrpc.Serializable, code uint8) {
+	t.SendDrops += t.Base.SendToAll(msg, code)
 }
 
 func (t *Transport) Reply(client int32, writer *bufio.Writer, code uint8, msg interface{ Marshal(io.Writer) }, custom bool) {
@@ -168,16 +260,35 @@ func (r *Replica) CloseSenders() {
 	}
 }
 
+// Send attempts one remote queue admission. Self and peers skipped by Alive
+// return nil without encoding; Transport owns synchronous local delivery.
+// A nil error reports admission or a skipped peer, not network delivery.
+func (r *Replica) Send(id int32, code uint8, msg interface{ Marshal(io.Writer) }) error {
+	s := r.Messages()
+	s.Eligible = func(id int) bool { return r.peerAlive(int32(id)) }
+	return s.Send(int(id), code, msg)
+}
+
+func (r *Replica) peerAlive(id int32) bool {
+	r.M.Lock()
+	defer r.M.Unlock()
+	return r.Alive[id]
+}
+
+// Messages provides the common sender with no protocol failure filtering.
+// Callers may supply their own eligibility and local-delivery policies.
+func (r *Replica) Messages() MessageSender {
+	return MessageSender{ID: int(r.Id), N: r.N, Enqueue: func(id int, f Frame) error {
+		return r.PeerSender(id).Enqueue(f)
+	}}
+}
+
 // Broadcast selection stays outside Sender; one wire image can be shared by
 // the independently scheduled connections because it is immutable.
-func (r *Replica) SendToAll(msg fastrpc.Serializable, code uint8) {
-	f := Encode(code, msg, true)
-	for id := 0; id < r.N; id++ {
-		r.M.Lock()
-		alive := r.Alive[id]
-		r.M.Unlock()
-		if alive && id != int(r.Id) {
-			_ = r.PeerSender(id).Enqueue(f)
-		}
-	}
+// Return queue admission failures, not network delivery failures. Self and
+// peers skipped by Alive are excluded from the count.
+func (r *Replica) SendToAll(msg fastrpc.Serializable, code uint8, plan ...SendPlan) int {
+	s := r.Messages()
+	s.Eligible = func(id int) bool { return r.peerAlive(int32(id)) }
+	return s.SendToAll(msg, code, plan...)
 }

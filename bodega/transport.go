@@ -23,11 +23,11 @@ type sendSource struct {
 func newSendSource(peer int, drained chan int) *sendSource {
 	return &sendSource{data: make(chan replica.Frame, 4096), control: make(chan replica.Frame, 4096), promises: make(chan replica.Frame, 32), stop: make(chan struct{}), peer: peer, drained: drained}
 }
-func (q *sendSource) enqueue(f replica.Frame) bool {
+func (q *sendSource) Enqueue(f replica.Frame) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
-		return false
+		return replica.ErrSendClosed
 	}
 	lane := q.control
 	if kind(f.Tag) == accept || kind(f.Tag) == forward || kind(f.Tag) == committedEntry {
@@ -37,9 +37,9 @@ func (q *sendSource) enqueue(f replica.Frame) bool {
 	}
 	select {
 	case lane <- f:
-		return true
+		return nil
 	default:
-		return false
+		return replica.ErrSendFull
 	}
 }
 func (q *sendSource) Take() []replica.Frame {
@@ -85,32 +85,29 @@ func (q *sendSource) Close() {
 }
 
 type replicaTransport struct {
-	sources               []*sendSource
+	base                  *replica.Replica
 	drained               chan int
 	wireBytes, wireFrames *[kindCount]atomic.Uint64
 	code                  uint8
 }
 
 func (t *replicaTransport) trySend(to int, m message) bool {
-	q := t.sources[to]
-	q.mu.Lock()
-	closed := q.closed
-	q.mu.Unlock()
-	if closed {
+	if t.base.PeerSender(to).Closed() {
 		return false
 	}
-	f := replica.Encode(t.code, &m, true)
-	f.Tag = uint8(m.Kind)
-	return q.enqueue(f)
+	return t.base.Messages().Send(to, t.code, &m) == nil
+}
+
+func (t *replicaTransport) broadcast(m message) int {
+	return t.base.Messages().SendToAll(&m, t.code)
 }
 func (r *Replica) sendReply(p *defs.GPropose, value state.Value) bool {
 	return r.ReplyResult(p, value, 8192) == nil
 }
 func (r *Replica) configureTransport(code uint8) *replicaTransport {
-	t := &replicaTransport{sources: make([]*sendSource, r.N), drained: make(chan int, r.N), wireBytes: new([kindCount]atomic.Uint64), wireFrames: new([kindCount]atomic.Uint64), code: code}
+	t := &replicaTransport{base: r.Replica, drained: make(chan int, r.N), wireBytes: new([kindCount]atomic.Uint64), wireFrames: new([kindCount]atomic.Uint64), code: code}
 	r.PeerSendOptionsFor = func(id int) replica.SenderOptions {
 		q := newSendSource(id, t.drained)
-		t.sources[id] = q
 		return replica.SenderOptions{Source: q, WriteTimeout: 2 * time.Second, OnFrame: func(f replica.Frame, n int) {
 			t.wireBytes[f.Tag].Add(uint64(n))
 			t.wireFrames[f.Tag].Add(1)

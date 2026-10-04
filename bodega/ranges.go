@@ -2,7 +2,6 @@ package bodega
 
 import (
 	"fmt"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,7 +10,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 )
 
-func responderMask(text string, c *config.Config, n int) (uint64, error) {
+func responderMask(text string, members *config.Membership, n int) (uint64, error) {
 	text = strings.ToLower(strings.TrimSpace(text))
 	if text == "all" {
 		return (uint64(1) << uint(n)) - 1, nil
@@ -21,8 +20,8 @@ func responderMask(text string, c *config.Config, n int) (uint64, error) {
 	}
 	var mask uint64
 	for _, name := range strings.Split(text, ",") {
-		id := slices.Index(c.ReplicaAliases, strings.TrimSpace(name))
-		if id < 0 || id >= n {
+		id, ok := members.ReplicaID(strings.TrimSpace(name))
+		if !ok || id >= n {
 			return 0, fmt.Errorf("Bodega unknown responder alias %q", name)
 		}
 		mask |= bit(id)
@@ -30,7 +29,7 @@ func responderMask(text string, c *config.Config, n int) (uint64, error) {
 	return mask, nil
 }
 
-func responderRanges(text string, c *config.Config, n int) ([]defs.BodegaResponderRange, error) {
+func responderRanges(text string, members *config.Membership, n int) ([]defs.BodegaResponderRange, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, nil
 	}
@@ -52,7 +51,7 @@ func responderRanges(text string, c *config.Config, n int) ([]defs.BodegaRespond
 		if err != nil {
 			return nil, fmt.Errorf("Bodega range end: %w", err)
 		}
-		mask, err := responderMask(names, c, n)
+		mask, err := responderMask(names, members, n)
 		if err != nil {
 			return nil, err
 		}

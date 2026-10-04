@@ -74,6 +74,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 		}
 		return false
 	}
+	e.tryBroadcast = transport.broadcast
 	e.reply = func(req request, v state.Value) {
 		if p, ok := waiting[req.id()]; ok {
 			if r.sendReply(p, v) {
@@ -147,7 +148,7 @@ func (r *Replica) Propose(p *defs.GPropose, now time.Time) error {
 		}
 		return nil
 	}
-	if p.Command.Op > state.SCAN || len(p.Command.V) > maxFrame-4096 {
+	if err := (state.CommandPolicy{MaxValueBytes: maxFrame - 4096}).Validate(p.Command); err != nil {
 		return nil
 	}
 	r.waiting[req.id()] = p

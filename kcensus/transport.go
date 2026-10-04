@@ -20,13 +20,53 @@ type replyJob struct {
 }
 
 func (r *Replica) drain() {
-	protocol.Drain(&r.engine.out, func(e envelope) bool {
-		if e.To == int(r.Id) {
-			protocol.Must(r.Handle(localMessage{e.Message}, time.Time{}))
-		} else if !r.engine.peerFailed(e.To) {
-			_ = r.peers.Enqueue(e.To, encodeOutput(r.code, e, &r.engine.stats))
+	r.engine.drainOutputs(r.peers, r.code, nil, func(m message) {
+		protocol.Must(r.Handle(localMessage{m}, time.Time{}))
+	})
+}
+
+// Replica and client outputs share fanout, admission and encoding accounting.
+// Cancellation stops at the first eligible remote target, preserving local order.
+func (c *core) drainOutputs(peers *replica.PeerStreams, code uint8, stop <-chan struct{}, local func(message)) {
+	cancelled := false
+	var attempts uint64
+	sender := replica.MessageSender{ID: c.id, N: c.m,
+		Eligible: func(id int) bool {
+			if cancelled || c.peerFailed(id) {
+				return false
+			}
+			select {
+			case <-stop:
+				cancelled = true
+				return false
+			default:
+				return true
+			}
+		},
+		Enqueue: func(id int, f replica.Frame) error {
+			attempts++
+			c.stats.EncodedBytes += uint64(len(f.Data))
+			return peers.Enqueue(id, f)
+		},
+		Local: func(msg interface{ Marshal(io.Writer) }) {
+			if !cancelled {
+				local(msg.(*wireMessage).message)
+			}
+		},
+	}
+	protocol.Drain(&c.out, func(e envelope) bool {
+		frames, previousAttempts := c.stats.EncodedFrames, attempts
+		encode := func() replica.Frame { return encodeOutput(code, e, &c.stats) }
+		if e.Count > 0 {
+			fanout := sender
+			fanout.N = e.Count
+			fanout.SendToAll(&wireMessage{e.Message}, code, replica.SendPlan{IncludeSelf: true, Encode: encode})
+		} else {
+			_ = sender.Send(e.To, code, &wireMessage{e.Message}, encode)
 		}
-		return true
+		// Rejected remote admissions also use an image; local delivery does not.
+		c.stats.ReusedEncodings += attempts - previousAttempts - (c.stats.EncodedFrames - frames)
+		return !cancelled
 	})
 }
 
@@ -34,8 +74,6 @@ func (r *Replica) drain() {
 // every recipient still receives its own FIFO frame through the common sender.
 func encodeOutput(code uint8, e envelope, stats *Stats) replica.Frame {
 	if e.Encoded != nil && *e.Encoded != nil {
-		stats.ReusedEncodings++
-		stats.EncodedBytes += uint64(len(*e.Encoded))
 		return replica.Frame{Data: *e.Encoded}
 	}
 	stats.EncodedFrames++
@@ -48,7 +86,6 @@ func encodeOutput(code uint8, e envelope, stats *Stats) replica.Frame {
 		stats.EncodingSamples++
 		stats.EncodingNanos += uint64(time.Since(before))
 	}
-	stats.EncodedBytes += uint64(len(frame.Data))
 	if e.Encoded != nil {
 		*e.Encoded = frame.Data
 	}
@@ -89,19 +126,7 @@ func (r *Replica) flushReplies() {
 }
 
 func (c *Client) drain() {
-	protocol.Drain(&c.engine.out, func(e envelope) bool {
-		if e.To == c.engine.id {
-			c.engine.step(e.Message)
-		} else if !c.engine.peerFailed(e.To) {
-			select {
-			case <-c.stop:
-				return false
-			default:
-			}
-			_ = c.peers.Enqueue(e.To, encodeOutput(defs.RPC_TABLE, e, &c.engine.stats))
-		}
-		return true
-	})
+	c.engine.drainOutputs(c.peers, defs.RPC_TABLE, c.stop, c.engine.step)
 }
 
 func (c *Client) deliver(m message) bool {

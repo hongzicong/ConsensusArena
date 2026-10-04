@@ -27,11 +27,8 @@ func New(alias string, rid int, addrs []string, conf *config.Config, l *dlog.Log
 	if conf.Noop {
 		panic("KCensus requires noop: false (client replies require execution)")
 	}
-	if conf.CommandSize > 65535 {
+	if conf.CommandSize > state.MaxValueBytes {
 		panic("KCensus commandSize exceeds Arena wire limit")
-	}
-	if len(conf.ReplicaAliases) != len(addrs) || conf.ReplicaAliases[rid] != alias {
-		panic("KCensus replica IDs must match configuration order")
 	}
 	n := len(addrs)
 	start := time.Now()

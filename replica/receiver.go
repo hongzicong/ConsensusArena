@@ -78,14 +78,7 @@ func (r *Replica) clientListener(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	knownClient := false
-	for _, endpoint := range r.Config.ClientAddrs {
-		if endpoint == addr {
-			knownClient = true
-			break
-		}
-	}
-	if !knownClient {
+	if !r.membership.HasClientEndpoint(addr) {
 		r.Printf("Rejecting client %s with unknown endpoint identity %q", conn.RemoteAddr(), addr)
 		conn.Close()
 		return
@@ -115,6 +108,9 @@ func (r *Replica) clientListener(conn net.Conn) {
 		case defs.PROPOSE:
 			propose := &defs.Propose{}
 			if err := propose.Unmarshal(wire); err != nil {
+				return fastrpc.Pair{}, err
+			}
+			if err := r.ProposalPolicy.Validate(propose.Command); err != nil {
 				return fastrpc.Pair{}, err
 			}
 			r.M.Lock()

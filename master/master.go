@@ -33,7 +33,7 @@ type Master struct {
 	latencies       []float64
 	registered      []bool
 	registeredCount int
-	replicaIDs      map[string]int
+	membership      *config.Membership
 	finishInit      bool
 	initCond        *sync.Cond
 	nextLeader      int
@@ -41,6 +41,10 @@ type Master struct {
 }
 
 func New(N, port int, config *config.Config, logger *dlog.Logger) *Master {
+	membership, err := config.Membership()
+	if err != nil {
+		panic(err)
+	}
 	master := &Master{
 		Logger: logger,
 
@@ -55,7 +59,7 @@ func New(N, port int, config *config.Config, logger *dlog.Logger) *Master {
 		alive:      make([]bool, N),
 		latencies:  make([]float64, N),
 		registered: make([]bool, N),
-		replicaIDs: make(map[string]int, N),
+		membership: membership,
 		finishInit: false,
 		nextLeader: -1,
 		config:     config,
@@ -63,9 +67,6 @@ func New(N, port int, config *config.Config, logger *dlog.Logger) *Master {
 	if len(config.ReplicaAliases) != N {
 		panic(fmt.Sprintf("configured replica order has %d entries, expected %d",
 			len(config.ReplicaAliases), N))
-	}
-	for id, alias := range config.ReplicaAliases {
-		master.replicaIDs[alias] = id
 	}
 	master.initCond = sync.NewCond(master.lock)
 	return master
@@ -200,7 +201,7 @@ func (master *Master) Register(args *defs.RegisterArgs, reply *defs.RegisterRepl
 	master.lock.Lock()
 	defer master.lock.Unlock()
 
-	addrPort := fmt.Sprintf("%s:%d", args.Addr, args.Port)
+	addrPort := net.JoinHostPort(args.Addr, strconv.Itoa(args.Port))
 	index, err := master.registrationIndex(args.Alias, addrPort)
 	if err != nil {
 		return err
@@ -264,17 +265,9 @@ func (master *Master) Register(args *defs.RegisterArgs, reply *defs.RegisterRepl
 }
 
 func (master *Master) registrationIndex(alias, addrPort string) (int, error) {
-	index, exists := master.replicaIDs[alias]
-	if !exists {
-		return 0, fmt.Errorf("unknown replica alias %q", alias)
-	}
-	expected := master.config.ReplicaAddrs[alias]
-	if _, _, err := net.SplitHostPort(expected); err != nil {
-		expected = fmt.Sprintf("%s:%d", expected, master.config.Port)
-	}
-	if addrPort != expected {
-		return 0, fmt.Errorf("replica %q registered endpoint %q, expected %q",
-			alias, addrPort, expected)
+	index, err := master.membership.RegistrationID(alias, addrPort)
+	if err != nil {
+		return 0, err
 	}
 	if master.registered[index] && master.nodeList[index] != addrPort {
 		return 0, fmt.Errorf("replica %q changed endpoint from %q to %q",

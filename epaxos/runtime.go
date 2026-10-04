@@ -73,7 +73,6 @@ func (r *Replica) logProgress() {
 func (r *Replica) run() {
 	r.ConnectToPeers()
 	defer r.CloseSenders()
-	r.sends = r.PeerSenders
 
 	r.ComputeClosestPeers()
 

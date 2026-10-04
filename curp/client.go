@@ -17,15 +17,14 @@ type completion struct {
 
 type Client struct {
 	client.StandardClient
-	N         int
-	cs        CommunicationSupply
-	ballot    int32
-	pending   map[defs.RequestID]*completion
-	delivered map[int32]struct{}
+	N       int
+	cs      CommunicationSupply
+	ballot  int32
+	pending map[defs.RequestID]*completion
 }
 
 func NewClient(b *client.BufferClient, n int) *Client {
-	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, N: n, ballot: -1, pending: map[defs.RequestID]*completion{}, delivered: map[int32]struct{}{}}
+	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, N: n, ballot: -1, pending: map[defs.RequestID]*completion{}}
 	b.MonitorRPCFailures = true
 	b.SetProtocol(c)
 	return c
@@ -35,7 +34,7 @@ func (c *Client) evidence(id defs.RequestID, ballot, replica int32) *completion 
 	if id.Client != c.ClientId || replica < 0 || int(replica) >= c.N || ballot < c.ballot {
 		return nil
 	}
-	if _, done := c.delivered[id.Sequence]; done {
+	if c.ReplyCompleted(id) {
 		return nil
 	}
 	if ballot > c.ballot {
@@ -52,9 +51,7 @@ func (c *Client) evidence(id defs.RequestID, ballot, replica int32) *completion 
 }
 
 func (c *Client) finish(id defs.RequestID, v state.Value) {
-	c.delivered[id.Sequence] = struct{}{}
-	delete(c.pending, id)
-	c.RegisterReply(v, id.Sequence)
+	c.CompleteReply(id, v, func() { delete(c.pending, id) }, nil)
 }
 
 func (c *Client) tryFast(id defs.RequestID, p *completion) {

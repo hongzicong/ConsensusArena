@@ -11,6 +11,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/rpc"
+	"github.com/hongzicong/ConsensusArena/state"
 )
 
 type Replica struct {
@@ -52,12 +53,15 @@ func readOptions(c *config.Config, n int) (options, error) {
 	if names == "" {
 		names = "all"
 	}
-	var err error
-	o.Responders, err = responderMask(names, c, n)
+	members, err := c.Membership()
 	if err != nil {
 		return o, err
 	}
-	o.Ranges, err = responderRanges(c.BodegaResponderRanges, c, n)
+	o.Responders, err = responderMask(names, members, n)
+	if err != nil {
+		return o, err
+	}
+	o.Ranges, err = responderRanges(c.BodegaResponderRanges, members, n)
 	return o, err
 }
 
@@ -67,6 +71,7 @@ func New(alias string, id int, addrs []string, isLeader bool, c *config.Config, 
 		panic(err)
 	}
 	r := &Replica{Replica: replica.New(alias, id, (len(addrs)-1)/2, addrs, false, true, false, c, l), control: make(chan leaderCall, 8)}
+	r.ProposalPolicy.Operations = []state.Operation{state.NONE, state.PUT, state.GET, state.SCAN, defs.BodegaCancelRead}
 	r.rosterQueries = make(chan chan defs.BodegaRosterReply, 8)
 	inbox := make(chan rpc.Serializable, 8192)
 	code := r.RPC.Register(&message{}, inbox)

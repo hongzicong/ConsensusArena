@@ -45,6 +45,8 @@ type Replica struct {
 	ClientWriters       map[int32]*bufio.Writer
 	ClientReplyCapacity int // configure before accepting client proposals
 	Config              *config.Config
+	membership          *config.Membership
+	ProposalPolicy      state.CommandPolicy
 	Alive               []bool
 	PreferredPeerOrder  []int32
 
@@ -73,6 +75,13 @@ func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, con
 	if n > replicaset.MaxSize {
 		panic("replica membership exceeds Set capacity of 64")
 	}
+	membership, err := config.Membership()
+	if err != nil {
+		panic(err)
+	}
+	if err := membership.CheckReplica(alias, id, n); err != nil {
+		panic(err)
+	}
 	stateMachine := state.InitState()
 	if config.Preload {
 		started := time.Now()
@@ -98,6 +107,7 @@ func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, con
 		ClientWriters:       make(map[int32]*bufio.Writer),
 		ClientReplyCapacity: -1,
 		Config:              config,
+		membership:          membership,
 		Alive:               make([]bool, n),
 		PreferredPeerOrder:  make([]int32, n),
 
@@ -258,14 +268,6 @@ func (r *Replica) WaitForClientConnections() {
 	}
 }
 
-// The void convenience entry point uses the preconfigured peer capacity.
-// Protocols needing admission feedback call Sender.Enqueue directly.
-func (r *Replica) SendMsg(peerId int32, code uint8, msg interface{ Marshal(io.Writer) }) {
-	if peerId == r.Id {
-		return
-	}
-	_ = r.PeerSender(int(peerId)).Enqueue(Encode(code, msg, true))
-}
 func (r *Replica) SendClientMsg(id int32, code uint8, msg fastrpc.Serializable) {
 	_ = r.ClientSender(id, nil, -1).Enqueue(Encode(code, msg, true))
 }
@@ -273,10 +275,10 @@ func (r *Replica) ReplyProposeTS(reply *defs.ProposeReplyTS, w *bufio.Writer, lo
 	_ = r.ReplySender(w, lock, -1).Enqueue(Encode(0, reply, false))
 }
 func (r *Replica) SendBeacon(peerId int32) {
-	r.SendMsg(peerId, defs.GENERIC_SMR_BEACON, &defs.Beacon{Timestamp: time.Now().UnixNano()})
+	_ = r.Messages().Send(int(peerId), defs.GENERIC_SMR_BEACON, &defs.Beacon{Timestamp: time.Now().UnixNano()})
 }
 func (r *Replica) ReplyBeacon(beacon *defs.GBeacon) {
-	r.SendMsg(beacon.Rid, defs.GENERIC_SMR_BEACON_REPLY, &defs.BeaconReply{Timestamp: beacon.Timestamp})
+	_ = r.Messages().Send(int(beacon.Rid), defs.GENERIC_SMR_BEACON_REPLY, &defs.BeaconReply{Timestamp: beacon.Timestamp})
 }
 
 func (r *Replica) UpdatePreferredPeerOrder(quorum []int32) {

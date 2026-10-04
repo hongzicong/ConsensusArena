@@ -3,7 +3,6 @@ package swift
 // Message sending, connection writers, and output queues.
 import (
 	"github.com/hongzicong/ConsensusArena/replica/defs"
-	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -68,8 +67,4 @@ func (r *replyChan) reply(desc *commandDesc, cmdId defs.RequestID, val state.Val
 		finish:  desc.msgs,
 		propose: desc.propose,
 	}
-}
-
-func (r *Replica) sendClientReply(clientID int32, msg fastrpc.Serializable, code uint8) {
-	r.SendClientMsg(clientID, code, msg)
 }

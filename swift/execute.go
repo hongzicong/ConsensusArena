@@ -64,7 +64,7 @@ func (r *Replica) completeReply(args *replyArgs) {
 			CmdId:   args.cmdId,
 			Rep:     args.val,
 		}
-		r.sendClientReply(args.propose.ClientId, acc, r.cs.acceptRPC)
+		r.SendClientMsg(args.propose.ClientId, r.cs.acceptRPC, acc)
 	} else if r.optExec && r.Id == r.leader() {
 		reply := &MReply{
 			Replica:  r.Id,
@@ -73,16 +73,7 @@ func (r *Replica) completeReply(args *replyArgs) {
 			Checksum: args.hs,
 			Rep:      args.val,
 		}
-		r.sendClientReply(args.propose.ClientId, reply, r.cs.replyRPC)
-	} else if args.propose.Proxy && r.optExec {
-		// TODO: make replicas send replies when r.optExec
-		// acc := &MAccept{
-		// 	Replica: r.Id,
-		// 	Ballot:  r.ballot,
-		// 	CmdId:   args.cmdId,
-		// 	Rep:     args.val,
-		// }
-		// r.sendClientReply(args.propose.ClientId, acc, r.cs.acceptRPC)
+		r.SendClientMsg(args.propose.ClientId, r.cs.replyRPC, reply)
 	}
 	// TODO: what if it is optimistically executed by the leader?
 	r.historySize = (r.historySize % HISTORY_SIZE) + 1

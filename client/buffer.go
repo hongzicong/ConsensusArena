@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
-	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -26,7 +25,8 @@ type ReqReply struct {
 type BufferClient struct {
 	*Client
 
-	Reply chan *ReqReply
+	Reply      chan *ReqReply
+	completion replyCompletions
 
 	psize       int
 	writes      int
@@ -111,15 +111,6 @@ func (c *BufferClient) UniqueKeysFor(ordinal, clients int) error {
 	c.keyStart = int64(c.keyCount) * int64(ordinal) / int64(clients)
 	c.keyEnd = int64(c.keyCount) * int64(ordinal+1) / int64(clients)
 	return nil
-}
-
-func (c *BufferClient) RegisterReply(val state.Value, seqnum int32) {
-	t := time.Now()
-	fastrpc.Deliver(c.Reply, &ReqReply{
-		Val:    val,
-		Seqnum: int(seqnum),
-		Time:   t,
-	}, nil)
 }
 
 func (c *BufferClient) Write(key int64, val []byte) {

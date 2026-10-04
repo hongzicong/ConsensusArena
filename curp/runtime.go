@@ -28,6 +28,7 @@ func newProtocolRuntime(base *replica.Replica, leader int32) *protocolRuntime {
 	r.transportRuntime = newTransportRuntime(base, &protocolAdapter{r})
 	code := r.Register(&Packet{})
 	r.Core.Send = func(id int32, p *Packet) { r.Send(id, code, p) }
+	r.Core.SendToAll = func(p *Packet) { r.SendToAll(p, code) }
 	r.Core.Reply = func(req Request, v state.Value, fast bool) {
 		if r.ReplyMessage != nil {
 			code, msg := r.ReplyMessage(req, v, fast, int32(r.Core.Ballot))
@@ -128,7 +129,6 @@ func (r *transportRuntime) Run() {
 	r.Base.PeerSendOptions = replica.SenderOptions{Capacity: 4096}
 	r.Base.ConnectToPeers()
 	defer r.Base.CloseSenders()
-	r.Peers = r.Base.PeerSenders
 	r.Base.ComputeClosestPeers()
 	go r.Base.WaitForClientConnections()
 	ticker := time.NewTicker(2 * time.Millisecond)

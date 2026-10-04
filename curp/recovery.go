@@ -22,13 +22,13 @@ func (c *Core) Begin(now time.Time) {
 	c.votes = map[int64]replicaset.Set{}
 	c.lastSend = now
 	p := &Packet{Kind: packetPrepare, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1}
-	c.broadcast(p)
+	c.SendToAll(p)
 	c.Handle(p)
 }
 
 func (c *Core) activate() {
 	c.Active = true
-	c.broadcast(&Packet{Kind: packetReady, From: c.ID, Ballot: c.Ballot, High: c.Executed, Floor: 1})
+	c.SendToAll(&Packet{Kind: packetReady, From: c.ID, Ballot: c.Ballot, High: c.Executed, Floor: 1})
 	c.schedulePending()
 }
 
@@ -91,7 +91,7 @@ func (c *Core) promise(p *Packet) {
 	}
 
 	for i := range snapshot {
-		c.send(p.From, &snapshot[i])
+		c.Send(p.From, &snapshot[i])
 	}
 }
 
@@ -204,7 +204,7 @@ func (c *Core) requestFetch(now time.Time) {
 	}
 	c.lastFetch = now
 	c.FetchRequests++
-	c.send(c.Leader, &Packet{Kind: packetFetch, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1})
+	c.Send(c.Leader, &Packet{Kind: packetFetch, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1})
 }
 
 func (c *Core) sendSuffix(to int32, start int64, fetch bool) {
@@ -240,7 +240,7 @@ func (c *Core) sendSuffix(to int32, start int64, fetch bool) {
 				recs[i].Committed = false
 			}
 			p := &Packet{Kind: packetAccept, From: c.ID, Ballot: c.Ballot, Records: recs}
-			c.broadcast(p)
+			c.SendToAll(p)
 			c.accept(p)
 		}
 	}

@@ -101,8 +101,11 @@ type nodeReport struct {
 
 type envelope struct {
 	To      int
+	Count   int // positive: broadcast to process IDs [0, Count), including self
 	Message message
 	// Destinations of one broadcast share its immutable wire image. This is
 	// transient transport metadata, never protocol state or received evidence.
 	Encoded *[]byte
 }
+
+var commandPolicy = state.CommandPolicy{Operations: []state.Operation{state.PUT, state.GET}}

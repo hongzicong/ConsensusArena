@@ -337,7 +337,7 @@ func (r *Replica) handlePreAccept(preAccept *PreAccept) {
 		inst.Deps,
 		r.CommittedUpTo,
 		inst.Status, r.Id}
-	r.replyPreAccept(preAccept.LeaderId, reply)
+	r.Send(preAccept.LeaderId, r.preAcceptReplyRPC, reply)
 }
 
 func (r *Replica) handlePreAcceptReply(pareply *PreAcceptReply) {
@@ -506,7 +506,7 @@ func (r *Replica) handleAccept(accept *Accept) {
 	}
 
 	reply := &AcceptReply{accept.Replica, accept.Instance, inst.bal, r.Id}
-	r.replyAccept(accept.LeaderId, reply)
+	r.Send(accept.LeaderId, r.acceptReplyRPC, reply)
 
 }
 

@@ -16,7 +16,6 @@ type Replica struct {
 	inbox          chan fastrpc.Serializable
 	code           uint8
 	proposals      map[defs.RequestID]*defs.GPropose
-	peerQueues     []*replica.Sender
 	pendingReplies map[defs.RequestID]replyJob
 }
 

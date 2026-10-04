@@ -29,19 +29,19 @@ type processTopology struct {
 // Every process builds this same catalog before opening protocol streams.
 func configuredTopology(conf *config.Config) (processTopology, error) {
 	n := len(conf.ReplicaAliases)
-	clients := make([]string, 0, len(conf.ClientAddrs))
-	for a := range conf.ClientAddrs {
-		clients = append(clients, a)
+	membership, err := conf.Membership()
+	if err != nil {
+		return processTopology{}, err
 	}
-	sort.Strings(clients)
+	clients := membership.Clients
 	baseAliases := append([]string(nil), conf.ReplicaAliases...)
 	baseEndpoints := make([]string, n)
-	for i, a := range baseAliases {
-		baseEndpoints[i] = conf.ReplicaAddrs[a]
+	for i, r := range membership.Replicas {
+		baseEndpoints[i] = r.Endpoint
 	}
 	for _, a := range clients {
 		baseAliases = append(baseAliases, a)
-		baseEndpoints = append(baseEndpoints, conf.ClientAddrs[a])
+		baseEndpoints = append(baseEndpoints, membership.ClientEndpoint(a))
 	}
 	m := n + len(clients)*(conf.Clones+1)
 	if m > 63 || conf.Clones < 0 {
@@ -73,14 +73,14 @@ func configuredTopology(conf *config.Config) (processTopology, error) {
 		location[i] = i
 	}
 	for j, a := range clients {
-		host := conf.ClientAddrs[a]
+		host := membership.ClientEndpoint(a)
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
 		}
 		for clone := 0; clone <= conf.Clones; clone++ {
 			ordinal := j*(conf.Clones+1) + clone
 			t.Aliases = append(t.Aliases, fmt.Sprintf("%s#%d", a, clone))
-			t.Identities = append(t.Identities, conf.ClientAddrs[a])
+			t.Identities = append(t.Identities, membership.ClientEndpoint(a))
 			t.Listeners = append(t.Listeners, net.JoinHostPort(host, strconv.Itoa(clientPortBase+ordinal)))
 			location = append(location, n+j)
 		}
@@ -92,7 +92,6 @@ func configuredTopology(conf *config.Config) (processTopology, error) {
 			expanded[i][j] = latency[location[i]][location[j]]
 		}
 	}
-	var err error
 	t.Latency = expanded
 	t.Plan, err = SynthesizeProcesses(expanded, n, nil)
 	if err == nil {

@@ -139,7 +139,7 @@ func (r *Replica) handlePrepare(prepare *Prepare) {
 		inst.Cmds,
 		inst.Seq,
 		inst.Deps}
-	r.replyPrepare(prepare.LeaderId, preply)
+	r.Send(prepare.LeaderId, r.prepareReplyRPC, preply)
 }
 
 func (r *Replica) handlePrepareReply(preply *PrepareReply) {
@@ -202,11 +202,7 @@ func (r *Replica) handlePrepareReply(preply *PrepareReply) {
 	lb.deps = append([]int32(nil), chosen.Deps...)
 	if chosen.Status >= COMMITTED {
 		r.handleCommit(&Commit{r.Id, preply.Replica, preply.Instance, chosen.VBallot, chosen.Command, chosen.Seq, chosen.Deps})
-		for q := int32(0); q < int32(r.N); q++ {
-			if q != r.Id {
-				r.SendMsg(q, r.commitRPC, &Commit{r.Id, preply.Replica, preply.Instance, chosen.VBallot, chosen.Command, chosen.Seq, chosen.Deps})
-			}
-		}
+		r.broadcast(nil, r.N-1, r.commitRPC, &Commit{r.Id, preply.Replica, preply.Instance, chosen.VBallot, chosen.Command, chosen.Seq, chosen.Deps})
 		return
 	}
 	matching := 0
@@ -269,7 +265,7 @@ func (r *Replica) handleTryPreAccept(tpa *TryPreAccept) {
 	if tpa.LeaderId == r.Id {
 		r.handleTryPreAcceptReply(reply)
 	} else {
-		r.replyTryPreAccept(tpa.LeaderId, reply)
+		r.Send(tpa.LeaderId, r.tryPreAcceptReplyRPC, reply)
 	}
 
 }
@@ -460,11 +456,7 @@ func (r *Replica) handleRepairRequest(m *repairRequest) {
 	i := r.InstanceSpace[m.Owner][m.Slot]
 	if i != nil && i.Status >= COMMITTED && i.Cmds != nil {
 		c := &Commit{r.Id, m.Owner, m.Slot, i.vbal, i.Cmds, i.Seq, i.Deps}
-		for q := int32(0); q < int32(r.N); q++ {
-			if q != r.Id {
-				r.SendMsg(q, r.commitRPC, c)
-			}
-		}
+		r.broadcast(nil, r.N-1, r.commitRPC, c)
 		return
 	}
 	if r.recoveryCoordinator(m.Owner) == r.Id {
@@ -491,7 +483,7 @@ func (r *Replica) blockedOn(owner, slot int32, now time.Time) {
 	if target == r.Id {
 		r.scheduleRecovery(owner, slot, now)
 	} else {
-		r.SendMsg(target, r.requestRPC, &repairRequest{owner, slot})
+		r.Send(target, r.requestRPC, &repairRequest{owner, slot})
 	}
 }
 

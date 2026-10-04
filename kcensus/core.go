@@ -186,28 +186,30 @@ func (c *core) send(to int, m message) {
 }
 
 func (c *core) sendShared(to int, m message, encoded *[]byte) {
-	m.From = c.id
-	if m.References {
-		c.stats.ReferenceMessages++
+	c.emit(envelope{To: to, Message: m, Encoded: encoded})
+}
+
+func (c *core) emit(e envelope) {
+	e.Message.From = c.id
+	count := e.Count
+	if count == 0 {
+		count = 1
 	}
-	c.out = append(c.out, envelope{To: to, Message: m, Encoded: encoded})
-	if m.Kind == spread {
-		c.stats.SpreadMessages++
+	if e.Message.References {
+		c.stats.ReferenceMessages += uint64(count)
+	}
+	c.out = append(c.out, e)
+	if e.Message.Kind == spread {
+		c.stats.SpreadMessages += uint64(count)
 	}
 }
 
 func (c *core) broadcast(m message) {
-	var encoded []byte
-	for i := 0; i < c.n; i++ {
-		c.sendShared(i, m, &encoded)
-	}
+	c.emit(envelope{Count: c.n, Message: m})
 }
 
 func (c *core) broadcastAll(m message) {
-	var encoded []byte
-	for i := 0; i < c.m; i++ {
-		c.sendShared(i, m, &encoded)
-	}
+	c.emit(envelope{Count: c.m, Message: m})
 }
 
 func (c *core) broadcastCommit(m message) {
@@ -250,11 +252,8 @@ func (c *core) remember(r Record) {
 }
 
 func (c *core) submit(r Record) error {
-	if r.Command.Op != state.PUT && r.Command.Op != state.GET {
-		return fmt.Errorf("KCensus supports single-key PUT/GET, not operation %d", r.Command.Op)
-	}
-	if len(r.Command.V) > 65535 {
-		return fmt.Errorf("command exceeds Arena's 65535-byte value limit")
+	if err := commandPolicy.Validate(r.Command); err != nil {
+		return err
 	}
 	c.remember(r)
 	if v, ok := c.results[r.ID]; ok {
@@ -371,7 +370,7 @@ func (c *core) validValue(k state.Key, v *Value, fast bool) bool {
 		if bytes > maxBatchBytes {
 			return false
 		}
-		if r.Command.K != k || r.Command.Op != state.PUT || len(r.Command.V) > 65535 || seen[r.ID] {
+		if r.Command.K != k || r.Command.Op != state.PUT || len(r.Command.V) > state.MaxValueBytes || seen[r.ID] {
 			return false
 		}
 		seen[r.ID] = true

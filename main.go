@@ -151,11 +151,11 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	workloadSeed := client.DeriveWorkloadSeed(int64(c.WorkloadSeed), c.Alias, i)
 	b := client.NewBufferClient(cl, c.CommandSize, c.Writes, c.KeyCount, c.ZipfSkew, workloadSeed)
 	if c.UniqueKeys {
-		aliases := make([]string, 0, len(c.ClientAddrs))
-		for alias := range c.ClientAddrs {
-			aliases = append(aliases, alias)
+		members, err := c.Membership()
+		if err != nil {
+			log.Fatal(err)
 		}
-		sort.Strings(aliases)
+		aliases := members.Clients
 		ordinal := sort.SearchStrings(aliases, c.Alias)
 		if ordinal == len(aliases) || aliases[ordinal] != c.Alias {
 			log.Fatal("unique-key client alias is not configured")

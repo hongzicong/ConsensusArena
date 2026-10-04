@@ -10,10 +10,9 @@ import (
 type Client struct {
 	client.StandardClient
 
-	val       state.Value
-	ready     chan struct{}
-	ballot    int32
-	delivered map[defs.RequestID]struct{}
+	val    state.Value
+	ready  chan struct{}
+	ballot int32
 
 	SQ         QuorumI
 	FQ         QuorumI
@@ -33,10 +32,9 @@ func NewClient(b *client.BufferClient, repNum int) *Client {
 	c := &Client{
 		StandardClient: client.StandardClient{BufferClient: b},
 
-		val:       nil,
-		ready:     make(chan struct{}, 1),
-		ballot:    -1,
-		delivered: make(map[defs.RequestID]struct{}),
+		val:    nil,
+		ready:  make(chan struct{}, 1),
+		ballot: -1,
 
 		SQ: NewMajorityOf(repNum),
 		FQ: NewThreeQuartersOf(repNum),
@@ -149,7 +147,7 @@ func (c *Client) handleMsgs() {
 				fastAck.Replica = optAcks.Replica
 				fastAck.Ballot = optAcks.Ballot
 				fastAck.CmdId = ack.CmdId
-				if _, exists := c.delivered[fastAck.CmdId]; exists {
+				if fastAck.CmdId.Client != c.ClientId || c.ReplyCompleted(fastAck.CmdId) {
 					continue
 				}
 				if !IsNilDepOfCmdId(ack.CmdId, ack.Dep) {
@@ -164,7 +162,7 @@ func (c *Client) handleMsgs() {
 				if !c.handleFastAck(fastAck, false) {
 					continue
 				}
-				if _, exists := c.delivered[fastAck.CmdId]; !exists && fastAck.Checksum == nil {
+				if !c.ReplyCompleted(fastAck.CmdId) && fastAck.Checksum == nil {
 					fastAck := copyFastAck(fastAck)
 					fastAck.Checksum = nil
 					c.initMsgSets(fastAck.CmdId)
@@ -176,6 +174,9 @@ func (c *Client) handleMsgs() {
 }
 
 func (c *Client) handleFastAck(f *MFastAck, fromLeader bool) bool {
+	if f.CmdId.Client != c.ClientId {
+		return false
+	}
 	if c.ballot == -1 {
 		c.ballot = f.Ballot
 	} else if c.ballot < f.Ballot {
@@ -184,7 +185,7 @@ func (c *Client) handleFastAck(f *MFastAck, fromLeader bool) bool {
 		return false
 	}
 
-	if _, exists := c.delivered[f.CmdId]; exists {
+	if c.ReplyCompleted(f.CmdId) {
 		return false
 	}
 	if b, exists := c.ackBallots[f.CmdId]; !exists || b != f.Ballot {
@@ -202,7 +203,7 @@ func (c *Client) handleFastAck(f *MFastAck, fromLeader bool) bool {
 }
 
 func (c *Client) handleLightSlowAck(ls *MLightSlowAck) {
-	if _, exists := c.delivered[ls.CmdId]; exists {
+	if ls.CmdId.Client != c.ClientId || c.ReplyCompleted(ls.CmdId) {
 		return
 	}
 
@@ -219,7 +220,7 @@ func (c *Client) handleLightSlowAck(ls *MLightSlowAck) {
 	if !c.handleFastAck(f, false) {
 		return
 	}
-	if _, exists := c.delivered[f.CmdId]; !exists {
+	if !c.ReplyCompleted(f.CmdId) {
 		f := copyFastAck(f)
 		f.Checksum = nil
 		c.initMsgSets(f.CmdId)
@@ -233,17 +234,15 @@ func (c *Client) handleFastAndSlowAcks(leaderMsg interface{}, msgs []interface{}
 	}
 
 	cmdId := leaderMsg.(*MFastAck).CmdId
-	if _, exists := c.delivered[cmdId]; exists {
+	if !c.CompleteReply(cmdId, c.val, nil, nil) {
 		return
 	}
-	c.delivered[cmdId] = struct{}{}
-	c.RegisterReply(c.val, cmdId.Sequence)
 
 	c.Println("Slow Paths:", c.slowPaths)
 }
 
 func (c *Client) handleReply(r *MReply) {
-	if _, exists := c.delivered[r.CmdId]; exists {
+	if r.CmdId.Client != c.ClientId || c.ReplyCompleted(r.CmdId) {
 		return
 	}
 	f := newFastAck()
@@ -255,7 +254,7 @@ func (c *Client) handleReply(r *MReply) {
 	if !c.handleFastAck(f, true) {
 		return
 	}
-	if _, exists := c.delivered[f.CmdId]; !exists {
+	if !c.ReplyCompleted(f.CmdId) {
 		f := copyFastAck(f)
 		f.Checksum = nil
 		c.initMsgSets(f.CmdId)
@@ -264,13 +263,12 @@ func (c *Client) handleReply(r *MReply) {
 }
 
 func (c *Client) handleAccept(a *MAccept) {
-	if _, exists := c.delivered[a.CmdId]; exists {
+	if a.CmdId.Client != c.ClientId || c.ReplyCompleted(a.CmdId) {
 		return
 	}
-	c.delivered[a.CmdId] = struct{}{}
 
 	c.val = a.Rep
-	c.RegisterReply(c.val, a.CmdId.Sequence)
+	c.CompleteReply(a.CmdId, c.val, nil, nil)
 	c.Println("Slow Paths:", c.slowPaths)
 }
 

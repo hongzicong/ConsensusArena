@@ -19,6 +19,9 @@ const compactCommitSize = 33
 
 const wireVersion = 3
 
+// FrameTag selects the local priority lane; it is not added to the wire.
+func (m *message) FrameTag() uint8 { return uint8(m.Kind) }
+
 type encoder struct{ b []byte }
 
 func (e *encoder) u8(v byte) { e.b = append(e.b, v) }

@@ -35,7 +35,6 @@ type Client struct {
 	closeOnce   sync.Once
 	listener    net.Listener
 	requests    map[defs.RequestID]*clientRequest
-	done        map[defs.RequestID]bool
 	readersOnce sync.Once
 	queryQueue  []defs.RequestID
 	queryHead   int
@@ -56,7 +55,7 @@ func NewClient(b *client.BufferClient, conf *config.Config, clone int) *Client {
 	if pid < 0 {
 		panic("KCensus client alias/clone is not configured")
 	}
-	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, topology: topology, engine: newCore(pid, topology.Plan, conf.KCensusFailure), inbox: make(chan message, 65536), resultInbox: make(chan message, 4096), proposals: make(chan Record, 65536), stop: make(chan struct{}), requests: make(map[defs.RequestID]*clientRequest), done: make(map[defs.RequestID]bool)}
+	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, topology: topology, engine: newCore(pid, topology.Plan, conf.KCensusFailure), inbox: make(chan message, 65536), resultInbox: make(chan message, 4096), proposals: make(chan Record, 65536), stop: make(chan struct{}), requests: make(map[defs.RequestID]*clientRequest)}
 	b.ClientId = int32(pid)
 	c.control = make(chan message, 4*c.engine.m)
 	b.SkipPing = true
@@ -113,8 +112,8 @@ func (c *Client) WaitReplies(_ int) {
 }
 
 func (c *Client) SendProposal(p defs.Propose) {
-	if p.Command.Op != state.PUT && p.Command.Op != state.GET {
-		panic(fmt.Sprintf("KCensus supports PUT/GET, not operation %d", p.Command.Op))
+	if err := commandPolicy.Validate(p.Command); err != nil {
+		panic(err)
 	}
 	select {
 	case c.proposals <- Record{defs.RequestID{Client: int32(c.engine.id), Sequence: p.CommandId}, p.Command}:
@@ -154,23 +153,23 @@ func (c *Client) selectedDelegate() int {
 
 func (c *Client) receiveResult(m message) {
 	q := c.requests[m.ID]
-	if m.From < 0 || m.From >= c.engine.n || q == nil || q.record.Command.K != m.Key || c.done[m.ID] {
+	if m.From < 0 || m.From >= c.engine.n || q == nil || q.record.Command.K != m.Key || c.ReplyCompleted(m.ID) {
 		return
 	}
-	c.done[m.ID] = true
-	delete(c.requests, m.ID)
-	if q.record.Command.Op == state.PUT {
-		c.engine.recordWriteCompletion(m.ID, c.engine.executed(m.Key))
-		// A voter has executed this exact input. Stop offering it while local
-		// commit/payload catch-up continues; this does not advance a slot prefix.
-		c.engine.ordered[m.ID] = true
-		delete(c.engine.repairHandoffs, payloadObject{m.Key, c.engine.commandUIDs[m.ID]})
-		c.engine.results[m.ID] = append(state.Value(nil), m.Result...)
-		s := c.engine.shard(m.Key)
-		delete(s.queued, m.ID)
-		delete(s.shared, m.ID)
-	}
-	c.RegisterReply(m.Result, m.ID.Sequence)
+	c.CompleteReply(m.ID, m.Result, func() {
+		delete(c.requests, m.ID)
+		if q.record.Command.Op == state.PUT {
+			c.engine.recordWriteCompletion(m.ID, c.engine.executed(m.Key))
+			// A voter has executed this exact input. Stop offering it while local
+			// commit/payload catch-up continues; this does not advance a slot prefix.
+			c.engine.ordered[m.ID] = true
+			delete(c.engine.repairHandoffs, payloadObject{m.Key, c.engine.commandUIDs[m.ID]})
+			c.engine.results[m.ID] = append(state.Value(nil), m.Result...)
+			s := c.engine.shard(m.Key)
+			delete(s.queued, m.ID)
+			delete(s.shared, m.ID)
+		}
+	}, nil)
 }
 
 // Fair, bounded cache repair. Queries never propose a PUT or authorize completion.
