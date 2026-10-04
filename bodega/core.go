@@ -240,7 +240,7 @@ func (e *engine) tick(now time.Time) {
 		} else {
 			// Repair execution gaps independently of current-ballot acceptance.
 			for p := 0; p < e.n; p++ {
-				if p == e.id {
+				if p == e.id || !e.peerHealthy(p, now) {
 					continue
 				}
 				e.repairPeer(p)

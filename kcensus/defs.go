@@ -102,4 +102,7 @@ type nodeReport struct {
 type envelope struct {
 	To      int
 	Message message
+	// Destinations of one broadcast share its immutable wire image. This is
+	// transient transport metadata, never protocol state or received evidence.
+	Encoded *[]byte
 }

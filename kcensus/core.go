@@ -39,6 +39,8 @@ type slotState struct {
 	reports                             map[int]message
 	selected                            *Value
 	acks                                uint64
+	prepareSent, acceptSent             replicaset.Set
+	followedBallot                      uint64
 	created, lastSend                   time.Duration
 }
 
@@ -77,6 +79,9 @@ type Stats struct {
 	SuppressedReadRequests, DuplicateReadReplies                          uint64
 	SuppressedFetches, SuppressedRepairOffers                             uint64
 	ImmediateFetches, DeadlineFetches, DeferredInFlightFetches            uint64
+	RecoveryAdmissionWaits                                                uint64
+	EncodedFrames, EncodedBytes, EncodingSamples, EncodingNanos           uint64
+	ReusedEncodings                                                       uint64
 	InputMessages, InputSamples, InputSampleNanos                         [resultQuery + 1]uint64
 }
 
@@ -89,6 +94,7 @@ type core struct {
 	retryQueue          []slotID
 	retryHead           int
 	retryBudget         int
+	activeCensuses      int
 	known               map[defs.RequestID]Record
 	commandUIDs         map[defs.RequestID]uint64
 	results             map[defs.RequestID]state.Value
@@ -176,39 +182,48 @@ func (c *core) slot(k state.Key, i uint64) *slotState {
 }
 
 func (c *core) send(to int, m message) {
+	c.sendShared(to, m, nil)
+}
+
+func (c *core) sendShared(to int, m message, encoded *[]byte) {
 	m.From = c.id
 	if m.References {
 		c.stats.ReferenceMessages++
 	}
-	c.out = append(c.out, envelope{to, m})
+	c.out = append(c.out, envelope{To: to, Message: m, Encoded: encoded})
 	if m.Kind == spread {
 		c.stats.SpreadMessages++
 	}
 }
 
 func (c *core) broadcast(m message) {
+	var encoded []byte
 	for i := 0; i < c.n; i++ {
-		c.send(i, m)
+		c.sendShared(i, m, &encoded)
 	}
 }
 
 func (c *core) broadcastAll(m message) {
+	var encoded []byte
 	for i := 0; i < c.m; i++ {
-		c.send(i, m)
+		c.sendShared(i, m, &encoded)
 	}
 }
 
 func (c *core) broadcastCommit(m message) {
+	var encoded, fullEncoded []byte
 	full := m
 	if m.Ballot != 0 {
 		full = c.valuePayload(m)
 	}
 	send := func(to int) {
 		packet := m
+		image := &encoded
 		if to >= c.n {
 			packet = full
+			image = &fullEncoded
 		}
-		c.send(to, packet)
+		c.sendShared(to, packet, image)
 	}
 	// Native prioritizes a Single's requester on commit dissemination.
 	first := -1
@@ -293,6 +308,10 @@ func (c *core) propose(k state.Key) {
 	}
 	usable := c.graphUsable(c.id)
 	if !usable && c.coordinator() != c.id {
+		return
+	}
+	if !usable && c.activeCensuses >= recoveryPipeline {
+		c.stats.RecoveryAdmissionWaits++
 		return
 	}
 	i := s.executed + 1
@@ -381,6 +400,9 @@ func (c *core) learn(k state.Key, i uint64, v *Value) {
 		return
 	}
 	x.decided = v
+	if x.phase != 0 {
+		c.activeCensuses--
+	}
 	// A different value may win while this node is waiting for the remaining
 	// dependencies of a payload-arrival state. Preserve the losing input's
 	// value-only forwarding even though this slot's evidence stops progressing.
@@ -607,6 +629,7 @@ func (c *core) stepMessage(m message, replayed bool) {
 		}
 		x.promised = m.Ballot
 		c.freezeFor(x, m.Ballot)
+		x.followedBallot = m.Ballot
 		if !x.conflictAnnounced {
 			x.conflictAnnounced = true
 			x.announcedParticipants = x.participants
@@ -651,6 +674,7 @@ func (c *core) stepMessage(m message, replayed bool) {
 		x.frozen = true
 		x.promised = m.Ballot
 		x.acceptedBallot = m.Ballot
+		x.followedBallot = m.Ballot
 		x.classic = m.Value
 		c.freezeFor(x, m.Ballot)
 		for _, r := range m.Value.Records {

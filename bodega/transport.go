@@ -92,9 +92,16 @@ type replicaTransport struct {
 }
 
 func (t *replicaTransport) trySend(to int, m message) bool {
+	q := t.sources[to]
+	q.mu.Lock()
+	closed := q.closed
+	q.mu.Unlock()
+	if closed {
+		return false
+	}
 	f := replica.Encode(t.code, &m, true)
 	f.Tag = uint8(m.Kind)
-	return t.sources[to].enqueue(f)
+	return q.enqueue(f)
 }
 func (r *Replica) sendReply(p *defs.GPropose, value state.Value) bool {
 	return r.ReplyResult(p, value, 8192) == nil

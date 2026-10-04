@@ -24,10 +24,35 @@ func (r *Replica) drain() {
 		if e.To == int(r.Id) {
 			protocol.Must(r.Handle(localMessage{e.Message}, time.Time{}))
 		} else if !r.engine.peerFailed(e.To) {
-			_ = r.peers.Enqueue(e.To, replica.Encode(r.code, &wireMessage{e.Message}, true))
+			_ = r.peers.Enqueue(e.To, encodeOutput(r.code, e, &r.engine.stats))
 		}
 		return true
 	})
+}
+
+// The image is scoped to one broadcast. Sender never mutates frame bytes;
+// every recipient still receives its own FIFO frame through the common sender.
+func encodeOutput(code uint8, e envelope, stats *Stats) replica.Frame {
+	if e.Encoded != nil && *e.Encoded != nil {
+		stats.ReusedEncodings++
+		stats.EncodedBytes += uint64(len(*e.Encoded))
+		return replica.Frame{Data: *e.Encoded}
+	}
+	stats.EncodedFrames++
+	var before time.Time
+	if stats.EncodedFrames%64 == 1 {
+		before = time.Now()
+	}
+	frame := replica.Encode(code, &wireMessage{e.Message}, true)
+	if !before.IsZero() {
+		stats.EncodingSamples++
+		stats.EncodingNanos += uint64(time.Since(before))
+	}
+	stats.EncodedBytes += uint64(len(frame.Data))
+	if e.Encoded != nil {
+		*e.Encoded = frame.Data
+	}
+	return frame
 }
 
 // Configure the FIFO policy before connections start; use the common writer.
@@ -73,7 +98,7 @@ func (c *Client) drain() {
 				return false
 			default:
 			}
-			_ = c.peers.Enqueue(e.To, replica.Encode(defs.RPC_TABLE, &wireMessage{e.Message}, true))
+			_ = c.peers.Enqueue(e.To, encodeOutput(defs.RPC_TABLE, e, &c.engine.stats))
 		}
 		return true
 	})

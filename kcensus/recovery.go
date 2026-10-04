@@ -18,6 +18,10 @@ type heartbeatProbe struct {
 	sent     time.Duration
 }
 
+// Bound outstanding censuses, not votes or accepted input. An unbounded WAN
+// pipeline queues recovery messages faster than their replies can be consumed.
+const recoveryPipeline = 8192
+
 // Receipt of queued protocol traffic is not proof of current liveness. Only a
 // response to our own recent probe refreshes suspicion, at the probe's send time.
 func (c *core) receiveHeartbeat(m message) {
@@ -178,6 +182,11 @@ func (c *core) recoverySnapshot() string {
 func (c *core) reproposer() int {
 	for _, i := range c.priority {
 		if i == c.id || c.peerEligible(i) {
+			if !c.graphUsable(i) {
+				// A failed fast graph cannot be retried by a non-voting proposer.
+				// Its retained input belongs to the live fallback coordinator.
+				return c.coordinator()
+			}
 			return i
 		}
 	}
@@ -204,6 +213,10 @@ func (c *core) startRecovery(k state.Key, i uint64) {
 	if x.decided != nil {
 		return
 	}
+	if x.phase == 0 && c.activeCensuses >= recoveryPipeline {
+		c.stats.RecoveryAdmissionWaits++
+		return
+	}
 	b := uint64(c.n + c.id)
 	if x.promised > b {
 		b = (x.promised/uint64(c.n)+1)*uint64(c.n) + uint64(c.id)
@@ -221,32 +234,48 @@ func completeReportPayload(v *Value) bool { return v == nil || !v.Reference && l
 // Retry only missing responses. Graph-derived UID-only reports still need a
 // full response; every new ballot resets reports and therefore this filter.
 func (c *core) sendMissingPrepare(k state.Key, i uint64, x *slotState) {
+	var encoded []byte
 	for voter := 0; voter < c.n; voter++ {
 		r, received := x.reports[voter]
 		if c.peerFailed(voter) || received && r.Ballot == x.ballot && completeReportPayload(r.Value) && completeReportPayload(r.Fast) {
 			c.stats.SuppressedRecoveryRequests++
 			continue
 		}
-		c.send(voter, message{Kind: prepare, Key: k, Slot: i, Ballot: x.ballot})
+		if x.prepareSent.Contains(voter) && c.reliableTarget(voter) {
+			c.stats.SuppressedRecoveryRequests++
+			continue
+		}
+		c.sendShared(voter, message{Kind: prepare, Key: k, Slot: i, Ballot: x.ballot}, &encoded)
+		x.prepareSent = x.prepareSent.With(voter)
 	}
 }
 
 func (c *core) sendMissingAccept(k state.Key, i uint64, x *slotState) {
+	var encoded []byte
 	m := c.valuePayload(message{Kind: accept, Key: k, Slot: i, Ballot: x.ballot, Value: x.selected})
 	for voter := 0; voter < c.n; voter++ {
 		if c.peerFailed(voter) || x.acks&(uint64(1)<<voter) != 0 {
 			c.stats.SuppressedRecoveryRequests++
 			continue
 		}
-		c.send(voter, m)
+		if x.acceptSent.Contains(voter) && c.reliableTarget(voter) {
+			c.stats.SuppressedRecoveryRequests++
+			continue
+		}
+		c.sendShared(voter, m, &encoded)
+		x.acceptSent = x.acceptSent.With(voter)
 	}
 }
 
 func (c *core) beginCensus(k state.Key, i uint64, x *slotState, b uint64) {
+	if x.phase == 0 {
+		c.activeCensuses++
+	}
 	x.ballot = b
 	x.phase = 1
 	x.reports = make(map[int]message)
 	x.acks = 0
+	x.prepareSent, x.acceptSent = 0, 0
 	x.selected = nil
 	x.lastSend = c.now
 	x.nextRetry = c.now + c.retry
@@ -303,6 +332,12 @@ func (c *core) reliableTarget(id int) bool {
 }
 
 func (c *core) fetchPrefix(k state.Key, i uint64, x *slotState, target int, immediate bool) bool {
+	// This coordinator already owns the census and broadcasts its decision to
+	// every voter. A live lossless stream needs no second Fetch per follower.
+	if x.followedBallot != 0 && x.followedBallot == x.promised && int(x.followedBallot%uint64(c.n)) == target && c.reliableTarget(target) {
+		c.stats.SuppressedFetches++
+		return false
+	}
 	if x.fetchSent && x.fetchTarget == target && c.reliableTarget(target) {
 		c.stats.SuppressedFetches++
 		return false

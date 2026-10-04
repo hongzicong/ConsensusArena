@@ -4,7 +4,6 @@ package kcensus
 // Heartbeats match local probes (High nonce, Explicit reply).
 // Batch bodies contain single UIDs, never commands.
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -23,16 +22,46 @@ func (*wireMessage) New() rpc.Serializable { return &wireMessage{} }
 func (w *wireMessage) BindClient(connection *rpc.ClientConnection) {
 	w.ClientConnection = connection
 }
-func put(w io.Writer, v interface{}) { _ = binary.Write(w, binary.LittleEndian, v) }
-func writeRecord(w io.Writer, r Record) {
+
+// Append scalar fields directly, preserving version 11's little-endian layout.
+// binary.Write allocates a temporary byte slice for every scalar field.
+func put(w *[]byte, v interface{}) {
+	switch x := v.(type) {
+	case uint8:
+		*w = append(*w, x)
+	case int8:
+		*w = append(*w, byte(x))
+	case bool:
+		if x {
+			*w = append(*w, 1)
+		} else {
+			*w = append(*w, 0)
+		}
+	case uint16:
+		*w = binary.LittleEndian.AppendUint16(*w, x)
+	case uint32:
+		*w = binary.LittleEndian.AppendUint32(*w, x)
+	case uint64:
+		*w = binary.LittleEndian.AppendUint64(*w, x)
+	case int32:
+		*w = binary.LittleEndian.AppendUint32(*w, uint32(x))
+	case int64:
+		*w = binary.LittleEndian.AppendUint64(*w, uint64(x))
+	case replicaset.Set:
+		*w = binary.LittleEndian.AppendUint64(*w, uint64(x))
+	default:
+		panic("unsupported KCensus wire scalar")
+	}
+}
+func writeRecord(w *[]byte, r Record) {
 	put(w, r.ID.Client)
 	put(w, r.ID.Sequence)
 	put(w, uint8(r.Command.Op))
 	put(w, int64(r.Command.K))
 	put(w, uint32(len(r.Command.V)))
-	_, _ = w.Write(r.Command.V)
+	*w = append(*w, r.Command.V...)
 }
-func writeValue(w io.Writer, v *Value, references bool) {
+func writeValue(w *[]byte, v *Value, references bool) {
 	if v == nil {
 		put(w, uint8(0))
 		return
@@ -62,7 +91,7 @@ func writeValue(w io.Writer, v *Value, references bool) {
 	}
 }
 func (w *wireMessage) Marshal(out io.Writer) {
-	var b bytes.Buffer
+	b := make([]byte, 4, 192)
 	put(&b, uint8(wireVersion))
 	put(&b, w.Kind)
 	put(&b, uint8(w.From))
@@ -75,7 +104,7 @@ func (w *wireMessage) Marshal(out io.Writer) {
 	put(&b, w.ID.Client)
 	put(&b, w.ID.Sequence)
 	put(&b, w.Mask)
-	b.Write(w.Digest[:])
+	b = append(b, w.Digest[:]...)
 	writeValue(&b, w.Value, w.References)
 	writeValue(&b, w.Fast, w.References)
 	put(&b, uint8(len(w.Knowledge)))
@@ -109,12 +138,12 @@ func (w *wireMessage) Marshal(out io.Writer) {
 		writeRecord(&b, *w.Request)
 	}
 	put(&b, uint32(len(w.Result)))
-	b.Write(w.Result)
-	if b.Len() > maxFrame {
+	b = append(b, w.Result...)
+	if len(b)-4 > maxFrame {
 		panic("KCensus frame exceeds limit")
 	}
-	put(out, uint32(b.Len()))
-	_, _ = out.Write(b.Bytes())
+	binary.LittleEndian.PutUint32(b[:4], uint32(len(b)-4))
+	_, _ = out.Write(b)
 }
 func (w *wireMessage) Unmarshal(in io.Reader) error {
 	*w = wireMessage{}
@@ -129,12 +158,53 @@ func (w *wireMessage) Unmarshal(in io.Reader) error {
 	if _, err := io.ReadFull(in, data); err != nil {
 		return err
 	}
-	r := bytes.NewReader(data)
 	var err error
 	get := func(v interface{}) {
-		if err == nil {
-			err = binary.Read(r, binary.LittleEndian, v)
+		if err != nil {
+			return
 		}
+		size := 0
+		switch v.(type) {
+		case *uint8, *int8, *bool:
+			size = 1
+		case *uint16:
+			size = 2
+		case *uint32, *int32:
+			size = 4
+		case *uint64, *int64, *replicaset.Set:
+			size = 8
+		case *[32]byte:
+			size = 32
+		default:
+			panic("unsupported KCensus wire scalar")
+		}
+		if len(data) < size {
+			err = io.ErrUnexpectedEOF
+			return
+		}
+		switch x := v.(type) {
+		case *uint8:
+			*x = data[0]
+		case *int8:
+			*x = int8(data[0])
+		case *bool:
+			*x = data[0] != 0
+		case *uint16:
+			*x = binary.LittleEndian.Uint16(data)
+		case *uint32:
+			*x = binary.LittleEndian.Uint32(data)
+		case *int32:
+			*x = int32(binary.LittleEndian.Uint32(data))
+		case *uint64:
+			*x = binary.LittleEndian.Uint64(data)
+		case *int64:
+			*x = int64(binary.LittleEndian.Uint64(data))
+		case *replicaset.Set:
+			*x = replicaset.Set(binary.LittleEndian.Uint64(data))
+		case *[32]byte:
+			copy(x[:], data[:size])
+		}
+		data = data[size:]
 	}
 	readBytes := func() state.Value {
 		var length uint32
@@ -142,12 +212,13 @@ func (w *wireMessage) Unmarshal(in io.Reader) error {
 		if err != nil {
 			return nil
 		}
-		if length > 65535 || int(length) > r.Len() {
+		if length > 65535 || int(length) > len(data) {
 			err = fmt.Errorf("invalid command/result length")
 			return nil
 		}
 		v := make(state.Value, length)
-		_, err = io.ReadFull(r, v)
+		copy(v, data[:length])
+		data = data[length:]
 		return v
 	}
 	readRecord := func() Record {
@@ -296,7 +367,7 @@ func (w *wireMessage) Unmarshal(in io.Reader) error {
 	if err != nil {
 		return err
 	}
-	if ver != wireVersion || w.Kind < spread || w.Kind > resultQuery || r.Len() != 0 {
+	if ver != wireVersion || w.Kind < spread || w.Kind > resultQuery || len(data) != 0 {
 		return fmt.Errorf("invalid KCensus frame")
 	}
 	return nil

@@ -39,6 +39,12 @@ func (c *core) apply(k state.Key) {
 			}
 		}
 		s.executed++
+		// Keep the chosen value for prefix repair, but release obsolete census
+		// and graph evidence. Losing inputs are retained by the pending queue.
+		x.fast, x.local, x.classic, x.selected = nil, nil, nil, nil
+		x.values, x.graphs, x.nodeReports = nil, nil, nil
+		x.classicValues, x.payloadRelayed, x.reports = nil, nil, nil
+		x.knowledge = nil
 	}
 	if s.executed >= s.high {
 		delete(c.gaps, k)
