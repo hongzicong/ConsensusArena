@@ -1,11 +1,21 @@
 package swift
 
 import (
+	"sync/atomic"
+
 	"github.com/hongzicong/ConsensusArena/client"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
+
+// Process-lifetime counts include bootstrap, warmup and drain. The receiver
+// owns transitions; atomic snapshots permit Close to run on the workload thread.
+type clientCompletionStats struct {
+	fast      atomic.Uint64
+	corrected atomic.Uint64
+	slow      atomic.Uint64
+}
 
 type Client struct {
 	client.StandardClient
@@ -26,7 +36,8 @@ type Client struct {
 	slowPaths   int
 	alreadySlow map[defs.RequestID]struct{}
 
-	cs CommunicationSupply
+	cs              CommunicationSupply
+	completionStats clientCompletionStats
 }
 
 func NewClient(b *client.BufferClient, repNum int) *Client {
@@ -88,19 +99,18 @@ func (c *Client) initMsgSets(cmdId defs.RequestID) {
 			c.alreadySlow[fastAck.CmdId] = struct{}{}
 		}
 
-		hashEq := SHashesEq(leaderFastAck.Checksum, fastAck.Checksum)
-		if !hashEq {
-			return false
-		}
-
-		return fastAck.Checksum == nil || hashEq
+		// A SlowAck is encoded with a nil checksum: the follower has adopted
+		// the leader's ordering. It can replace that follower's FastAck in a
+		// corrected fast quorum without matching the original path checksum.
+		return fastAck.Checksum == nil ||
+			SHashesEq(leaderFastAck.Checksum, fastAck.Checksum)
 	}
 
 	if initSlow {
-		c.slowPathH[cmdId] = c.slowPathH[cmdId].ReinitMsgSet(c.SQ, accept, func(interface{}) {}, c.handleFastAndSlowAcks)
+		c.slowPathH[cmdId] = c.slowPathH[cmdId].ReinitMsgSet(c.SQ, accept, func(interface{}) {}, c.completionHandler(false))
 	}
 	if initFast {
-		c.fastPathH[cmdId] = c.fastPathH[cmdId].ReinitMsgSet(c.FQ, accept, func(interface{}) {}, c.handleFastAndSlowAcks)
+		c.fastPathH[cmdId] = c.fastPathH[cmdId].ReinitMsgSet(c.FQ, accept, func(interface{}) {}, c.completionHandler(true))
 	}
 }
 
@@ -227,6 +237,35 @@ func (c *Client) handleLightSlowAck(ls *MLightSlowAck) {
 	}
 }
 
+func (c *Client) completionHandler(fast bool) MsgSetHandler {
+	return func(leader interface{}, msgs []interface{}) {
+		if leader == nil {
+			return
+		}
+		id := leader.(*MFastAck).CmdId
+		if _, exists := c.delivered[id]; exists {
+			return
+		}
+		if fast {
+			corrected := false
+			for _, msg := range msgs {
+				if msg.(*MFastAck).Checksum == nil {
+					corrected = true
+					break
+				}
+			}
+			if corrected {
+				c.completionStats.corrected.Add(1)
+			} else {
+				c.completionStats.fast.Add(1)
+			}
+		} else {
+			c.completionStats.slow.Add(1)
+		}
+		c.handleFastAndSlowAcks(leader, msgs)
+	}
+}
+
 func (c *Client) handleFastAndSlowAcks(leaderMsg interface{}, msgs []interface{}) {
 	if leaderMsg == nil {
 		return
@@ -285,3 +324,8 @@ func (c *Client) WaitReplies(_ int) {
 }
 
 func (c *Client) SendProposal(p defs.Propose) { c.SendDefaultProposal(p) }
+
+func (c *Client) Close() {
+	c.Printf("SWIFTPAXOS_CLIENT_STATS scope=process fast=%d corrected=%d slow=%d\n",
+		c.completionStats.fast.Load(), c.completionStats.corrected.Load(), c.completionStats.slow.Load())
+}

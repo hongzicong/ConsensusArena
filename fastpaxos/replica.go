@@ -22,16 +22,13 @@ type Replica struct {
 
 func New(alias string, rid int, addrs []string, exec bool, f int, conf *config.Config, l *dlog.Logger) *Replica {
 	r := &Replica{Replica: replica.New(alias, rid, f, addrs, false, exec, false, conf, l), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[defs.RequestID]*defs.GPropose), pendingReplies: make(map[defs.RequestID]replyJob)}
-	mask := uint64(0)
-	for _, member := range conf.Plan.FastQuorum {
-		mask |= 1 << member.Rank
+	if len(conf.Plan.FastQuorum) != 0 {
+		panic("Fast Paxos no longer accepts a fixed fast-voter set")
 	}
-	size := len(conf.Plan.FastQuorum)
-	if size != len(addrs)/2+1 {
-		panic("Fast Paxos needs its planned fixed majority")
+	if size := conf.Plan.FastQuorumSize; size != 0 && size != fastQuorumSize(len(addrs)) {
+		panic("Fast Paxos needs an unrestricted fast quorum larger than 3n/4")
 	}
-	fixed := true
-	r.engine = newCore(rid, len(addrs), mask, size, fixed)
+	r.engine = newCore(rid, len(addrs))
 	r.engine.execute = func(v record) state.Value {
 		if !r.Exec {
 			return state.NIL()

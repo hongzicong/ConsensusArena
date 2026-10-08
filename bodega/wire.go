@@ -17,8 +17,6 @@ const compactCommitFlag uint32 = 1 << 31
 
 const compactCommitSize = 33
 
-const wireVersion = 3
-
 type encoder struct{ b []byte }
 
 func (e *encoder) u8(v byte) { e.b = append(e.b, v) }
@@ -83,7 +81,6 @@ func (m *message) Marshal(w io.Writer) {
 		return
 	}
 	e := encoder{b: make([]byte, 4, 128)}
-	e.u8(wireVersion)
 	e.u8(byte(m.Kind))
 	e.u8(byte(m.From))
 	e.u64(m.Roster.Ballot)
@@ -261,9 +258,6 @@ func (m *message) Unmarshal(r io.Reader) error {
 		return err
 	}
 	d := decoder{b: b}
-	if d.u8() != wireVersion {
-		return fmt.Errorf("bodega: unsupported wire version")
-	}
 	*m = message{Kind: kind(d.u8()), From: int(d.u8())}
 	m.Roster.Ballot = d.u64()
 	m.ReadPrefix = d.u64()

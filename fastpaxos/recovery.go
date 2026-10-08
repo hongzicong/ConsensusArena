@@ -84,8 +84,8 @@ func (c *core) prepare(m message) {
 	}
 }
 
-// selectValue implements Figure 2, including the fixed-family O4 predicate.
-func selectValue(reports map[int]entry, voters uint64, fixed bool, mask uint64, fastSize, n int) (record, bool) {
+// selectValue implements Figure 2 for arbitrary cardinality-based fast quorums.
+func selectValue(reports map[int]entry, voters uint64, fastSize, n int) (record, bool) {
 	var top entry
 	found := false
 	for _, e := range reports {
@@ -117,8 +117,12 @@ func selectValue(reports map[int]entry, voters uint64, fixed bool, mask uint64, 
 	if top.Epoch > 0 {
 		panic("multiple classic values in one epoch")
 	}
+	// A value can have been fast-chosen only if its reports in Q, plus
+	// every voter outside Q, can cover a fast quorum. Q includes no-vote
+	// snapshot responders as well as responders with a slot acceptance.
+	minimum := fastSize + bits.OnesCount64(voters) - n
 	for id, v := range values {
-		if fixed && supports[id]&(voters&mask) == voters&mask || !fixed && bits.OnesCount64(supports[id]) >= fastSize+bits.OnesCount64(voters)-n {
+		if bits.OnesCount64(supports[id]) >= minimum {
 			return v, true
 		}
 	}
@@ -176,7 +180,7 @@ func (c *core) promisePage(m message) {
 	c.next = maxSlot + 1
 	c.retryCursor = c.start
 	for slot := c.start; slot <= maxSlot; slot++ {
-		v, _ := selectValue(bySlot[slot], voters, c.fixed, c.fastMask, c.fastSize, c.n)
+		v, _ := selectValue(bySlot[slot], voters, c.fastSize, c.n)
 		st := c.slot(slot)
 		st.Proposed = &entry{Slot: slot, Epoch: c.promise, Value: v}
 		st.Acks = 0

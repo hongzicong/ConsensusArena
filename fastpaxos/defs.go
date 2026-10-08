@@ -33,6 +33,9 @@ const fastWindow = 8192
 
 const failureTimeout = 3 * time.Second
 
+// A fast quorum is any set strictly larger than three quarters of membership.
+func fastQuorumSize(n int) int { return 3*n/4 + 1 }
+
 type record struct {
 	ID      defs.RequestID
 	Command state.Command

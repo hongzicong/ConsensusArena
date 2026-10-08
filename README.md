@@ -17,7 +17,7 @@ and [Egalitarian Paxos](https://github.com/otrack/epaxos) codebases.
 | SwiftPaxos | Geo-replicated protocol described in the NSDI '24 paper. |
 | Paxos | Classic leader-based Paxos. |
 | CURP | CURP with an independent N²Paxos-style all-to-all consensus extension. |
-| Fast Paxos | Fast Paxos with uncoordinated collision recovery. |
+| Fast Paxos | Any fast quorum of `floor(3n/4)+1` voters; majority classic recovery. |
 | EPaxos | Corrected EPaxos implementation. |
 | Bodega | Roster leases for local reads; crash-stop core prototype. |
 
@@ -186,7 +186,7 @@ required, and a crashed member can stop all-member log GC.
 `StableLeaderReads` counts leader-local completions; `UncommittedReadHolds` counts
 reads held behind uncommitted writes; `OutOfOrderReads` counts reads of committed
 slots before prefix execution. `PrepareEntries`/`PrepareNanos`, `Revokes`/
-`RevokeAcks`, and `CompactedSlots` expose recovery and GC costs. Wire version 3
+`RevokeAcks`, and `CompactedSlots` expose recovery and GC costs. The implementation
 retains the reserved AcceptNote kind but ignores its read evidence. All replicas
 must use this read policy together; mixing it with pre-commit readers is unsafe.
 Bodega establishes peer connections concurrently; roster installation restarts
@@ -401,8 +401,8 @@ After replacing their data with new 40-second measurements, including the
 `measurement_s` columns exported by the summarizer,
 render with
 `python report/plot_recovery.py --baselines-only` from the parent repository. The plotter does
-not relabel or truncate historical data. Existing XPaxos figures are not
-redrawn by this command. New plots show 0–40 seconds from workload start,
+not relabel or truncate historical data. Only baseline figures are redrawn
+by this command. New plots show 0–40 seconds from workload start,
 with the 0–5-second warmup shaded. This pre-crash interval supplies the recovery
 reference; it must pass the existing stability check before recovery can be claimed.
 
