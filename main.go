@@ -150,6 +150,7 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	cl := client.NewClientLog(server, c.MasterAddr, c.MasterPort, c.Fast, c.Leaderless, verbose, l)
 	workloadSeed := client.DeriveWorkloadSeed(int64(c.WorkloadSeed), c.Alias, i)
 	b := client.NewBufferClient(cl, c.CommandSize, c.Writes, c.KeyCount, c.ZipfSkew, workloadSeed)
+	b.SetKeyMapping(c.ShuffleKeys, int64(c.KeyMappingSeed))
 	if c.UniqueKeys {
 		aliases := make([]string, 0, len(c.ClientAddrs))
 		for alias := range c.ClientAddrs {

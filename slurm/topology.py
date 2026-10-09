@@ -61,11 +61,14 @@ def prepare(output, count=None, topology=None):
     output.mkdir(parents=True, exist_ok=True)
     # Deployment policies stay in each protocol's plan.go. This generates only
     # membership and latency inputs, never leader/quorum/responder choices.
-    template = (ROOT / 'workload.conf').read_text()
-    options = template.split('-- Master --', 1)[1].split('-- Proxy --', 1)[0].strip()
+    options = (ROOT / 'workload.conf').read_text().strip()
+    # Each topology has its own reproducible hotspot layout, shared across
+    # protocols, profiles, replica counts and all clients within that topology.
+    key_mapping_seed = layout['topology_id']
     workload = '-- Replicas --\n' + ''.join(f'{region} 0.0.0.{i+1}\n' for i, region in enumerate(replicas))
     workload += '\n-- Clients --\n' + ''.join(f'{region} 0.0.1.{i+1}\n' for i, region in enumerate(clients))
-    workload += '\n-- Master --\n' + options + '\n\n-- Proxy --\n---\n'
+    workload += '\n-- Master --\nm0 0.0.2.1\n\n' + options
+    workload += f'\n\nkeyMappingSeed: {key_mapping_seed}\n\n-- Proxy --\n---\n'
     write_text(output / 'workload.conf', workload)
     endpoints = [(f'0.0.0.{i+1}', region) for i, region in enumerate(replicas)]
     endpoints += [(f'0.0.1.{i+1}', region) for i, region in enumerate(clients)]
@@ -83,6 +86,7 @@ def prepare(output, count=None, topology=None):
                   latency_fetched_at_utc=provenance['fetched_at_utc'], region_count=35,
                   topology_sha256=hashlib.sha256((output/'latency.conf').read_bytes()).hexdigest(),
                   repetitions=1, experiment_design='three_topologies_one_run_each',
+                  key_mapping_seed=key_mapping_seed, key_mapping_seed_policy='topology_id',
                   fault_budget=len(replicas)//2, majority_size=len(replicas)//2+1, placement='protocol-plan.go')
     write_text(output / 'topology.json', json.dumps(layout, indent=2)+'\n')
     write_text(output / 'topology-metadata.txt', ''.join(f'{key}={json.dumps(value) if isinstance(value,list) else value}\n' for key,value in layout.items()))

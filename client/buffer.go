@@ -28,13 +28,15 @@ type BufferClient struct {
 
 	Reply chan *ReqReply
 
-	psize       int
-	writes      int
-	arrivalRate float64
-	keyCount    int
-	zipfSkew    float64
-	warmup      time.Duration
-	duration    time.Duration
+	psize          int
+	writes         int
+	arrivalRate    float64
+	keyCount       int
+	zipfSkew       float64
+	shuffleKeys    bool
+	keyMappingSeed int64
+	warmup         time.Duration
+	duration       time.Duration
 
 	rand          *rand.Rand
 	valueRand     *rand.Rand
@@ -58,17 +60,32 @@ var zipfCDFCache = struct {
 	values: make(map[zipfParameters][]float64),
 }
 
+type keyMappingParameters struct {
+	keyCount int
+	seed     int64
+}
+
+// Cached permutations are immutable and shared by clones in this process.
+var keyMappingCache = struct {
+	sync.Mutex
+	values map[keyMappingParameters][]int
+}{
+	values: make(map[keyMappingParameters][]int),
+}
+
 func NewBufferClient(c *Client, psize, writes, keyCount int, zipfSkew float64, workloadSeed int64) *BufferClient {
 	bc := &BufferClient{
 		Client: c,
 
 		Reply: make(chan *ReqReply, 1024),
 
-		psize:        psize,
-		writes:       writes,
-		keyCount:     keyCount,
-		zipfSkew:     zipfSkew,
-		workloadSeed: workloadSeed,
+		psize:          psize,
+		writes:         writes,
+		keyCount:       keyCount,
+		zipfSkew:       zipfSkew,
+		shuffleKeys:    true,
+		keyMappingSeed: 1,
+		workloadSeed:   workloadSeed,
 	}
 	bc.rand = rand.New(rand.NewSource(workloadSeed))
 	bc.valueRand = rand.New(rand.NewSource(mixWorkloadSeed(workloadSeed)))
@@ -99,6 +116,13 @@ func (c *BufferClient) PoissonArrivals(arrivalRate float64) {
 func (c *BufferClient) MeasureFor(warmup, duration time.Duration) {
 	c.warmup = warmup
 	c.duration = duration
+}
+
+// SetKeyMapping must be called before Loop. The seed is shared across clients,
+// unlike workloadSeed, which varies by alias and clone for independent sampling.
+func (c *BufferClient) SetKeyMapping(shuffle bool, seed int64) {
+	c.shuffleKeys = shuffle
+	c.keyMappingSeed = seed
 }
 
 // UniqueKeysFor keeps all requests, including bootstrap and warmup, distinct.
@@ -332,10 +356,33 @@ func (c *BufferClient) genGetKey() func() int64 {
 	}
 	cdf := sharedZipfCDF(c.keyCount, c.zipfSkew)
 	c.Printf("Zipfian key distribution: keyCount=%d skew=%v\n", c.keyCount, c.zipfSkew)
+	if c.shuffleKeys {
+		// Generate once before the workload clock starts, with a separate RNG.
+		// A bijection preserves all rank probabilities and same-key conflicts.
+		keys := sharedKeyMapping(c.keyCount, c.keyMappingSeed)
+		c.Printf("WORKLOAD_KEY_MAPPING mode=shuffled algorithm=rand-perm-v1 seed=%d keyCount=%d\n", c.keyMappingSeed, c.keyCount)
+		return func() int64 {
+			rank := sort.SearchFloat64s(cdf, c.rand.Float64())
+			return int64(keys[rank])
+		}
+	}
+	c.Printf("WORKLOAD_KEY_MAPPING mode=ordered keyCount=%d\n", c.keyCount)
 	getKey := func() int64 {
 		return int64(sort.SearchFloat64s(cdf, c.rand.Float64()))
 	}
 	return getKey
+}
+
+func sharedKeyMapping(keyCount int, seed int64) []int {
+	parameters := keyMappingParameters{keyCount: keyCount, seed: seed}
+	keyMappingCache.Lock()
+	defer keyMappingCache.Unlock()
+	if keys, exists := keyMappingCache.values[parameters]; exists {
+		return keys
+	}
+	keys := rand.New(rand.NewSource(seed)).Perm(keyCount)
+	keyMappingCache.values[parameters] = keys
+	return keys
 }
 
 func sharedZipfCDF(keyCount int, skew float64) []float64 {

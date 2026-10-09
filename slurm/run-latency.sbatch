@@ -392,6 +392,7 @@ run_scale() {
         printf 'ycsb_profile=%s\nread_ratio_percent=%s\nwrite_ratio_percent=%s\nrepetitions=%s\nworkload_seed=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \
             "$profile" "$read_ratio" "$write_ratio" "$repetitions" "$workload_seed" "$preload_enabled" \
             "$preload_records" "$preload_value_size" "$preload_seed" > "$profile_dir/metadata.txt"
+        cat "$run_dir/config/logical/topology-metadata.txt" >> "$profile_dir/metadata.txt"
 
         for repetition in $(seq 1 "$repetitions"); do
             run_repetition "$profile_dir" "$repetition" "$profile" "$write_ratio"
