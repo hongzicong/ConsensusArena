@@ -7,8 +7,10 @@
 #SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=1G
-#SBATCH --time=01:00:00
-#SBATCH --output=slurm-%j.out
+#SBATCH --exclusive
+#SBATCH --array=0-26
+#SBATCH --time=02:00:00
+#SBATCH --output=slurm-%A_%a.out
 
 set -euo pipefail
 export LC_ALL=C
@@ -16,6 +18,9 @@ export LC_ALL=C
 repo_root=${CONSENSUSARENA_ROOT:-${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR is not set}}
 repo_root=$(cd "$repo_root" && pwd)
 script_dir="$repo_root/slurm"
+if [[ -n "${SLURM_ARRAY_TASK_ID:-}" && "${CONSENSUSARENA_SCENE_WORKER:-0}" != 1 ]]; then
+    exec "${CONSENSUSARENA_PYTHON:-python3}" "$script_dir/benchmark-suite.py" task latency "$repo_root"
+fi
 replica_counts_spec=${CONSENSUSARENA_REPLICAS:-5:9:13}
 if [[ ! "$replica_counts_spec" =~ ^(5|9|13)(:(5|9|13))*$ ]]; then
     echo "Invalid replica sizes: $replica_counts_spec (expected 5, 9, or 13 separated by colons)" >&2

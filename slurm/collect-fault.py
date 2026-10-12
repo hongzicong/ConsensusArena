@@ -5,8 +5,8 @@ from pathlib import Path
 import sys
 import tarfile
 
-def main(job):
-    source=Path('/scratch')/os.environ['USER']/('consensusarena-fault-'+job)
+def main(job, source=None):
+    source=Path(source) if source else Path(os.environ.get('SCRATCH','/scratch/'+os.environ['USER']))/('consensusarena-fault-'+job)
     output=Path.home()/'ConsensusArena/fault-results'/job
     output.mkdir(parents=True,exist_ok=True)
     # Source and binary are frozen separately; keep all experiment data/logs.
@@ -29,4 +29,4 @@ def main(job):
             if p.suffix in ('.csv','.json','.jsonl','.conf','.txt') or p.name=='start-unix-ns' or p.name.startswith('expected-crash-'): tar.add(p,arcname=rel.as_posix())
     print(json.dumps(dict(job=job,portable=str(portable),raw=str(archive))))
 
-if __name__=='__main__': main(sys.argv[1])
+if __name__=='__main__': main(sys.argv[1],sys.argv[2] if len(sys.argv)>2 else None)
