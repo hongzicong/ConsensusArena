@@ -13,7 +13,7 @@ proxy_port_base=$((20000 + rank * 16))
 dial_map="$run_dir/config/dial-map-$rank.txt"
 pid_file="$run_dir/status/toxiproxy-$rank.pid"
 proxy_snapshot="$run_dir/config/toxiproxy-$rank.json"
-latency_jitter_ms=${CONSENSUSARENA_LATENCY_JITTER_MS:-10}
+latency_jitter_ms=${CONSENSUSARENA_LATENCY_JITTER_MS:-0}
 bandwidth_kbps=${CONSENSUSARENA_BANDWIDTH_KBPS:-125000}
 
 [[ "$latency_jitter_ms" =~ ^[0-9]+$ ]] || {
