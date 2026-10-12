@@ -7,6 +7,7 @@ type DeploymentPlan struct {
 	Model           string            `json:"model"`
 	Leader          *PlannedReplica   `json:"leader"`
 	FastQuorum      []PlannedReplica  `json:"fast_quorum"`
+	FastQuorumSize  int               `json:"fast_quorum_size,omitempty"`
 	ClientRoutes    map[string]string `json:"client_routes,omitempty"`
 	Responders      []string          `json:"responders,omitempty"`
 	ResponderRanges string            `json:"responder_ranges,omitempty"`

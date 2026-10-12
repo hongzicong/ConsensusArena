@@ -117,11 +117,14 @@ type Config struct {
 	// Give every request a new key from its client's disjoint preloaded range.
 	UniqueKeys bool
 	// exponent of the Zipfian key-access distribution
-	ZipfSkew     float64
-	Preload      bool
-	PreloadSeed  int
-	WorkloadSeed int
-	Pipeline     bool
+	ZipfSkew float64
+	// Scatter Zipf ranks over key IDs using one mapping shared by all clients.
+	ShuffleKeys    bool
+	KeyMappingSeed int
+	Preload        bool
+	PreloadSeed    int
+	WorkloadSeed   int
+	Pipeline       bool
 	// when pipelining the frequency of syncs
 	Syncs int
 	// when pipelining the maximal number of pending commands
@@ -133,16 +136,18 @@ func Read(filename, alias string) (*Config, error) {
 	defaultPort := 7070
 
 	c := &Config{
-		ClientAddrs:  make(map[string]string),
-		ReplicaAddrs: make(map[string]string),
-		Alias:        alias,
-		Port:         defaultPort,
-		ArrivalRate:  5,
-		KeyCount:     1_000_000,
-		ZipfSkew:     0.9,
-		PreloadSeed:  1,
-		WorkloadSeed: 1,
-		Repetitions:  1,
+		ClientAddrs:    make(map[string]string),
+		ReplicaAddrs:   make(map[string]string),
+		Alias:          alias,
+		Port:           defaultPort,
+		ArrivalRate:    5,
+		KeyCount:       1_000_000,
+		ZipfSkew:       0.9,
+		ShuffleKeys:    true,
+		KeyMappingSeed: 1,
+		PreloadSeed:    1,
+		WorkloadSeed:   1,
+		Repetitions:    1,
 	}
 
 	f, err := os.Open(filename)
@@ -304,6 +309,12 @@ func Read(filename, alias string) (*Config, error) {
 			case "zipfskew":
 				c.ZipfSkew, err = expectFloat(words)
 				ok = true
+			case "shufflekeys":
+				c.ShuffleKeys, err = expectBool(words)
+				ok = true
+			case "keymappingseed":
+				c.KeyMappingSeed, err = expectInt(words)
+				ok = true
 			case "preload":
 				c.Preload, err = expectBool(words)
 				ok = true
@@ -377,6 +388,9 @@ func Read(filename, alias string) (*Config, error) {
 	}
 	if c.WorkloadSeed < 0 {
 		return c, Err("workloadSeed", "must be non-negative")
+	}
+	if c.KeyMappingSeed < 0 {
+		return c, Err("keyMappingSeed", "must be non-negative")
 	}
 
 	return c, nil

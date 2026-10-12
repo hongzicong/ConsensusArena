@@ -29,7 +29,7 @@ func (r *Replica) run() {
 			r.flushReplies()
 			if t-lastStats >= 5*time.Second {
 				e := r.engine
-				r.Printf("FASTPAXOS_PROGRESS replica=%d epoch=%d coordinator=%d preparing=%t active=%t high=%d executed=%d pending=%d fast=%d classic=%d elections=%d repaired=%d window_fallbacks=%d age_fallbacks=%d", r.Id, e.promise, e.owner(), e.preparing, e.active, e.high, e.executed, len(e.pending), e.fastCommits, e.classicCommits, e.elections, e.repaired, e.windowFallbacks, e.ageFallbacks)
+				r.Printf("FASTPAXOS_PROGRESS replica=%d epoch=%d coordinator=%d preparing=%t active=%t fast_quorum=%d fast_voters=%d high=%d executed=%d pending=%d fast=%d classic=%d elections=%d repaired=%d window_fallbacks=%d age_fallbacks=%d", r.Id, e.promise, e.owner(), e.preparing, e.active, e.fastSize, e.n, e.high, e.executed, len(e.pending), e.fastCommits, e.classicCommits, e.elections, e.repaired, e.windowFallbacks, e.ageFallbacks)
 				lastStats = t
 			}
 		}

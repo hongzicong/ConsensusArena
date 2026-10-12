@@ -1,44 +1,38 @@
 package fastpaxos
 
 import (
+	"math"
+
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/placement"
-	"math"
 )
 
-// PlanDeployment preserves this implementation's fixed fast set of f+1 voters.
+// PlanDeployment enables every acceptor. The fast quorum is a cardinality
+// threshold, not a topology-selected fixed voter set.
 func PlanDeployment(_ *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
-	p := config.DeploymentPlan{Model: "fixed-fast-set", ClientRoutes: t.NearestRoutes()}
-	key := ""
 	n := len(t.Replicas)
-	placement.Subsets(n, n/2+1, func(q []int) {
-		fast, slow := make([]float64, len(t.Clients)), make([]float64, len(t.Clients))
-		for c := range fast {
-			first := make([]float64, n)
-			fast[c] = math.Inf(1)
-			slow[c] = math.Inf(1)
-			for j := range first {
-				first[j] = t.To[c][j]
-				for _, r := range q {
-					first[j] = placement.Max(first[j], t.To[c][r]+t.D[r][j])
-				}
-				fast[c] = placement.Min(fast[c], first[j]+t.Back[c][j])
+	q := fastQuorumSize(n)
+	p := config.DeploymentPlan{
+		Model:          "any-three-quarter-fast-quorum",
+		FastQuorumSize: q,
+		ClientRoutes:   t.NearestRoutes(),
+	}
+	fast := make([]float64, len(t.Clients))
+	for c := range fast {
+		fast[c] = math.Inf(1)
+		for learner := 0; learner < n; learner++ {
+			votes := make([]float64, n)
+			for voter := range votes {
+				votes[voter] = t.To[c][voter] + t.D[voter][learner]
 			}
-			for j := range first {
-				second := t.To[c][j]
-				for _, r := range q {
-					second = placement.Max(second, first[r]+t.D[r][j])
-				}
-				slow[c] = placement.Min(slow[c], second+t.Back[c][j])
-			}
+			// Learning can precede this learner's own payload delivery. The
+			// executed result requires both, plus the final client reply hop.
+			ready := placement.Max(t.To[c][learner], placement.Kth(votes, q-1))
+			fast[c] = placement.Min(fast[c], ready+t.Back[c][learner])
 		}
-		fm, sm, k := t.Mean(fast), t.Mean(slow), t.Key(-1, q)
-		if t.Better(fm, sm, k, p, key) {
-			p.FastQuorum = t.Members(q)
-			p.FastMean = fm
-			p.SlowMean = sm
-			key = k
-		}
-	})
+	}
+	p.FastMean = t.Mean(fast)
+	// No fixed collision-round estimate: fallback uses a selected classic
+	// coordinator and Prepare, whose timing depends on detection and evidence.
 	return p, nil
 }

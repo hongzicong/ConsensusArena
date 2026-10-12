@@ -1,6 +1,6 @@
 package kcensus
 
-// Version 11 uses one RPC code for ordinary FIFO delivery.
+// One RPC code is used for ordinary FIFO delivery.
 // Heartbeats match local probes (High nonce, Explicit reply).
 // Batch bodies contain single UIDs, never commands.
 import (
@@ -14,7 +14,6 @@ import (
 )
 
 const maxFrame = 16 << 20
-const wireVersion = 11
 
 type wireMessage struct{ message }
 
@@ -23,7 +22,7 @@ func (w *wireMessage) BindClient(connection *rpc.ClientConnection) {
 	w.ClientConnection = connection
 }
 
-// Append scalar fields directly, preserving version 11's little-endian layout.
+// Append scalar fields directly in little-endian order.
 // binary.Write allocates a temporary byte slice for every scalar field.
 func put(w *[]byte, v interface{}) {
 	switch x := v.(type) {
@@ -92,7 +91,6 @@ func writeValue(w *[]byte, v *Value, references bool) {
 }
 func (w *wireMessage) Marshal(out io.Writer) {
 	b := make([]byte, 4, 192)
-	put(&b, uint8(wireVersion))
 	put(&b, w.Kind)
 	put(&b, uint8(w.From))
 	put(&b, uint8(w.Proposer))
@@ -286,9 +284,8 @@ func (w *wireMessage) Unmarshal(in io.Reader) error {
 		}
 		return v
 	}
-	var ver, from, proposer uint8
+	var from, proposer uint8
 	var key int64
-	get(&ver)
 	get(&w.Kind)
 	get(&from)
 	get(&proposer)
@@ -367,7 +364,7 @@ func (w *wireMessage) Unmarshal(in io.Reader) error {
 	if err != nil {
 		return err
 	}
-	if ver != wireVersion || w.Kind < spread || w.Kind > resultQuery || len(data) != 0 {
+	if w.Kind < spread || w.Kind > resultQuery || len(data) != 0 {
 		return fmt.Errorf("invalid KCensus frame")
 	}
 	return nil

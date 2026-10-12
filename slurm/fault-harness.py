@@ -212,7 +212,8 @@ def run_one(repo, base, config_dir, protocol, profile, repetition, binary, toxi,
     write_json(run/'plan.json',selection)
     topology=json.loads((base/'logical/topology.json').read_text())
     write_json(run/'topology.json',topology)
-    write_json(run/'metadata.json',dict(topology_id=TOPOLOGY_ID, topology_sha256=topology['topology_sha256'], latency_snapshot_sha256=topology['latency_snapshot_sha256'], experiment_design='three_topologies_one_run_each', protocol=protocol,profile=profile,repetition=repetition,replicas=REPLICA_COUNT,binary_sha256=sha(binary),options=options,timeline_origin='run_start',warmup_s=WARMUP_S,observation_s=OBSERVATION_S,measurement_s=MEASUREMENT_S,crash_s=FIRST_CRASH_S,max_crash_s=MAX_CRASH_S,protocol_selection=selection))
+    key_mapping_seed=int(options.get('keyMappingSeed',topology['key_mapping_seed']))
+    write_json(run/'metadata.json',dict(topology_id=TOPOLOGY_ID, key_mapping_seed=key_mapping_seed, topology_sha256=topology['topology_sha256'], latency_snapshot_sha256=topology['latency_snapshot_sha256'], experiment_design='three_topologies_one_run_each', protocol=protocol,profile=profile,repetition=repetition,replicas=REPLICA_COUNT,binary_sha256=sha(binary),options=options,timeline_origin='run_start',warmup_s=WARMUP_S,observation_s=OBSERVATION_S,measurement_s=MEASUREMENT_S,crash_s=FIRST_CRASH_S,max_crash_s=MAX_CRASH_S,protocol_selection=selection))
     args = step_args() + ['--kill-on-bad-exit=1',
             'python3',str(repo/'slurm/fault-harness.py'),'rank',str(repo),str(run),str(binary),str(toxi)]
     with open(run/'stdout/srun.out','w') as out: runner = subprocess.Popen(args,stdout=out,stderr=subprocess.STDOUT)

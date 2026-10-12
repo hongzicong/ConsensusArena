@@ -11,19 +11,18 @@ import (
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
-// Versioned bounded frames. Fast votes carry IDs; classic messages carry data.
+// Bounded frames. Fast votes carry IDs; classic messages carry data.
 type wireMessage struct{ message }
 
 func (*wireMessage) New() fastrpc.Serializable { return &wireMessage{} }
 
 func (m *wireMessage) Marshal(w io.Writer) {
-	var h [31]byte
-	h[0] = 1
-	h[1] = m.Kind
-	h[2] = byte(m.From)
-	binary.LittleEndian.PutUint64(h[3:11], m.Epoch)
+	var h [30]byte
+	h[0] = m.Kind
+	h[1] = byte(m.From)
+	binary.LittleEndian.PutUint64(h[2:10], m.Epoch)
 	for i, v := range []int{m.Start, m.High, m.Page, m.Pages, len(m.Entries)} {
-		binary.LittleEndian.PutUint32(h[11+4*i:15+4*i], uint32(int32(v)))
+		binary.LittleEndian.PutUint32(h[10+4*i:14+4*i], uint32(int32(v)))
 	}
 	w.Write(h[:])
 	for _, e := range m.Entries {
@@ -55,21 +54,21 @@ func (m *wireMessage) Marshal(w io.Writer) {
 }
 
 func (m *wireMessage) Unmarshal(r io.Reader) error {
-	var h [31]byte
+	var h [30]byte
 	if _, err := io.ReadFull(r, h[:]); err != nil {
 		return err
 	}
-	if h[0] != 1 || h[1] > msgRecover {
+	if h[0] > msgRecover {
 		return fmt.Errorf("unsupported FastPaxos frame")
 	}
-	m.Kind = h[1]
-	m.From = int(h[2])
-	m.Epoch = binary.LittleEndian.Uint64(h[3:11])
+	m.Kind = h[0]
+	m.From = int(h[1])
+	m.Epoch = binary.LittleEndian.Uint64(h[2:10])
 	fields := []*int{&m.Start, &m.High, &m.Page, &m.Pages}
 	for i, p := range fields {
-		*p = int(int32(binary.LittleEndian.Uint32(h[11+4*i : 15+4*i])))
+		*p = int(int32(binary.LittleEndian.Uint32(h[10+4*i : 14+4*i])))
 	}
-	n := binary.LittleEndian.Uint32(h[27:31])
+	n := binary.LittleEndian.Uint32(h[26:30])
 	if n > pageSize {
 		return fmt.Errorf("oversized FastPaxos batch")
 	}

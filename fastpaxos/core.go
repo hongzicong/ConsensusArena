@@ -17,7 +17,8 @@ type slotState struct {
 	Accepted *entry
 	Proposed *entry // coordinator plan; not a vote until Accept is processed
 	Chosen   *entry
-	Votes    map[uint64]map[int]entry
+	Votes    map[int]entry
+	MaxVotes int
 	Acks     replicaset.Set
 	Local    *defs.RequestID
 	Deferred *entry
@@ -36,8 +37,6 @@ type pendingCommand struct {
 
 type core struct {
 	id, n, fastSize                                    int
-	fastMask                                           uint64
-	fixed                                              bool
 	promise                                            uint64
 	active, preparing                                  bool
 	start, high, next, executed                        int
@@ -62,14 +61,11 @@ type core struct {
 	elections, fastCommits, classicCommits, repaired   uint64
 }
 
-func newCore(id, n int, mask uint64, size int, fixed bool) *core {
-	if n < 3 || n > 63 || n%2 == 0 || id < 0 || id >= n || size <= n/2 || size > n {
+func newCore(id, n int) *core {
+	if n < 3 || n > 63 || n%2 == 0 || id < 0 || id >= n {
 		panic("invalid FastPaxos membership/quorum")
 	}
-	if fixed && bits.OnesCount64(mask) != size || !fixed && size <= 3*n/4 {
-		panic("invalid FastPaxos fast quorum")
-	}
-	return &core{id: id, n: n, fastMask: mask, fastSize: size, fixed: fixed,
+	return &core{id: id, n: n, fastSize: fastQuorumSize(n),
 		high: -1, executed: -1, slots: make(map[int]*slotState), known: make(map[defs.RequestID]record),
 		pending: make(map[defs.RequestID]*list.Element), results: make(map[defs.RequestID]state.Value), assigned: make(map[defs.RequestID]bool), heard: make([]time.Duration, n)}
 }
@@ -82,7 +78,7 @@ func (c *core) slot(s int) *slotState {
 		c.high = s
 	}
 	if c.slots[s] == nil {
-		c.slots[s] = &slotState{Votes: make(map[uint64]map[int]entry)}
+		c.slots[s] = &slotState{Votes: make(map[int]entry)}
 	}
 	return c.slots[s]
 }
@@ -159,17 +155,15 @@ func (c *core) proposeFast(v record) {
 	st := c.slot(s)
 	id := v.ID
 	st.Local = &id
-	if c.fastMask&(1<<c.id) != 0 {
-		c.vote(entry{Slot: s, Round: 1, Value: v, Payload: true})
-	}
+	c.vote(entry{Slot: s, Round: 1, Value: v, Payload: true})
 }
 
 func (c *core) vote(e entry) {
-	if c.promise != 0 || c.fastMask&(1<<c.id) == 0 {
+	if c.promise != 0 {
 		return
 	}
 	s := c.slot(e.Slot)
-	if s.Accepted != nil && !newer(e, *s.Accepted) {
+	if s.Accepted != nil {
 		return
 	}
 	if !e.Value.Noop {
@@ -245,43 +239,34 @@ func (c *core) step(m message) {
 			return
 		}
 		for _, e := range m.Entries {
-			if e.Epoch != 0 || e.Round == 0 || c.fastMask&(1<<m.From) == 0 {
+			if e.Epoch != 0 || e.Round != 1 || e.Value.Noop {
 				continue
 			}
 			s := c.slot(e.Slot)
 			if s.Chosen != nil {
 				continue
 			}
-			if s.Votes[e.Round] == nil {
-				s.Votes[e.Round] = make(map[int]entry)
-			}
-			vs := s.Votes[e.Round]
+			vs := s.Votes
 			if _, ok := vs[m.From]; ok {
 				continue
 			}
 			vs[m.From] = e
-			if len(vs) < c.fastSize {
-				continue
-			}
-			same := true
-			maxID := -1
-			var v entry
-			for id, x := range vs {
-				if !sameValue(x.Value, e.Value) {
-					same = false
-				}
-				if id > maxID {
-					maxID = id
-					v = x
+			support := 0
+			for _, x := range vs {
+				if sameValue(x.Value, e.Value) {
+					support++
 				}
 			}
-			if same {
+			if support > s.MaxVotes {
+				s.MaxVotes = support
+			}
+			if support >= c.fastSize {
 				c.fastCommits++
 				c.learn(e)
-			} else if c.fixed {
-				v.Round++
-				c.vote(v)
-			} else {
+			} else if s.MaxVotes+c.n-len(vs) < c.fastSize {
+				// Even assigning all unseen votes to the leading value cannot
+				// form a fast quorum. Preserve votes for classic Prepare recovery;
+				// unrestricted fast voters must not use the old fixed-set revote.
 				c.stalled = true
 			}
 		}
@@ -445,7 +430,7 @@ func (c *core) tick(now time.Duration) {
 			c.ageFallbacks++
 		}
 	}
-	fastLive := bits.OnesCount64(alive&c.fastMask) >= c.fastSize
+	fastLive := bits.OnesCount64(alive) >= c.fastSize
 	need := c.promise == 0 && (!fastLive || c.stalled || (len(c.pending) > 0 || c.high > c.executed) && now-c.lastProgress > failureTimeout)
 	if c.promise > 0 && alive&(1<<c.owner()) == 0 {
 		need = true
