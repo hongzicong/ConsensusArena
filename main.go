@@ -141,7 +141,9 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	server = c.ReplicaAddrs[server]
 	cl := client.NewClientLog(server, c.MasterAddr, c.MasterPort, c.Fast, c.Leaderless, verbose, l)
 	b := client.NewBufferClient(cl, c.Reqs, c.CommandSize, c.Conflicts, c.Writes, int64(c.Key))
-	if c.Pipeline {
+	if c.Benchmark {
+		b.ConfigureBenchmark(c, i)
+	} else if c.Pipeline {
 		b.Pipeline(c.Syncs, int32(c.Pendings))
 	}
 	if err := b.Connect(); err != nil {

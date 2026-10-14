@@ -4,11 +4,13 @@
   "comparison_kind": "upstream-source-style baseline with platform adapters",
   "modified_upstream_files": [
     "README.md",
-    "main.go",
-    "run.go",
+    "client/buffer.go",
     "client/client.go",
+    "config/config.go",
+    "main.go",
+    "replica/quorum.go",
     "replica/replica.go",
-    "replica/quorum.go"
+    "run.go"
   ],
   "original_sha256_lf": {
     "LICENSE": "87c1644012a947c03ccb20283ff27df417288236a77f956fe628dc806a39db70",
@@ -77,6 +79,18 @@
     "topology.py": "f3c21e86d46abe19857335bbd48b1daab2737c86dcd36781767da9633893f42d",
     "topology.sh": "40a8238d7a208315102c939300a2f15cd34b43640760c073ee237c7a83df3241"
   },
-  "workload_kind": "upstream-request-count",
-  "fault_support": false
+  "workload_kind": "matched-master-poisson-zipf (default); upstream-request-count (opt-in)",
+  "fault_support": false,
+  "benchmark_reference_commit": "34cb7b872ab6c8b8b4ede80d86e00398f4d7e345",
+  "benchmark_reference_sha256_lf": {
+    "client/buffer.go": "c7f9cbda47c4e2b5e45b28b21c26d598611e8d05e8aa1fa4aaba6507543843d3",
+    "state/state.go": "86d6dec5d016aae256c1a862d334f21915042c13f438818f86bd6fff7f34ac8e",
+    "swift/plan.go": "76535d02cc44ea35ae41cc118b2f8f1c12a226f73ff64d1c3d15c66327e33d32",
+    "paxos/plan.go": "46803f4b738a2e2a6b6ccd71309f68ce1cfd66bfb099216f8a9a3b3dc7fec887",
+    "curp/plan.go": "f045a70246e3967d47da962cb455df5a9514735d691d8255ee624c0181a36e1f",
+    "fastpaxos/plan.go": "4df030513103fecc62284c3fb0044e18b19578364cd0e9f8cd8889cabf2f252c",
+    "epaxos/plan.go": "c02c2ab10b3783223bbdc8f763ae80b94a5cabb7275ffad7a1ff3b2a06180ffb",
+    "placement/topology.go": "20ae135d3075d13f384cbf47ff594128b5ba780547a263ac3760e89000fc46f8",
+    "slurm/workload.conf": "1728ecd6e89ce5a9549076be6b542587d6afaf4a2b61557ce38f4c934a09d665"
+  }
 }

@@ -1,89 +1,87 @@
-# SwiftPaxos upstream source-style Slurm baseline
+# SwiftPaxos source-style Slurm benchmark
 
-Branch: `codex/swiftpaxos-slurm` in the ConsensusArena Git repository.
-Source: `imdea-software/swiftpaxos` at
+Branch: `codex/swiftpaxos-slurm`.
+Protocol source: `imdea-software/swiftpaxos` at
 `35c69365f1c7737a08e237bfbaf828ee68897080`.
-The upstream Go module name, `main.go`/`run.go` protocol switches, protocol
-packages, wire messages, state-machine semantics, and event loops are retained.
-`upstream-provenance.json` records the upstream source and shared experiment assets.
+Matched benchmark reference: modular ConsensusArena `master` at
+`34cb7b872ab6c8b8b4ede80d86e00398f4d7e345`.
+`upstream-provenance.json` pins both sources and hashes the reference inputs.
 
 ## 1. Implementation scope
 
-This branch adds Linux cross-build, immutable artifact hashes, serial Slurm
-latency scenes, the frozen ConsensusArena topology/CloudPing inputs, Toxiproxy
-TCP shaping, original-client result validation, and process resource records.
-All six original protocols compile; the initial network validation targets
-SwiftPaxos. Bodega and KCensus are absent, matching upstream.
+The original Go module, `main.go`/`run.go` protocol switches, six protocol
+packages, native wire messages, and event loops are retained. No protocol
+registry, `protocol.Machine`, skeleton generator, or modular protocol split is
+imported. Shared platform adapters provide Linux builds, Slurm deployment,
+Toxiproxy routing, preload, and benchmark sampling/collection.
 
-The complete scene selection is 5/9/13 replicas, A/B/C, three topologies, and
-one run per topology. Subsets are supported for smoke tests. Allocations use
-three exclusive nodes, 24 tasks, eight CPUs/task, 1 GiB/CPU, `standard` partition,
-`parallel` QOS, `dcl` account, and a two-hour limit. Like the current latency
-harness, individual scenes use the first two allocated nodes for five replicas
-and three for nine/thirteen, with fresh processes for each scene.
+**Matched mode is now the Slurm default.** The common workload, initial data,
+measurement clocks, and startup roles match the pinned master. Native mode is
+an explicit upstream reference; the two modes must not be mixed in aggregates.
 
-This is an **upstream request-count workload baseline**. The original client
-uses one unmeasured bootstrap request, then `UPSTREAM_REQUESTS` measured requests
-per client. It keeps upstream random seeding, conflict-key selection, reply
-handling, payload reuse, and pipeline scheduling. A/B/C set upstream's `writes`
-knob to 50/5/0; the realized sampler remains upstream-defined. There is no
-Poisson arrival rate, Zipf workload, deterministic preload, five-second warmup,
-or fixed-duration recovery experiment. `operation=ALL` is the available latency
-classification because upstream logs do not label READ/UPDATE per sample.
-Results must not be merged into matched-workload ConsensusArena promotion data.
-
-## 2. Mapping to upstream behavior
-
-| Adaptation | Files and boundary |
+| Setting | Matched default |
 | --- | --- |
-| Load an optional outgoing endpoint map; reject double delay injection | `main.go`, new `replica/defs/network.go` |
-| Dial Toxiproxy while keeping advertised addresses and voter identities | `client/client.go`, `replica/replica.go` |
-| Release peer dials only after every data listener is present, because a proxy can accept before its upstream target | `replica/replica.go`, `replica/defs/network.go`, `slurm/listener-ready.py` |
-| Register a replica's host and port separately when configuration uses endpoints | `run.go` |
-| Resolve configured quorum aliases by endpoint, distinguishing co-located replicas; preserve bare-host compatibility | `replica/quorum.go` |
-| Generate original deployment/quorum/proxy files | `slurm/upstream_harness.py` |
-| Start participants and collect original logs | `slurm/node-runner.sh`, `slurm/benchmark-suite.py` |
+| Scenes | 5/9/13 replicas × A/B/C × three topologies; serial, fresh processes |
+| Clients | 10, no clones |
+| Arrivals | Open-loop Poisson, 2,000 requests/s/client |
+| Keys | 1,000,000; Zipf skew 0.9; shared shuffled mapping seeded by topology ID |
+| Request seed | Base 1, derived from alias and clone exactly as master |
+| Writes | A/B/C: 50%/5%/0%; same `< prob` sampler as master |
+| UPDATE values | 1,000 bytes; fresh value/version per update; separate RNG |
+| Preload | All keys, 1,000 bytes/value, seed 1; every replica digest verified |
+| Timing | Unmeasured bootstrap, 5s warmup, 10s measured generation, drain replies |
+| Latency | Send timestamp to observed completion; warmup excluded; READ/UPDATE/ALL |
+| Network | Same frozen CloudPing 1Y/P50, catalog, directed Toxiproxy shaping |
+| Roles | Same per-protocol leader/quorum/nearest-ingress policy and tie breaks |
 
-The six protocol packages are byte-identical to the pin after LF normalization.
-No `protocol.Machine`, protocol registry, per-protocol module split, or skeleton
-generator from modular ConsensusArena is imported. Registration-order replica
-IDs are retained and resolved through actual advertised endpoints; rank is not
-treated as a voter ID.
+The standard allocation is three exclusive CPU nodes, 24 tasks, eight tasks/node,
+eight CPUs/task, 1 GiB/CPU, `standard` partition, `parallel` QOS, account `dcl`,
+and two hours. Five-replica scenes use two nodes; nine/thirteen use three.
+The one-node `smoke` allocation is diagnostic only: 16 tasks, one CPU/task,
+10,000 keys and 50 requests/s/client by default, with the same 5s/10s clocks.
+Its results always carry `diagnostic_only=true`.
 
-The external config generator chooses the first catalog replica as initial
-leader and the first majority as the configured SwiftPaxos fast quorum. This
-uses upstream's fixed-majority configuration, including the leader. Client
-ingress is selected by the frozen RTT matrix. All choices are recorded in
-metadata; current ConsensusArena placement policy can differ, so placement
-must also be aligned before a pure architecture-overhead comparison.
+## 2. Mapping to source and master
 
-Wiki grounding inspected for the adaptation boundary:
-`ConsensusWiki/wiki/protocols/SwiftPaxos.md` (roles, fast path), and
-`ConsensusWiki/wiki/papers/SwiftPaxos-2024.md` (quorum system, artifact mapping).
-These confirm that fixed-majority fast quorums are an existing configuration;
-this branch proposes no new protocol or safety claim.
+| Adapter | Files and boundary |
+| --- | --- |
+| Optional outgoing dial map and listener barrier | `main.go`, `client/client.go`, `replica/replica.go`, `replica/defs/network.go` |
+| Original switches enable the matched client | `main.go`, `config/config.go`, `client/buffer.go` |
+| Master sampling and clock functions, copied without behavior changes | `client/benchmark.go` |
+| Deterministic genesis dataset before protocol startup | `state/preload.go`, `replica/replica.go` |
+| External master-equivalent startup policies; original quorum config format | `slurm/master_placement.py`, `slurm/upstream_harness.py` |
+| Replica host/port registration and endpoint-based quorum lookup | `run.go`, `replica/quorum.go` |
+| Process lifecycle, raw evidence and resource observation | `slurm/node-runner.sh`, `slurm/upstream_harness.py` |
 
-## 3. Runtime and operating workflow
+SwiftPaxos receives master's selected leader and leader-including fixed majority.
+Paxos and CURP receive master's selected initial leader; their quorums remain
+dynamic. Fast Paxos keeps a cardinality quorum, and EPaxos receives nearest
+client ingress without a global leader or fixed voter set. Both `slow-first`
+(default) and `fast-first` objectives match master. Custom client weights are
+rejected explicitly. N²Paxos has no master counterpart and requires native mode.
 
-Use Windows PowerShell locally and non-interactive SSH for Jed. Connect to the
-EPFL VPN when required. Linux is required by upstream's signal handling; a
-native Windows build of the full upstream program is unsupported.
+`check-benchmark-parity.py` compiles an independent oracle from the pinned
+master's actual Go config, placement, and `plan.go` source. It checks all nine
+size/topology cases for all five shared protocols and both objectives (90 cases),
+including identities, routes, predicted costs, and tie breaking. It also checks
+all ten sampling/clock functions, both preload functions, and `workload.conf`
+against the reference source. Re-run it after updating adapters or the reference.
 
-From this checkout:
+Wiki grounding: `ConsensusWiki/wiki/protocols/SwiftPaxos.md`, Roles and Fast path;
+`ConsensusWiki/wiki/papers/SwiftPaxos-2024.md`, quorum system and artifact mapping.
+Leader-including fixed-majority configuration is existing SwiftPaxos behavior;
+this adaptation introduces no new protocol or safety claim.
+
+## 3. Runtime and workflow
+
+Run preparation from this branch's ConsensusArena directory in PowerShell.
+Use an isolated remote root for each committed adapter revision.
 
 ```powershell
-python slurm/verify-upstream.py
-python -m unittest discover -s slurm -p 'test_*.py' -v
-go test -timeout 7200s ./client ./replica/...
 $artifact = powershell -NoProfile -ExecutionPolicy Bypass -File .\slurm\build-linux.ps1 | ConvertFrom-Json
-$toxi = powershell -NoProfile -ExecutionPolicy Bypass -File .\slurm\fetch-toxiproxy.ps1 | ConvertFrom-Json
-```
-
-Use an isolated remote root so this branch does not overwrite modular
-ConsensusArena's runtime scripts or data:
-
-```powershell
-$remoteRoot = '/home/zihong/ConsensusArena-upstream-slurm'
+$toxi = .\slurm\fetch-toxiproxy.ps1 | ConvertFrom-Json
+$revision = git rev-parse HEAD
+$remoteRoot = "/home/zihong/ConsensusArena-upstream-slurm/$revision"
 $remoteBinary = "$remoteRoot/binaries/$($artifact.SHA256)/consensusarena-linux-amd64"
 $remoteToxi = "$remoteRoot/toxiproxy-server-linux-amd64"
 ssh zihong@jed.hpc.epfl.ch "mkdir -p '$remoteRoot/binaries/$($artifact.SHA256)'"
@@ -92,89 +90,84 @@ scp $toxi.Path "zihong@jed.hpc.epfl.ch:$remoteToxi"
 scp -r slurm "zihong@jed.hpc.epfl.ch:$remoteRoot/"
 scp upstream-provenance.json "zihong@jed.hpc.epfl.ch:$remoteRoot/"
 ssh zihong@jed.hpc.epfl.ch "chmod +x '$remoteBinary' '$remoteToxi'"
-$exports = "ALL,CONSENSUSARENA_BINARY=$remoteBinary,CONSENSUSARENA_BINARY_SHA256=$($artifact.SHA256),CONSENSUSARENA_TOXIPROXY_SERVER=$remoteToxi,CONSENSUSARENA_TOXIPROXY_SHA256=$($toxi.SHA256),CONSENSUSARENA_PROTOCOL=swiftpaxos"
+$baseExports = "ALL,CONSENSUSARENA_BINARY=$remoteBinary,CONSENSUSARENA_BINARY_SHA256=$($artifact.SHA256),CONSENSUSARENA_TOXIPROXY_SERVER=$remoteToxi,CONSENSUSARENA_TOXIPROXY_SHA256=$($toxi.SHA256),UPSTREAM_ADAPTER_REVISION=$revision"
+ssh zihong@jed.hpc.epfl.ch "cd '$remoteRoot' && python3 slurm/benchmark-suite.py plan latency"
+ssh zihong@jed.hpc.epfl.ch "cd '$remoteRoot' && python3 slurm/benchmark-suite.py submit latency --account dcl --export='$baseExports'"
 ```
 
-Inspect the default 27-scene matrix locally with
-`python slurm/benchmark-suite.py plan latency`. For one five-replica smoke scene:
+For a five-replica topology-1 diagnostic, submit `smoke` instead of `latency`.
+On an eligible alternative partition, set `SBATCH_PARTITION=bigmem` in its
+exports. Smoke load/key overrides are explicit diagnostic changes, not standard
+master-comparison evidence. For a standard diagnostic subset use
+`CONSENSUSARENA_REPLICAS=5,CONSENSUSARENA_CASES=5-1,CONSENSUSARENA_YCSB_PROFILES=A:C`.
 
-```powershell
-$smokeExports = "$exports,CONSENSUSARENA_REPLICAS=5,CONSENSUSARENA_CASES=5-1,CONSENSUSARENA_YCSB_PROFILES=A,UPSTREAM_REQUESTS=32"
-ssh zihong@jed.hpc.epfl.ch "cd '$remoteRoot' && python3 slurm/benchmark-suite.py submit latency --account dcl --export='$smokeExports'"
-```
+Matched overrides: `CONSENSUSARENA_PROTOCOL`, `CONSENSUSARENA_WORKLOAD_SEED`,
+`CONSENSUSARENA_ARRIVAL_RATE`, `CONSENSUSARENA_KEY_COUNT`, `CONSENSUSARENA_ZIPF_SKEW`,
+`CONSENSUSARENA_COMMAND_SIZE`, `CONSENSUSARENA_PRELOAD_SEED`,
+`CONSENSUSARENA_WARMUP`, `CONSENSUSARENA_DURATION`, and
+`CONSENSUSARENA_QUORUM_OBJECTIVE`. Compared master runs must use identical
+configuration values; these names do not imply master supports every export.
+Freeze aliases, key mapping, seeds, resource allocation and proxy settings.
 
-Omit subset exports for the complete matrix. Native workload exports are
-`UPSTREAM_REQUESTS=1000`, `UPSTREAM_COMMAND_SIZE=1000`, `UPSTREAM_CONFLICTS=2`,
-and `UPSTREAM_PENDING=128` by default. All runs use ten clients, `clones: 0`,
-`pipeline: true`, and `optread: false`. Optional `CONSENSUSARENA_RUN_DIR` must
-name a new directory; `CLIENT_TIMEOUT_SECONDS` defaults to 300 and replica
-readiness timeout to 900. `UPSTREAM_ADAPTER_REVISION` records the tested adapter
-revision. Duplicate submission export keys are rejected.
+Native reference: add `CONSENSUSARENA_BENCHMARK_MODE=native`. Its defaults are
+1,000 measured requests/client, 1,000-byte reused payload, conflict knob 2,
+128 pending requests, random seeding, no preload, one excluded bootstrap reply,
+and first-replica/first-majority roles. `UPSTREAM_REQUESTS`,
+`UPSTREAM_COMMAND_SIZE`, `UPSTREAM_CONFLICTS`, and `UPSTREAM_PENDING` are accepted
+only in native mode. Native A/B write probabilities retain upstream's 51%/6%
+sampler behavior; C is pure read. Native logs support only `operation=ALL`.
 
-For quick integration diagnostics, `submit smoke --account dcl --export=...`
-uses a single-node `serial` QOS allocation with 16 tasks and one CPU/task,
-five replicas, ten clients, A, topology 1, and 32 measured requests/client by
-default. It retains the Toxiproxy topology but tags every output row
-`diagnostic_only=true`. This mode is not comparable performance evidence;
-ordinary `submit latency` retains the standard three-node allocation.
-The 20-minute diagnostic limit covers the 900 s readiness and 300 s default
-client deadlines; use a shorter explicit client timeout for smoke tests.
-For an eligible alternative partition during diagnostics, include
-`SBATCH_PARTITION=bigmem` in that smoke submission's exports. Actual partition
-and allocation are recorded; use identical standard allocations for performance
-comparisons.
+Record the printed job ID and new run directory; never reuse result directories.
+Use `squeue -j JOB_ID`, `sacct -j JOB_ID`, bounded log reads, and
+`python3 slurm/benchmark-suite.py collect latency RUN_DIRECTORY` when needed.
+Archive each complete raw directory to `~/consensusarena-results/` before scratch
+expiry and retrieve its raw logs/configuration/binaries plus portable summaries.
 
-Record the printed job ID and run directory. Monitor with bounded
-`ssh ... "squeue -j JOB_ID"` and `ssh ... "tail -n 100 .../slurm-JOB_ID.out"`.
-Each scene has raw client logs, process logs, stdout, GNU-time CPU/RSS/context
-switch records, generated configuration/quorum/network inputs, binary hashes,
-proxy settings, source pin, and explicit workload/placement metadata.
-
-`summary.csv` contains client-region statistics; `baseline-latency.csv` contains
-pooled overall mean and nearest-rank p99, explicitly tagged
-`workload_kind=upstream-request-count`. This portable file is not a claim of
-compatibility with the current Poisson baseline's measurement semantics.
-The causal engineering hypothesis is that this source-style baseline requires
-more integration edits for a new protocol. Latency/resource records permit
-later overhead comparisons once semantics and workload are matched. Native
-per-request verbose logging is preserved and is material measurement overhead.
-
-Recollect with `python3 slurm/benchmark-suite.py collect latency RUN_DIRECTORY`.
-Inspect `suite-status.json`, per-scene `validation.json`, and `outcome.json`.
-A valid run requires every client to exit successfully, emit exactly the
-configured measured sample count, and report one positive elapsed duration,
-plus complete GNU-time resource records for every participant. Teardown stops
-applications before their resource observers so final records are flushed.
-Missing, malformed, failed, or timed-out runs remain incomplete/invalid;
-no missing samples are filled with zero. Preserve `/scratch` results with
-`cp -a RUN_DIRECTORY ~/consensusarena-results/` over SSH and retain frozen
-binaries separately. This branch does not update XPaxos promotion plots.
+The scene coordinator records immutable binary and proxy hashes, reference
+commit, workload settings, startup placement, physical addresses, topology and
+snapshot hashes, and per-replica preload digests. Collection requires exactly
+all measured replies for every client, successful client exits, matching logged
+settings, and every participant's GNU-time CPU/RSS/context-switch record.
+`summary.csv` contains region/operation rows; `baseline-latency.csv` contains
+pooled READ/UPDATE/ALL statistics with workload provenance. Mean and nearest-rank
+p99 use the same sample semantics as master. Missing evidence invalidates a run.
 
 ## 4. Determinism and fault model
 
-Topology, endpoints, configured quorum, and ingress are reproducible and logged.
-Request streams and client identities retain upstream randomness. TCP proxies
-shape both stream directions with `ceil(RTT/2)` latency, zero jitter by default,
-and 125000 KB/s bandwidth per connection/direction. Listeners and registered
-identities keep physical endpoints. Upstream's `-latency` injector is disabled
-when a dial map is configured to prevent double injection.
+Replica IDs retain upstream master-registration order. Quorum aliases resolve
+through full advertised endpoints, so physical co-location does not merge votes;
+selected logical leader/quorum identities match master. Request streams depend
+on configured aliases/seeds, not UUID client IDs or registration order.
 
-The runner performs no request retries, replica restarts, or crash injections.
-Upstream protocol recovery logic is unchanged. There is no adapted fault
-suite, durable crash-restart claim, or promotion/recovery guarantee; asking
-the CLI for `fault` is rejected rather than silently substituting a latency run.
+Toxiproxy v2.12.0 shapes each stream direction with `ceil(directed RTT/2)` ms,
+zero jitter and 125,000 KB/s by default. Advertised addresses retain real endpoints.
+The original `-latency` injector is disabled when proxy routing is enabled.
+Preload runs before listeners and outside consensus and measurement clocks.
+Linux listener inspection releases peer dials only when every listener exists.
+
+No request retry, replica restart, crash injection or durable recovery adaptation
+is included. The `fault` CLI is rejected. Latency completion is upstream's
+protocol-specific reply completion, not an independent proof of safety.
 
 ## 5. Known gaps and validation
 
-Only SwiftPaxos is initially exercised end-to-end. Other upstream protocols
-retain their original behavior and limitations. Optread/local-client modes are
-not exposed by the harness because upstream identifies proxied clients from
-source IP, which Toxiproxy changes. The branch is a source-style reference;
-same-semantics architecture ablation and matched Poisson workloads are separate
-follow-up experiments.
+Workload/preload/clocks/startup roles are aligned to the pinned master; the six
+protocol packages still match upstream. Master includes later protocol fixes
+and runtime changes, including SwiftPaxos reply/ack handling, so these two
+branches are not yet a pure same-semantics architecture ablation. Do not attribute
+all observed latency differences to modularity. Per-protocol logging and
+completion behavior also remain source-specific. `optread` is disabled.
 
-Local verification covers endpoint routing, duplicate-map rejection, quorum
-membership with co-located/shuffled replica identities, bare-host compatibility,
-scene selection, result accounting, incomplete-run rejection, Bash syntax,
-source preservation, and Linux cross-compilation. The completed Jed integration
-run and its resource/data validity checks are recorded in [validation.md](validation.md).
+Native Windows builds retain upstream's Linux-only SIGUSR1 hook; build the
+complete executable for Linux. Shared adapters and their tests run on Windows.
+All six protocols compile; the real-network validation currently targets SwiftPaxos.
+
+```powershell
+go test -timeout 7200s ./client ./config ./state ./replica/...
+python slurm/verify-upstream.py
+python slurm/check-benchmark-parity.py
+python -m unittest discover -s slurm -p test_upstream_harness.py
+```
+
+See [validation.md](validation.md) for real-job evidence and its limits.
+Historical native evidence remains tagged as native; it is not relabeled matched.

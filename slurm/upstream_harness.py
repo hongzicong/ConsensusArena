@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Slurm adapter for the pinned upstream request-count workload, not Poisson YCSB."""
+"""Slurm adapter with matched-master benchmarks and opt-in upstream workloads."""
 import argparse
 import csv
 import hashlib
@@ -12,8 +12,10 @@ import shutil
 import subprocess
 import sys
 import time
+import struct
 
 from topology import load_layout, load_matrix
+from master_placement import plan as master_plan
 
 ROOT = Path(__file__).resolve().parent.parent
 UPSTREAM = '35c69365f1c7737a08e237bfbaf828ee68897080'
@@ -51,6 +53,45 @@ def settings(env):
     protocol = env.get('CONSENSUSARENA_PROTOCOL', 'swiftpaxos').lower()
     if protocol not in PROTOCOLS:
         raise ValueError('unsupported upstream protocol: ' + protocol)
+    mode = env.get('CONSENSUSARENA_BENCHMARK_MODE', 'matched')
+    if mode not in ('matched', 'native'):
+        raise ValueError('benchmark mode must be matched or native')
+    if mode == 'matched':
+        if protocol == 'n2paxos':
+            raise ValueError('n2paxos has no master benchmark counterpart; use native mode')
+        if env.get('CONSENSUSARENA_CLIENT_WEIGHTS'):
+            raise ValueError('custom client weights are not supported by this adapter')
+        if any(key.startswith('UPSTREAM_') and key in ('UPSTREAM_REQUESTS', 'UPSTREAM_COMMAND_SIZE',
+                                                     'UPSTREAM_PENDING', 'UPSTREAM_CONFLICTS') for key in env):
+            raise ValueError('native workload exports require benchmark mode=native')
+        defaults = dict(re.findall(r'^(\w+):\s*(\S+)', (ROOT / 'slurm/workload.conf').read_text(), re.M))
+        options = dict(protocol=protocol, benchmark_mode=mode, workload_kind='matched-master-poisson-zipf',
+                       seed_policy='master-alias-clone-derived', clones=0, preload=True,
+                       shuffle_keys=True, warmup_kind='bootstrap-then-timed-warmup',
+                       diagnostic_only=env.get('UPSTREAM_SMOKE_ONLY') == '1', fault_support=False,
+                       upstream_commit=UPSTREAM, placement_objective=env.get('CONSENSUSARENA_QUORUM_OBJECTIVE', 'slow-first'))
+        for field, key, variable, convert in (
+            ('arrival_rate', 'arrivalRate', 'CONSENSUSARENA_ARRIVAL_RATE', float),
+            ('command_size', 'commandSize', 'CONSENSUSARENA_COMMAND_SIZE', int),
+            ('key_count', 'keyCount', 'CONSENSUSARENA_KEY_COUNT', int),
+            ('zipf_skew', 'zipfSkew', 'CONSENSUSARENA_ZIPF_SKEW', float),
+            ('workload_seed', 'workloadSeed', 'CONSENSUSARENA_WORKLOAD_SEED', int),
+            ('preload_seed', 'preloadSeed', 'CONSENSUSARENA_PRELOAD_SEED', int)):
+            options[field] = convert(env.get(variable, defaults[key]))
+        for field, key, variable in (('warmup', 'warmup', 'CONSENSUSARENA_WARMUP'),
+                                     ('duration', 'duration', 'CONSENSUSARENA_DURATION')):
+            options[field] = env.get(variable, defaults[key])
+        if (not math.isfinite(options['arrival_rate']) or options['arrival_rate'] <= 0
+                or not math.isfinite(options['zipf_skew']) or options['zipf_skew'] < 0
+                or min(options['command_size'], options['key_count']) <= 0
+                or min(options['workload_seed'], options['preload_seed']) < 0
+                or duration_seconds(options['warmup']) < 0 or duration_seconds(options['duration']) <= 0):
+            raise ValueError('invalid matched workload setting')
+        if options['placement_objective'] not in ('slow-first', 'fast-first'):
+            raise ValueError('invalid placement objective')
+        reference = json.loads((ROOT / 'upstream-provenance.json').read_text())
+        options['benchmark_reference_commit'] = reference['benchmark_reference_commit']
+        return options
     requests = int(env.get('UPSTREAM_REQUESTS', '1000'))
     payload = int(env.get('UPSTREAM_COMMAND_SIZE', '1000'))
     conflicts = int(env.get('UPSTREAM_CONFLICTS', '2'))
@@ -58,6 +99,7 @@ def settings(env):
     if requests <= 0 or payload <= 0 or not 0 <= conflicts <= 100 or pending <= 0:
         raise ValueError('invalid upstream workload settings')
     return dict(protocol=protocol, requests=requests, command_size=payload,
+                benchmark_mode=mode,
                 conflicts=conflicts, pending=pending, clones=0,
                 workload_kind='upstream-request-count', seed_policy='upstream-random',
                 preload=False, warmup_kind='one-unmeasured-bootstrap-request',
@@ -81,22 +123,38 @@ def prepare(base, scene, addresses, options):
     text = '-- Replicas --\n' + ''.join(f'{alias} {endpoint}\n' for alias, endpoint in zip(replicas, endpoints))
     text += '\n-- Clients --\n' + ''.join(f'{alias} {endpoint}\n' for alias, endpoint in zip(clients, client_endpoints))
     text += f'\n-- Master --\nm0 {addresses[-1]}\n\nmasterPort: 7087\nport: 7070\n'
-    text += f'protocol: {options["protocol"]}\nleader: {endpoints[0]}\n'
+    matched = options['benchmark_mode'] == 'matched'
+    policy = (master_plan(options['protocol'], replicas, clients, matrix, options['placement_objective'])
+              if matched else dict(leader=replicas[0], fast_quorum=replicas[:n//2+1],
+                                  client_routes={a: replicas[min(range(n), key=lambda i: (matrix[a][replicas[i]], i))]
+                                                 for a in clients}, model='upstream-fixed-first-majority'))
+    text += f'protocol: {options["protocol"]}\n'
+    if policy['leader'] is not None:
+        text += f'leader: {endpoints[replicas.index(policy["leader"])]}\n'
     text += 'noop: false\nthrifty: false\noptread: false\nleaderless: false\nfast: true\nwaitClosest: true\n'
-    text += f'reqs: {options["requests"]}\nrunTime: none\nwrites: {WRITES[scene["profile"]]}\n'
-    text += f'conflicts: {options["conflicts"]}\ncommandSize: {options["command_size"]}\nclones: 0\nkey: 42\n'
-    text += f'pipeline: true\npendings: {options["pending"]}\n'
+    text += f'commandSize: {options["command_size"]}\nclones: 0\nwrites: {WRITES[scene["profile"]]}\n'
+    if matched:
+        text += 'benchmark: true\n'
+        for key, field in (('arrivalRate', 'arrival_rate'), ('keyCount', 'key_count'), ('zipfSkew', 'zipf_skew'),
+                           ('workloadSeed', 'workload_seed'), ('preloadSeed', 'preload_seed'),
+                           ('warmup', 'warmup'), ('duration', 'duration')):
+            text += f'{key}: {options[field]}\n'
+        text += f'shuffleKeys: true\npreload: true\nkeyMappingSeed: {scene["topology_id"]}\n'
+    else:
+        text += f'reqs: {options["requests"]}\nrunTime: none\nconflicts: {options["conflicts"]}\nkey: 42\n'
+        text += f'pipeline: true\npendings: {options["pending"]}\n'
     for i, alias in enumerate(replicas):
         text += f'\n-- Apply to {alias} --\nport: {7070+i}\n-- Stop --\n'
-    ingresses = {alias: min(range(n), key=lambda i: (matrix[alias][replicas[i]], i)) for alias in clients}
+    ingresses = {a: replicas.index(policy['client_routes'][a]) for a in clients}
     text += '\n-- Proxy --\n'
     for i, alias in enumerate(replicas):
         text += f'server_alias {alias}\n'
         text += ''.join(client + '\n' for client in clients if ingresses[client] == i)
     text += '---\n'
     (config_dir / 'cluster.conf').write_text(text, encoding='utf-8')
-    quorum = [f'l {replicas[0]}'] + replicas[1:n//2+1]
-    (config_dir / 'quorum.conf').write_text('\n'.join(quorum) + '\n', encoding='utf-8')
+    quorum = ([f'l {policy["leader"]}'] + [a for a in policy['fast_quorum'] if a != policy['leader']]
+              if policy['fast_quorum'] else [])
+    (config_dir / 'quorum.conf').write_text('\n'.join(quorum) + ('\n' if quorum else ''), encoding='utf-8')
     logical = [f'0.0.0.{i+1}' for i in range(n)] + [f'0.0.1.{i+1}' for i in range(len(clients))]
     physical = endpoints + client_endpoints
     regions = replicas + clients
@@ -107,10 +165,12 @@ def prepare(base, scene, addresses, options):
     layout.update(**options, profile=scene['profile'], writes=WRITES[scene['profile']],
                   latency_snapshot_sha256=source_hash, topology_sha256=sha256(config_dir / 'latency.conf'),
                   replica_endpoints=endpoints, client_endpoints=client_endpoints,
-                  initial_leader_alias=replicas[0], fast_quorum_aliases=replicas[:n//2+1],
+                  initial_leader_alias=policy['leader'], fast_quorum_aliases=policy['fast_quorum'],
+                  placement_plan=policy, key_mapping_seed=scene['topology_id'],
                   ingress_by_client={a: replicas[i] for a, i in ingresses.items()},
                   replica_id_policy='upstream-master-registration-order')
     write_json(Path(base) / 'metadata.json', layout)
+    write_json(Path(base) / 'plan.json', policy)
     return layout
 
 
@@ -127,16 +187,55 @@ def percentile(values, fraction):
     return ordered[max(0, math.ceil(len(ordered) * fraction) - 1)]
 
 
+def client_seed(base, alias, clone=0):
+    value = 14695981039346656037
+    for byte in struct.pack('<QQ', base, clone) + alias.encode():
+        value = ((value ^ byte) * 1099511628211) & ((1 << 64)-1)
+    return value & ((1 << 63)-1)
+
+
+def preload_evidence(base, metadata):
+    evidence = {}
+    for alias in metadata['replicas']:
+        path = Path(base) / 'logs' / (alias + '-replica.log')
+        text = path.read_text(errors='replace') if path.exists() else ''
+        records = re.findall(r'PRELOAD_COMPLETE records=(\d+) value_size=(\d+) seed=(\d+) digest=([0-9a-f]{64})', text)
+        if len(records) != 1:
+            raise ValueError('missing or duplicate preload evidence: ' + alias)
+        count, size, seed, digest = records[0]
+        if (int(count), int(size), int(seed)) != (metadata['key_count'], metadata['command_size'], metadata['preload_seed']):
+            raise ValueError('preload configuration mismatch: ' + alias)
+        evidence[alias] = digest
+    if len(set(evidence.values())) != 1:
+        raise ValueError('preload digest mismatch across replicas')
+    return evidence
+
+
 def summarize(base):
     base = Path(base)
     metadata = json.loads((base / 'metadata.json').read_text())
     rows = []
-    all_values = []
+    pooled = {'READ': [], 'UPDATE': [], 'ALL': []}
     valid = True
+    matched = metadata.get('benchmark_mode') == 'matched'
+    preload_error = None
+    if matched:
+        try:
+            digests = preload_evidence(base, metadata)
+            if digests != metadata.get('preload_digests'):
+                raise ValueError('preload evidence differs from validated startup metadata')
+        except ValueError as exc:
+            valid, preload_error = False, str(exc)
     for alias in metadata['clients']:
         log = base / 'results' / (alias + '-client.log')
         text = log.read_text(errors='replace') if log.exists() else ''
-        values = [float(value) for value in re.findall(r'\blatency ([0-9.eE+-]+)', text)]
+        samples = re.findall(r'\blatency (READ|UPDATE) (\S+)', text) if matched else [
+            ('ALL', v) for v in re.findall(r'\blatency (\S+)', text)]
+        try:
+            samples = [(op, float(v)) for op, v in samples]
+        except ValueError:
+            samples = [('ALL', float('nan'))]
+        values = [v for _, v in samples]
         elapsed = re.findall(r'Test took ([^\s]+)', text)
         status = base / 'status' / (alias + '.exit')
         try:
@@ -144,20 +243,49 @@ def summarize(base):
             exit_code = int(status.read_text()) if status.exists() else None
         except (ValueError, OSError):
             seconds, exit_code = 0, None
-        complete = (len(values) == metadata['requests'] and seconds > 0 and exit_code == 0
+        expected = metadata.get('requests')
+        if matched:
+            counts = re.findall(r'Measured requests (\d+)', text)
+            warmups = re.findall(r'Warm-up requests (\d+)', text)
+            expected = int(counts[0]) if len(counts) == 1 and len(warmups) == 1 else None
+        complete = (expected is not None and expected > 0 and len(values) == expected and seconds > 0 and exit_code == 0
                     and all(math.isfinite(v) and v >= 0 for v in values))
+        if matched:
+            rates = re.findall(r'Open-loop Poisson arrival rate (\S+) requests/second', text)
+            distributions = re.findall(r'Zipfian key distribution: keyCount=(\d+) skew=(\S+)', text)
+            windows = re.findall(r'Warm-up (\S+), measurement duration (\S+)', text)
+            seeds = re.findall(r'Workload seed (\d+)', text)
+            try:
+                settings_valid = (len(rates) == len(distributions) == len(windows) == len(seeds) == 1
+                    and float(rates[0]) == metadata['arrival_rate']
+                    and (int(distributions[0][0]), float(distributions[0][1])) == (metadata['key_count'], metadata['zipf_skew'])
+                    and tuple(map(duration_seconds, windows[0])) == (duration_seconds(metadata['warmup']), duration_seconds(metadata['duration']))
+                    and int(seeds[0]) == client_seed(metadata['workload_seed'], alias))
+            except (ValueError, IndexError):
+                settings_valid = False
+            mapping = f'WORKLOAD_KEY_MAPPING mode=shuffled algorithm=rand-perm-v1 seed={metadata["key_mapping_seed"]} keyCount={metadata["key_count"]}'
+            complete = complete and settings_valid and mapping in text
+            complete = complete and not (metadata['profile'] == 'C' and any(op == 'UPDATE' for op, _ in samples))
         valid = valid and complete
         identity = dict(protocol=metadata['protocol'], replicas=metadata['replica_count'],
                         topology_id=metadata['topology_id'], profile=metadata['profile'], repetition=1,
                         region=alias, operation='ALL', workload_kind=metadata['workload_kind'],
                         diagnostic_only=metadata['diagnostic_only'],
-                        completed=len(values), expected=metadata['requests'], valid=complete)
+                        completed=len(values), expected=expected, valid=complete)
         identity.update(mean_ms=sum(values)/len(values) if values else '',
                         p50_ms=percentile(values, .5) if values else '',
                         p99_ms=percentile(values, .99) if values else '',
                         completed_per_second=len(values)/seconds if seconds else '')
         rows.append(identity)
-        all_values.extend(values)
+        pooled['ALL'].extend(values)
+        if matched:
+            for operation in ('READ', 'UPDATE'):
+                selected = [v for op, v in samples if op == operation]
+                pooled[operation].extend(selected)
+                if selected:
+                    rows.append(dict(identity, operation=operation, completed=len(selected), expected='',
+                                     mean_ms=sum(selected)/len(selected), p50_ms=percentile(selected, .5),
+                                     p99_ms=percentile(selected, .99), completed_per_second=len(selected)/seconds if seconds else ''))
     resources = []
     if metadata.get('resource_observer') == 'gnu-time':
         for rank in range(metadata['replica_count'] + len(metadata['clients']) + 1):
@@ -173,6 +301,7 @@ def summarize(base):
                 complete = False
             resources.append(dict(rank=rank, complete=complete, fields=fields))
             valid = valid and complete
+    all_values = pooled['ALL']
     aggregate = dict(protocol=metadata['protocol'], replicas=metadata['replica_count'],
                      topology_id=metadata['topology_id'], profile=metadata['profile'], repetition=1,
                      workload_kind=metadata['workload_kind'], operation='ALL', valid=valid,
@@ -182,14 +311,28 @@ def summarize(base):
                      binary_sha256=metadata['binary_sha256'], upstream_commit=UPSTREAM,
                      topology_sha256=metadata['topology_sha256'],
                      latency_snapshot_sha256=metadata['latency_snapshot_sha256'])
-    for name, records in (('summary.csv', rows), ('baseline-latency.csv', [aggregate])):
+    aggregates = [aggregate]
+    if matched:
+        aggregate.update(benchmark_reference_commit=metadata['benchmark_reference_commit'],
+                         arrival_rate=metadata['arrival_rate'], warmup=metadata['warmup'], duration=metadata['duration'],
+                         preload_digest=next(iter(metadata.get('preload_digests', {}).values()), ''),
+                         leader_alias=metadata['initial_leader_alias'],
+                         fast_quorum_aliases=':'.join(metadata['fast_quorum_aliases']))
+        for operation in ('READ', 'UPDATE'):
+            selected = pooled[operation]
+            if selected:
+                aggregates.append(dict(aggregate, operation=operation, completed=len(selected),
+                                       mean_ms=sum(selected)/len(selected), p99_ms=percentile(selected, .99)))
+    for name, records in (('summary.csv', rows), ('baseline-latency.csv', aggregates)):
         with (base / name).open('w', newline='', encoding='utf-8') as output:
             writer = csv.DictWriter(output, fieldnames=list(records[0]))
             writer.writeheader()
             writer.writerows(records)
     claim = ('diagnostic integration only; no comparative performance evidence' if metadata['diagnostic_only']
-             else 'upstream-native latency only; not matched Poisson or recovery evidence')
+             else ('matched master workload, preload, clocks and placement; protocol implementation still upstream'
+                   if matched else 'upstream-native latency only; not matched Poisson or recovery evidence'))
     write_json(base / 'validation.json', dict(valid=valid, clients=rows, resources=resources,
+                                            preload_error=preload_error,
                                             diagnostic_only=metadata['diagnostic_only'], claim=claim))
     return valid
 
@@ -250,6 +393,9 @@ def scene(base, specification, env):
                 text = log.read_text(errors='replace') if log.exists() else ''
                 ready += 'done connecting to peers' in text.lower()
             if ready == n:
+                if metadata['benchmark_mode'] == 'matched':
+                    metadata['preload_digests'] = preload_evidence(base, metadata)
+                    write_json(base / 'metadata.json', metadata)
                 break
             if runner.poll() is not None or list((base / 'status').glob('failed-*')):
                 raise RuntimeError('participant failed before peer readiness')
@@ -324,6 +470,16 @@ def scene_name(item):
     return 'replicas-{replicas}-topology-{topology_id}-ycsb-{profile}'.format(**item)
 
 
+def smoke_defaults(env):
+    if env.get('CONSENSUSARENA_BENCHMARK_MODE', 'matched') == 'native':
+        env.setdefault('UPSTREAM_REQUESTS', '32')
+    else:
+        # Small diagnostic dataset/load fits one CPU and 1 GiB per participant.
+        # Keep the standard 5s warmup and 10s measurement clock.
+        env.setdefault('CONSENSUSARENA_KEY_COUNT', '10000')
+        env.setdefault('CONSENSUSARENA_ARRIVAL_RATE', '50')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -355,7 +511,7 @@ def main():
                     raise ValueError('smoke mode requires ' + key + '=' + value)
                 env[key] = value
             env['UPSTREAM_SMOKE_ONLY'] = '1'
-            env.setdefault('UPSTREAM_REQUESTS', '32')
+            smoke_defaults(env)
         elif env.get('UPSTREAM_SMOKE_ONLY'):
             raise ValueError('use submit smoke for a diagnostic allocation')
         plan = selection(env)
@@ -375,7 +531,7 @@ def main():
         return collect(args.path)
     if args.kind == 'smoke':
         env.update(CONSENSUSARENA_REPLICAS='5', CONSENSUSARENA_CASES='5-1', CONSENSUSARENA_YCSB_PROFILES='A', UPSTREAM_SMOKE_ONLY='1')
-        env.setdefault('UPSTREAM_REQUESTS', '32')
+        smoke_defaults(env)
     elif env.get('UPSTREAM_SMOKE_ONLY'):
         raise ValueError('diagnostic mode cannot be labeled latency')
     plan = selection(env)

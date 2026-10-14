@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -62,6 +63,15 @@ type Replica struct {
 
 func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, config *config.Config, l *dlog.Logger) *Replica {
 	n := len(addrs)
+	stateMachine := state.InitState()
+	if config.Benchmark && config.Preload {
+		started := time.Now()
+		digest, err := stateMachine.Preload(config.KeyCount, config.CommandSize, uint64(config.PreloadSeed))
+		if err != nil {
+			panic(fmt.Sprintf("preload state: %v", err))
+		}
+		l.Printf("PRELOAD_COMPLETE records=%d value_size=%d seed=%d digest=%s duration=%s", config.KeyCount, config.CommandSize, config.PreloadSeed, digest, time.Since(started))
+	}
 	r := &Replica{
 		Logger: l,
 
@@ -79,7 +89,7 @@ func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, con
 		Alive:              make([]bool, n),
 		PreferredPeerOrder: make([]int32, n),
 
-		State:       state.InitState(),
+		State:       stateMachine,
 		RPC:         fastrpc.NewTableId(defs.RPC_TABLE),
 		StableStore: nil,
 		Stats:       &defs.Stats{make(map[string]int)},

@@ -36,7 +36,8 @@ type BufferClient struct {
 	reqTime    []time.Time
 	launchTime time.Time
 
-	rand *rand.Rand
+	rand      *rand.Rand
+	benchmark *BenchmarkClient
 }
 
 func NewBufferClient(c *Client, reqNum, psize, conflict, writes int, conflictKey int64) *BufferClient {
@@ -94,6 +95,10 @@ func (c *BufferClient) Scan(key, count int64) []byte {
 
 // Assumed to be connected
 func (c *BufferClient) Loop() {
+	if c.benchmark != nil {
+		c.benchmark.loopOpen(c.benchmark.genGetKey())
+		return
+	}
 	getKey := c.genGetKey()
 	val := make([]byte, c.psize)
 	c.rand.Read(val)

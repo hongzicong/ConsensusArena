@@ -17,7 +17,7 @@ class HarnessTests(unittest.TestCase):
         self.base = Path(self.temporary.name)
 
     def fixture(self):
-        options = harness.settings({'UPSTREAM_REQUESTS': '3'})
+        options = harness.settings({'CONSENSUSARENA_BENCHMARK_MODE': 'native', 'UPSTREAM_REQUESTS': '3'})
         metadata = harness.prepare(self.base, dict(replicas=5, topology_id=1, profile='A'),
                                    ['10.0.0.1'] * 16, options)
         metadata['binary_sha256'] = 'test-binary'
@@ -87,7 +87,8 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(command[-1].endswith('run-smoke.sbatch'))
         self.assertEqual(env['UPSTREAM_SMOKE_ONLY'], '1')
         self.assertEqual(env['CONSENSUSARENA_CASES'], '5-1')
-        self.assertEqual(env['UPSTREAM_REQUESTS'], '32')
+        self.assertEqual(env['CONSENSUSARENA_ARRIVAL_RATE'], '50')
+        self.assertEqual(env['CONSENSUSARENA_KEY_COUNT'], '10000')
         with patch.dict(harness.os.environ, {'USER': 'test-user', 'UPSTREAM_SMOKE_ONLY': '1'}, clear=True), \
              patch.object(harness.sys, 'argv', ['benchmark-suite.py', 'submit', 'latency']):
             with self.assertRaises(ValueError):
@@ -130,6 +131,73 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(harness.summarize(self.base))
         (self.base / 'stdout' / 'resources-rank-15.txt').unlink()
         self.assertFalse(harness.summarize(self.base))
+
+    def matched_fixture(self, profile='A'):
+        options = harness.settings({'CONSENSUSARENA_KEY_COUNT': '10000', 'CONSENSUSARENA_ARRIVAL_RATE': '50'})
+        metadata = harness.prepare(self.base, dict(replicas=5, topology_id=1, profile=profile),
+                                   ['10.0.0.1']*16, options)
+        metadata['binary_sha256'] = 'matched-test'
+        for directory in ('results', 'status', 'logs'):
+            (self.base / directory).mkdir()
+        metadata['preload_digests'] = {a: 'a'*64 for a in metadata['replicas']}
+        for alias in metadata['replicas']:
+            (self.base / 'logs' / (alias+'-replica.log')).write_text(
+                f'PRELOAD_COMPLETE records=10000 value_size=1000 seed=1 digest={"a"*64} duration=1s\n')
+        harness.write_json(self.base / 'metadata.json', metadata)
+        for alias in metadata['clients']:
+            (self.base / 'results' / (alias+'-client.log')).write_text(
+                f'Workload seed {harness.client_seed(1, alias)}\n'
+                'Warm-up 5s, measurement duration 10s\n'
+                'Open-loop Poisson arrival rate 50 requests/second\n'
+                'Zipfian key distribution: keyCount=10000 skew=0.9\n'
+                'WORKLOAD_KEY_MAPPING mode=shuffled algorithm=rand-perm-v1 seed=1 keyCount=10000\n'
+                'latency READ 1\nlatency UPDATE 3\nWarm-up requests 2\nMeasured requests 2\nTest took 15s\n')
+            (self.base / 'status' / (alias+'.exit')).write_text('0\n')
+        return metadata
+
+    def test_matched_defaults_and_invalid_exports(self):
+        options = harness.settings({})
+        self.assertEqual((options['arrival_rate'], options['key_count'], options['zipf_skew']), (2000, 1000000, .9))
+        self.assertEqual((options['warmup'], options['duration']), ('5s', '10s'))
+        self.assertTrue(options['preload'])
+        for env in ({'UPSTREAM_REQUESTS': '32'}, {'CONSENSUSARENA_PROTOCOL': 'n2paxos'},
+                    {'CONSENSUSARENA_ARRIVAL_RATE': 'nan'}, {'CONSENSUSARENA_DURATION': '0s'},
+                    {'CONSENSUSARENA_WORKLOAD_SEED': '-1'}):
+            with self.assertRaises(ValueError):
+                harness.settings(env)
+
+    def test_matched_summary_separates_operations(self):
+        self.matched_fixture()
+        self.assertTrue(harness.summarize(self.base))
+        with (self.base / 'baseline-latency.csv').open() as source:
+            rows = list(csv.DictReader(source))
+        self.assertEqual({r['operation']: float(r['mean_ms']) for r in rows}, {'ALL': 2, 'READ': 1, 'UPDATE': 3})
+        self.assertEqual({r['completed'] for r in rows if r['operation'] == 'ALL'}, {'20'})
+
+    def test_matched_preload_mismatch_is_invalid(self):
+        metadata = self.matched_fixture()
+        log = self.base / 'logs' / (metadata['replicas'][0]+'-replica.log')
+        log.write_text(log.read_text().replace('a'*64, 'b'*64))
+        self.assertFalse(harness.summarize(self.base))
+        self.assertIn('preload', json.loads((self.base / 'validation.json').read_text())['preload_error'])
+
+    def test_matched_missing_sample_is_invalid(self):
+        metadata = self.matched_fixture()
+        log = self.base / 'results' / (metadata['clients'][0]+'-client.log')
+        log.write_text(log.read_text().replace('latency UPDATE 3\n', ''))
+        self.assertFalse(harness.summarize(self.base))
+
+    def test_read_only_profile_rejects_update(self):
+        self.matched_fixture(profile='C')
+        self.assertFalse(harness.summarize(self.base))
+
+    def test_matched_epaxos_has_no_leader_or_fixed_quorum(self):
+        options = harness.settings({'CONSENSUSARENA_PROTOCOL': 'epaxos'})
+        metadata = harness.prepare(self.base, dict(replicas=5, topology_id=1, profile='C'), ['10.0.0.1']*16, options)
+        self.assertIsNone(metadata['initial_leader_alias'])
+        self.assertEqual((self.base / 'config/quorum.conf').read_text(), '')
+        self.assertNotIn('leader:', (self.base / 'config/cluster.conf').read_text())
+
 
 
 if __name__ == '__main__':

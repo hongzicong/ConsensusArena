@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -54,7 +55,12 @@ const (
 )
 
 type Config struct {
-	Protocol string
+	Protocol                                            string
+	Benchmark                                           bool
+	Warmup, Duration                                    time.Duration
+	ArrivalRate, ZipfSkew                               float64
+	KeyCount, KeyMappingSeed, WorkloadSeed, PreloadSeed int
+	ShuffleKeys, Preload                                bool
 
 	Alias       string
 	MachineType Machine
@@ -122,6 +128,7 @@ func Read(filename, alias string) (*Config, error) {
 		ReplicaAddrs: make(map[string]string),
 		Alias:        alias,
 		Port:         defaultPort,
+		ArrivalRate:  2000, KeyCount: 1000000, ZipfSkew: 0.9, ShuffleKeys: true, KeyMappingSeed: 1, WorkloadSeed: 1, PreloadSeed: 1, Warmup: 5 * time.Second, Duration: 10 * time.Second, Preload: true,
 	}
 
 	f, err := os.Open(filename)
@@ -183,6 +190,39 @@ func Read(filename, alias string) (*Config, error) {
 				err error
 			)
 			switch strings.Split(words[0], ":")[0] {
+			case "benchmark":
+				c.Benchmark, err = expectBool(words)
+				ok = true
+			case "warmup":
+				c.Warmup, err = expectDuration(words)
+				ok = true
+			case "duration":
+				c.Duration, err = expectDuration(words)
+				ok = true
+			case "arrivalrate":
+				c.ArrivalRate, err = expectFloat(words)
+				ok = true
+			case "zipfskew":
+				c.ZipfSkew, err = expectFloat(words)
+				ok = true
+			case "keycount":
+				c.KeyCount, err = expectInt(words)
+				ok = true
+			case "keymappingseed":
+				c.KeyMappingSeed, err = expectInt(words)
+				ok = true
+			case "workloadseed":
+				c.WorkloadSeed, err = expectInt(words)
+				ok = true
+			case "preloadseed":
+				c.PreloadSeed, err = expectInt(words)
+				ok = true
+			case "shufflekeys":
+				c.ShuffleKeys, err = expectBool(words)
+				ok = true
+			case "preload":
+				c.Preload, err = expectBool(words)
+				ok = true
 			case "masterport":
 				c.MasterPort, err = expectInt(words)
 				ok = true
@@ -273,6 +313,9 @@ func Read(filename, alias string) (*Config, error) {
 		}
 	}
 
+	if c.Benchmark && (c.ArrivalRate <= 0 || math.IsNaN(c.ArrivalRate) || math.IsInf(c.ArrivalRate, 0) || c.KeyCount <= 0 || c.ZipfSkew < 0 || math.IsNaN(c.ZipfSkew) || math.IsInf(c.ZipfSkew, 0) || c.Warmup < 0 || c.Duration <= 0 || c.CommandSize <= 0 || c.Writes < 0 || c.Writes > 100 || c.PreloadSeed < 0 || c.WorkloadSeed < 0 || c.KeyMappingSeed < 0 || c.Clones != 0) {
+		return c, Err("benchmark", "invalid workload, window, seed, or clone setting")
+	}
 	return c, nil
 }
 
@@ -312,7 +355,7 @@ func expectDuration(ws []string) (time.Duration, error) {
 }
 
 type expectRet interface {
-	int | string | bool | time.Duration
+	int | string | bool | time.Duration | float64
 }
 
 func expect[R expectRet](ws []string, f func(string) (R, error), none R) (R, error) {
@@ -327,4 +370,8 @@ func expect[R expectRet](ws []string, f func(string) (R, error), none R) (R, err
 		return i, Err(ws[0], "Invalid argument", err)
 	}
 	return i, nil
+}
+
+func expectFloat(ws []string) (float64, error) {
+	return expect(ws, func(s string) (float64, error) { return strconv.ParseFloat(s, 64) }, float64(0))
 }
