@@ -1,0 +1,11 @@
+protocol,replicas,topology_id,profile,repetition,region,operation,workload_kind,diagnostic_only,completed,expected,valid,mean_ms,p50_ms,p99_ms,completed_per_second
+swiftpaxos,5,1,A,1,ap-east-1,ALL,upstream-request-count,True,32,32,True,171.35517715625002,171.542938,172.391504,184.82965977260892
+swiftpaxos,5,1,A,1,ap-northeast-1,ALL,upstream-request-count,True,32,32,True,142.3742956875,142.360615,142.961388,222.44692296505258
+swiftpaxos,5,1,A,1,ap-southeast-2,ALL,upstream-request-count,True,32,32,True,172.20529334375,172.618597,173.67349,183.65386269814542
+swiftpaxos,5,1,A,1,eu-west-1,ALL,upstream-request-count,True,32,32,True,257.7628058125,257.768836,258.674808,123.60769642703764
+swiftpaxos,5,1,A,1,ca-central-1,ALL,upstream-request-count,True,32,32,True,212.90944281249995,212.873159,213.359181,149.39966778182622
+swiftpaxos,5,1,A,1,sa-east-1,ALL,upstream-request-count,True,32,32,True,327.91748246875005,326.742924,364.353669,87.57948844371954
+swiftpaxos,5,1,A,1,us-east-1,ALL,upstream-request-count,True,32,32,True,214.12746059375002,214.134466,214.822214,148.70497737818562
+swiftpaxos,5,1,A,1,us-east-2,ALL,upstream-request-count,True,32,32,True,205.45883999999995,204.200035,241.794691,132.0813845206594
+swiftpaxos,5,1,A,1,us-west-1,ALL,upstream-request-count,True,32,32,True,154.90221534375,153.10645,211.468021,150.5547703340143
+swiftpaxos,5,1,A,1,us-west-2,ALL,upstream-request-count,True,32,32,True,160.04455368749998,157.443037,200.678897,159.26962612659742

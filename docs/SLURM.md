@@ -119,6 +119,10 @@ default. It retains the Toxiproxy topology but tags every output row
 ordinary `submit latency` retains the standard three-node allocation.
 The 20-minute diagnostic limit covers the 900 s readiness and 300 s default
 client deadlines; use a shorter explicit client timeout for smoke tests.
+For an eligible alternative partition during diagnostics, include
+`SBATCH_PARTITION=bigmem` in that smoke submission's exports. Actual partition
+and allocation are recorded; use identical standard allocations for performance
+comparisons.
 
 Record the printed job ID and run directory. Monitor with bounded
 `ssh ... "squeue -j JOB_ID"` and `ssh ... "tail -n 100 .../slurm-JOB_ID.out"`.
@@ -138,7 +142,9 @@ per-request verbose logging is preserved and is material measurement overhead.
 Recollect with `python3 slurm/benchmark-suite.py collect latency RUN_DIRECTORY`.
 Inspect `suite-status.json`, per-scene `validation.json`, and `outcome.json`.
 A valid run requires every client to exit successfully, emit exactly the
-configured measured sample count, and report one positive elapsed duration.
+configured measured sample count, and report one positive elapsed duration,
+plus complete GNU-time resource records for every participant. Teardown stops
+applications before their resource observers so final records are flushed.
 Missing, malformed, failed, or timed-out runs remain incomplete/invalid;
 no missing samples are filled with zero. Preserve `/scratch` results with
 `cp -a RUN_DIRECTORY ~/consensusarena-results/` over SSH and retain frozen
@@ -170,5 +176,5 @@ follow-up experiments.
 Local verification covers endpoint routing, duplicate-map rejection, quorum
 membership with co-located/shuffled replica identities, bare-host compatibility,
 scene selection, result accounting, incomplete-run rejection, Bash syntax,
-source preservation, and Linux cross-compilation. Network smoke evidence is
-recorded separately in `validation.md` after the Jed run.
+source preservation, and Linux cross-compilation. The completed Jed integration
+run and its resource/data validity checks are recorded in [validation.md](validation.md).
