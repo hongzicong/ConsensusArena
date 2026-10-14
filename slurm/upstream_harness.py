@@ -208,6 +208,8 @@ def scene(base, specification, env):
         (base / 'binary' / name).chmod(0o755)
         metadata['binary_sha256' if name.startswith('consensusarena') else 'toxiproxy_sha256'] = expected.lower()
     metadata.update(job_id=env['SLURM_JOB_ID'], allocation_nodes=allocated, scene_nodes=allocated[:nodes],
+                    partition=env.get('SLURM_JOB_PARTITION', 'unrecorded'),
+                    qos=env.get('SLURM_JOB_QOS', 'unrecorded'),
                     cpus_per_task=cpus, latency_backend='toxiproxy', latency_rounding='ceil(RTT/2) per stream direction',
                     adapter_revision=env.get('UPSTREAM_ADAPTER_REVISION', 'unrecorded'),
                     harness_sha256=sha256(ROOT / 'slurm/upstream_harness.py'),
