@@ -110,6 +110,15 @@ name a new directory; `CLIENT_TIMEOUT_SECONDS` defaults to 300 and replica
 readiness timeout to 900. `UPSTREAM_ADAPTER_REVISION` records the tested adapter
 revision. Duplicate submission export keys are rejected.
 
+For quick integration diagnostics, `submit smoke --account dcl --export=...`
+uses a single-node `serial` QOS allocation with 16 tasks and one CPU/task,
+five replicas, ten clients, A, topology 1, and 32 measured requests/client by
+default. It retains the Toxiproxy topology but tags every output row
+`diagnostic_only=true`. This mode is not comparable performance evidence;
+ordinary `submit latency` retains the standard three-node allocation.
+The 20-minute diagnostic limit covers the 900 s readiness and 300 s default
+client deadlines; use a shorter explicit client timeout for smoke tests.
+
 Record the printed job ID and run directory. Monitor with bounded
 `ssh ... "squeue -j JOB_ID"` and `ssh ... "tail -n 100 .../slurm-JOB_ID.out"`.
 Each scene has raw client logs, process logs, stdout, GNU-time CPU/RSS/context

@@ -61,6 +61,7 @@ def settings(env):
                 conflicts=conflicts, pending=pending, clones=0,
                 workload_kind='upstream-request-count', seed_policy='upstream-random',
                 preload=False, warmup_kind='one-unmeasured-bootstrap-request',
+                diagnostic_only=env.get('UPSTREAM_SMOKE_ONLY') == '1',
                 pipeline=True, fault_support=False, upstream_commit=UPSTREAM)
 
 
@@ -149,6 +150,7 @@ def summarize(base):
         identity = dict(protocol=metadata['protocol'], replicas=metadata['replica_count'],
                         topology_id=metadata['topology_id'], profile=metadata['profile'], repetition=1,
                         region=alias, operation='ALL', workload_kind=metadata['workload_kind'],
+                        diagnostic_only=metadata['diagnostic_only'],
                         completed=len(values), expected=metadata['requests'], valid=complete)
         identity.update(mean_ms=sum(values)/len(values) if values else '',
                         p50_ms=percentile(values, .5) if values else '',
@@ -159,6 +161,7 @@ def summarize(base):
     aggregate = dict(protocol=metadata['protocol'], replicas=metadata['replica_count'],
                      topology_id=metadata['topology_id'], profile=metadata['profile'], repetition=1,
                      workload_kind=metadata['workload_kind'], operation='ALL', valid=valid,
+                     diagnostic_only=metadata['diagnostic_only'],
                      completed=len(all_values), mean_ms=sum(all_values)/len(all_values) if all_values else '',
                      p99_ms=percentile(all_values, .99) if all_values else '',
                      binary_sha256=metadata['binary_sha256'], upstream_commit=UPSTREAM,
@@ -181,13 +184,15 @@ def scene(base, specification, env):
         (base / directory).mkdir()
     n = specification['replicas']
     tasks = n + 11
-    nodes = (tasks + 7) // 8
+    diagnostic = env.get('UPSTREAM_SMOKE_ONLY') == '1'
+    nodes = 1 if diagnostic else (tasks + 7) // 8
+    cpus = 1 if diagnostic else 8
     allocated = subprocess.check_output(['scontrol', 'show', 'hostnames', env['SLURM_JOB_NODELIST']], text=True, timeout=TIMEOUT).split()
-    if len(allocated) < nodes or int(env.get('SLURM_NTASKS', '0')) < tasks or int(env.get('SLURM_CPUS_PER_TASK', '0')) < 8:
+    if len(allocated) < nodes or int(env.get('SLURM_NTASKS', '0')) < tasks or int(env.get('SLURM_CPUS_PER_TASK', '0')) < cpus:
         raise ValueError('allocation lacks required nodes, tasks, or CPUs')
     selected_nodes = ','.join(allocated[:nodes])
     prefix = ['srun', '--nodelist=' + selected_nodes, '--nodes=' + str(nodes), '--ntasks=' + str(tasks),
-              '--ntasks-per-node=8', '--distribution=cyclic']
+              '--ntasks-per-node=' + str(16 if diagnostic else 8), '--distribution=cyclic']
     subprocess.run(prefix + ['--cpus-per-task=1', 'bash', str(ROOT / 'slurm/capture-ip.sh'), str(base / 'ranks')],
                    env=env, check=True, timeout=TIMEOUT)
     addresses = [(base / 'ranks' / (str(i) + '.ip')).read_text().strip() for i in range(tasks)]
@@ -203,7 +208,7 @@ def scene(base, specification, env):
         (base / 'binary' / name).chmod(0o755)
         metadata['binary_sha256' if name.startswith('consensusarena') else 'toxiproxy_sha256'] = expected.lower()
     metadata.update(job_id=env['SLURM_JOB_ID'], allocation_nodes=allocated, scene_nodes=allocated[:nodes],
-                    cpus_per_task=8, latency_backend='toxiproxy', latency_rounding='ceil(RTT/2) per stream direction',
+                    cpus_per_task=cpus, latency_backend='toxiproxy', latency_rounding='ceil(RTT/2) per stream direction',
                     adapter_revision=env.get('UPSTREAM_ADAPTER_REVISION', 'unrecorded'),
                     harness_sha256=sha256(ROOT / 'slurm/upstream_harness.py'),
                     latency_jitter_ms=env.get('CONSENSUSARENA_LATENCY_JITTER_MS', '0'),
@@ -211,7 +216,7 @@ def scene(base, specification, env):
     write_json(base / 'metadata.json', metadata)
     worker_env = dict(env, CONSENSUSARENA_REPLICAS=str(n), CONSENSUSARENA_TOPOLOGY=str(specification['topology_id']))
     runner_output = (base / 'stdout' / 'srun.out').open('w')
-    runner = subprocess.Popen(prefix + ['--cpus-per-task=8', 'bash', str(ROOT / 'slurm/node-runner.sh'), str(base)],
+    runner = subprocess.Popen(prefix + ['--cpus-per-task=' + str(cpus), 'bash', str(ROOT / 'slurm/node-runner.sh'), str(base)],
                               env=worker_env, stdout=runner_output, stderr=subprocess.STDOUT)
     error = None
     try:
@@ -299,7 +304,7 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     for command in ('plan', 'submit', 'run', 'collect'):
         child = sub.add_parser(command)
-        child.add_argument('kind', choices=('latency',), help='native latency only; upstream fault recovery is not adapted')
+        child.add_argument('kind', choices=('latency', 'smoke'), help='latency or diagnostic smoke only; fault recovery is not adapted')
         if command == 'submit':
             child.add_argument('--account', default='dcl')
             child.add_argument('--export', default='ALL')
@@ -319,13 +324,22 @@ def main():
                 raise ValueError('invalid or duplicate export: ' + entry)
             seen.add(key)
             env[key] = value
+        if args.kind == 'smoke':
+            for key, value in {'CONSENSUSARENA_REPLICAS': '5', 'CONSENSUSARENA_CASES': '5-1', 'CONSENSUSARENA_YCSB_PROFILES': 'A'}.items():
+                if key in env and env[key] != value:
+                    raise ValueError('smoke mode requires ' + key + '=' + value)
+                env[key] = value
+            env['UPSTREAM_SMOKE_ONLY'] = '1'
+            env.setdefault('UPSTREAM_REQUESTS', '32')
+        elif env.get('UPSTREAM_SMOKE_ONLY'):
+            raise ValueError('use submit smoke for a diagnostic allocation')
         plan = selection(env)
         settings(env)
         env['CONSENSUSARENA_ROOT'] = str(ROOT)
         cmd = ['sbatch', '--parsable', '--account=' + args.account, '--export=ALL']
         if args.time:
             cmd.append('--time=' + args.time)
-        cmd.append(str(ROOT / 'slurm/run-latency.sbatch'))
+        cmd.append(str(ROOT / 'slurm' / ('run-smoke.sbatch' if args.kind == 'smoke' else 'run-latency.sbatch')))
         job = subprocess.check_output(cmd, env=env, cwd=ROOT, text=True, timeout=TIMEOUT).strip().split(';')[0]
         if not job.isdigit():
             raise ValueError('unexpected Slurm job ID: ' + job)
@@ -334,6 +348,11 @@ def main():
         return 0
     if args.command == 'collect':
         return collect(args.path)
+    if args.kind == 'smoke':
+        env.update(CONSENSUSARENA_REPLICAS='5', CONSENSUSARENA_CASES='5-1', CONSENSUSARENA_YCSB_PROFILES='A', UPSTREAM_SMOKE_ONLY='1')
+        env.setdefault('UPSTREAM_REQUESTS', '32')
+    elif env.get('UPSTREAM_SMOKE_ONLY'):
+        raise ValueError('diagnostic mode cannot be labeled latency')
     plan = selection(env)
     options = settings(env)
     if args.command == 'plan':
@@ -344,7 +363,7 @@ def main():
     root = Path(env.get('CONSENSUSARENA_RUN_DIR', '/scratch/' + env['USER'] + '/swiftpaxos-upstream-' + env['SLURM_JOB_ID']))
     root.mkdir(parents=True, exist_ok=False)
     (root / 'scenes').mkdir()
-    write_json(root / 'suite.json', dict(kind='latency', scenes=plan, settings=options, execution='serial-slurm',
+    write_json(root / 'suite.json', dict(kind=args.kind, scenes=plan, settings=options, execution='serial-slurm',
                                        upstream_commit=UPSTREAM, adapter_revision=env.get('UPSTREAM_ADAPTER_REVISION', 'unrecorded')))
     for item in plan:
         try:
