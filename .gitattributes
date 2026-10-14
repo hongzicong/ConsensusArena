@@ -1,3 +1,5 @@
 slurm/*.sh text eol=lf
 slurm/*.sbatch text eol=lf
 slurm/*.py text eol=lf
+slurm/cloudping-1y-p50.json -text
+slurm/cloudping-1y-p50.metadata.json -text
