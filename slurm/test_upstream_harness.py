@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import upstream_harness as harness
 
@@ -74,6 +75,35 @@ class HarnessTests(unittest.TestCase):
         harness.write_json(self.base / 'suite.json', dict(scenes=[dict(replicas=5, topology_id=1, profile='A')]))
         self.assertEqual(harness.collect(self.base), 2)
         self.assertFalse(json.loads((self.base / 'suite-status.json').read_text())['complete'])
+
+    def test_smoke_submission_is_distinct_from_latency(self):
+        with patch.dict(harness.os.environ, {'USER': 'test-user'}, clear=True), \
+             patch.object(harness.sys, 'argv', ['benchmark-suite.py', 'submit', 'smoke']), \
+             patch.object(harness.subprocess, 'check_output', return_value='12345\n') as submit:
+            self.assertEqual(harness.main(), 0)
+        command = submit.call_args.args[0]
+        env = submit.call_args.kwargs['env']
+        self.assertTrue(command[-1].endswith('run-smoke.sbatch'))
+        self.assertEqual(env['UPSTREAM_SMOKE_ONLY'], '1')
+        self.assertEqual(env['CONSENSUSARENA_CASES'], '5-1')
+        self.assertEqual(env['UPSTREAM_REQUESTS'], '32')
+        with patch.dict(harness.os.environ, {'USER': 'test-user', 'UPSTREAM_SMOKE_ONLY': '1'}, clear=True), \
+             patch.object(harness.sys, 'argv', ['benchmark-suite.py', 'submit', 'latency']):
+            with self.assertRaises(ValueError):
+                harness.main()
+
+    def test_collector_rejects_contaminated_scene_identity(self):
+        suite = self.base
+        item = dict(replicas=5, topology_id=1, profile='A')
+        self.base = suite / 'scenes' / harness.scene_name(item)
+        metadata = self.fixture()
+        metadata['profile'] = 'C'
+        harness.write_json(self.base / 'metadata.json', metadata)
+        harness.write_json(self.base / 'outcome.json', dict(valid=True, error=None, runner_exit=0))
+        harness.write_json(suite / 'suite.json', dict(scenes=[item]))
+        self.assertEqual(harness.collect(suite), 2)
+        status = json.loads((suite / 'suite-status.json').read_text())
+        self.assertIn('identity', status['scenes'][0]['error'])
 
 
 if __name__ == '__main__':

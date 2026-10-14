@@ -140,6 +140,9 @@ func (r *Replica) ConnectToPeers() {
 	done := make(chan bool)
 
 	go r.waitForPeerConnections(done)
+	if err := defs.WaitForPeerListeners(); err != nil {
+		r.Fatal(err)
+	}
 
 	for i := 0; i < int(r.Id); i++ {
 		for {
@@ -177,6 +180,9 @@ func (r *Replica) ConnectToPeersNoListeners() {
 	done := make(chan bool)
 
 	go r.waitForPeerConnections(done)
+	if err := defs.WaitForPeerListeners(); err != nil {
+		r.Fatal(err)
+	}
 
 	for i := 0; i < int(r.Id); i++ {
 		for {

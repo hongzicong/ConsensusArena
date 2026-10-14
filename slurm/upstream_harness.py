@@ -222,6 +222,8 @@ def scene(base, specification, env):
     try:
         deadline = time.monotonic() + int(env.get('REPLICA_READY_TIMEOUT_SECONDS', '900'))
         while True:
+            if len(list((base / 'status').glob('listening-*'))) == n:
+                (base / 'status' / 'peer-listeners.ready').touch()
             ready = 0
             for alias in metadata['replicas']:
                 log = base / 'logs' / (alias + '-replica.log')

@@ -40,9 +40,11 @@ else
     wait_marker master.ready
     if (( rank < replica_count )); then
         alias=${replicas[$rank]}
+        export CONSENSUSARENA_PEER_LISTENERS_READY="$run_dir/status/peer-listeners.ready"
         run_app -run server -config "$config" -quorum "$quorum" -alias "$alias" \
           -log "$run_dir/logs/$alias-replica.log" > "$run_dir/stdout/$alias-replica.out" 2>&1 &
         pids+=("$!")
+        python3 "$script_dir/listener-ready.py" "$((7070+rank))" "$run_dir/status/listening-$rank"
     else
         alias=${clients[$((rank-replica_count))]}
         wait_marker replicas.ready

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 )
 
 // Initialized once before participants start; advertised identities stay unchanged.
@@ -52,4 +53,25 @@ func DialAddress(endpoint string) string {
 		return address
 	}
 	return endpoint
+}
+
+// A proxy can accept TCP before its real target listens. This deployment-only
+// barrier preserves upstream's assumption that a successful dial reaches a peer.
+func WaitForPeerListeners() error {
+	path := os.Getenv("CONSENSUSARENA_PEER_LISTENERS_READY")
+	if path == "" {
+		return nil
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for peer listener barrier %q", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

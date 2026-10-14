@@ -38,6 +38,7 @@ Results must not be merged into matched-workload ConsensusArena promotion data.
 | --- | --- |
 | Load an optional outgoing endpoint map; reject double delay injection | `main.go`, new `replica/defs/network.go` |
 | Dial Toxiproxy while keeping advertised addresses and voter identities | `client/client.go`, `replica/replica.go` |
+| Release peer dials only after every data listener is present, because a proxy can accept before its upstream target | `replica/replica.go`, `replica/defs/network.go`, `slurm/listener-ready.py` |
 | Register a replica's host and port separately when configuration uses endpoints | `run.go` |
 | Resolve configured quorum aliases by endpoint, distinguishing co-located replicas; preserve bare-host compatibility | `replica/quorum.go` |
 | Generate original deployment/quorum/proxy files | `slurm/upstream_harness.py` |
