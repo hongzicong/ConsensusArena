@@ -442,6 +442,9 @@ def collect(base):
                 raise ValueError('diagnostic flag differs from suite kind')
             if (metadata['replica_count'], metadata['topology_id'], metadata['profile']) != (item['replicas'], item['topology_id'], item['profile']):
                 raise ValueError('scene identity differs from suite manifest')
+            for key, expected in manifest.get('settings', {}).items():
+                if metadata.get(key) != expected:
+                    raise ValueError('scene setting differs from suite manifest: ' + key)
             outcome = json.loads((path / 'outcome.json').read_text())
             valid = summarize(path)
             complete = valid and outcome.get('error') is None and outcome.get('runner_exit') == 0

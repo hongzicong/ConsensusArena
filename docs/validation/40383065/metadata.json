@@ -1,0 +1,137 @@
+{
+  "topology_id": 1,
+  "replica_count": 5,
+  "replicas": [
+    "ap-northeast-1",
+    "ap-southeast-4",
+    "eu-west-1",
+    "af-south-1",
+    "ap-southeast-7"
+  ],
+  "clients": [
+    "ap-east-1",
+    "ap-northeast-1",
+    "ap-southeast-2",
+    "eu-west-1",
+    "ca-central-1",
+    "sa-east-1",
+    "us-east-1",
+    "us-east-2",
+    "us-west-1",
+    "us-west-2"
+  ],
+  "protocol": "swiftpaxos",
+  "benchmark_mode": "matched",
+  "workload_kind": "matched-master-poisson-zipf",
+  "seed_policy": "master-alias-clone-derived",
+  "clones": 0,
+  "preload": true,
+  "shuffle_keys": true,
+  "warmup_kind": "bootstrap-then-timed-warmup",
+  "diagnostic_only": true,
+  "fault_support": false,
+  "upstream_commit": "35c69365f1c7737a08e237bfbaf828ee68897080",
+  "placement_objective": "slow-first",
+  "arrival_rate": 50.0,
+  "command_size": 1000,
+  "key_count": 10000,
+  "zipf_skew": 0.9,
+  "workload_seed": 1,
+  "preload_seed": 1,
+  "warmup": "5s",
+  "duration": "10s",
+  "benchmark_reference_commit": "34cb7b872ab6c8b8b4ede80d86e00398f4d7e345",
+  "profile": "A",
+  "writes": 50,
+  "latency_snapshot_sha256": "f03de2265b7f0f42e5927de6f0165fab5956b4593cb13d2af626f11f89384eef",
+  "topology_sha256": "fab44b9c376ab34817d6557370025d8c0b3a0d4d46fbebf8b8f84daa3d239989",
+  "replica_endpoints": [
+    "10.91.47.26:7070",
+    "10.91.47.26:7071",
+    "10.91.47.26:7072",
+    "10.91.47.26:7073",
+    "10.91.47.26:7074"
+  ],
+  "client_endpoints": [
+    "10.91.47.26:17000",
+    "10.91.47.26:17001",
+    "10.91.47.26:17002",
+    "10.91.47.26:17003",
+    "10.91.47.26:17004",
+    "10.91.47.26:17005",
+    "10.91.47.26:17006",
+    "10.91.47.26:17007",
+    "10.91.47.26:17008",
+    "10.91.47.26:17009"
+  ],
+  "initial_leader_alias": "ap-northeast-1",
+  "fast_quorum_aliases": [
+    "ap-northeast-1",
+    "ap-southeast-4",
+    "eu-west-1"
+  ],
+  "placement_plan": {
+    "leader": "ap-northeast-1",
+    "fast_quorum": [
+      "ap-northeast-1",
+      "ap-southeast-4",
+      "eu-west-1"
+    ],
+    "client_routes": {
+      "ap-east-1": "ap-northeast-1",
+      "ap-northeast-1": "ap-northeast-1",
+      "ap-southeast-2": "ap-southeast-4",
+      "ca-central-1": "eu-west-1",
+      "eu-west-1": "eu-west-1",
+      "sa-east-1": "eu-west-1",
+      "us-east-1": "eu-west-1",
+      "us-east-2": "eu-west-1",
+      "us-west-1": "ap-northeast-1",
+      "us-west-2": "ap-northeast-1"
+    },
+    "fast_mean_ms": 197.06329975,
+    "slow_mean_ms": 222.24079970000003,
+    "model": "swift-c2-leader-fixed-majority",
+    "objective": "slow-first"
+  },
+  "key_mapping_seed": 1,
+  "ingress_by_client": {
+    "ap-east-1": "ap-northeast-1",
+    "ap-northeast-1": "ap-northeast-1",
+    "ap-southeast-2": "ap-southeast-4",
+    "eu-west-1": "eu-west-1",
+    "ca-central-1": "eu-west-1",
+    "sa-east-1": "eu-west-1",
+    "us-east-1": "eu-west-1",
+    "us-east-2": "eu-west-1",
+    "us-west-1": "ap-northeast-1",
+    "us-west-2": "ap-northeast-1"
+  },
+  "replica_id_policy": "upstream-master-registration-order",
+  "binary_sha256": "be3ead912d812ed691b3f0e241e472b574736f482ffea4b79eaaa598b64faeaf",
+  "toxiproxy_sha256": "556d891134a3c582dc1e1a3f7335fd55142e5965769855a00b944e13e48302fc",
+  "job_id": "40383065",
+  "allocation_nodes": [
+    "jbm026"
+  ],
+  "scene_nodes": [
+    "jbm026"
+  ],
+  "partition": "bigmem",
+  "qos": "serial",
+  "resource_observer": "gnu-time",
+  "cpus_per_task": 1,
+  "latency_backend": "toxiproxy",
+  "latency_rounding": "ceil(RTT/2) per stream direction",
+  "adapter_revision": "f17bb551d284256e039120e40bf957484912ef92",
+  "harness_sha256": "21190b515ffb7052fd9333c856e5cafb50fbe4688867a62eb8e2dbffcec78617",
+  "latency_jitter_ms": "0",
+  "bandwidth_kbps": "125000",
+  "preload_digests": {
+    "ap-northeast-1": "01eb45405093fbc6509281c5398038630d6ce108ee2fccd01993c8850fdcea55",
+    "ap-southeast-4": "01eb45405093fbc6509281c5398038630d6ce108ee2fccd01993c8850fdcea55",
+    "eu-west-1": "01eb45405093fbc6509281c5398038630d6ce108ee2fccd01993c8850fdcea55",
+    "af-south-1": "01eb45405093fbc6509281c5398038630d6ce108ee2fccd01993c8850fdcea55",
+    "ap-southeast-7": "01eb45405093fbc6509281c5398038630d6ce108ee2fccd01993c8850fdcea55"
+  }
+}

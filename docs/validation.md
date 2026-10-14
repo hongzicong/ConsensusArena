@@ -67,3 +67,40 @@ claim or promotion gate. No full 27-scene or fault-recovery suite was run.
 These fixes affect deployment/transport startup and measurement lifecycle;
 upstream protocol packages, message codecs, voting, commit, fallback, and
 recovery logic remain unchanged.
+
+
+## Matched-master benchmark adapter
+
+Reference master: `34cb7b872ab6c8b8b4ede80d86e00398f4d7e345`.
+Implementation revision: `f17bb55` (the full revision is preserved in metadata).
+
+Local validation passed: shared Go tests (including reproducible sampling,
+bootstrap/warmup/reply accounting and deterministic preload), all 16 Python
+harness tests, Linux cross-build, and the upstream source guard. The independent
+Go donor oracle matched 90 role-selection cases across five shared protocols,
+5/9/13 replicas, three topologies and both planning objectives. All ten sampling
+and clock functions, both preload functions and the template match pinned master.
+The complete six-protocol packages still match the upstream pin.
+
+| Field | Matched integration observation |
+| --- | --- |
+| Job | `40383065`, `COMPLETED`, exit `0:0`, allocation elapsed 38s |
+| Node / allocation | `jbm026`, single-node `bigmem`, serial QOS, 16 tasks, 1 CPU/task |
+| Binary SHA256 | `be3ead912d812ed691b3f0e241e472b574736f482ffea4b79eaaa598b64faeaf` |
+| Scene | SwiftPaxos, 5 replicas, 10 clients, topology 1, profile A |
+| Diagnostic workload | 50 Poisson requests/s/client, 10,000 Zipf 0.9 keys, 1,000 bytes/value |
+| Sampling / clocks | Master seed/operation/payload algorithms; 5s warmup + 10s generation; all replies drained |
+| Completion | 10/10 client exits zero; 4,910/4,910 measured replies (2,415 READ, 2,495 UPDATE) |
+| Preload | All five replicas match `01eb45405093fbc6509281c5398038630d6ce108ee2fccd01993c8850fdcea55` |
+| Leader | `ap-northeast-1`, matching master policy |
+| Fixed fast majority | `ap-northeast-1`, `ap-southeast-4`, `eu-west-1` |
+| Resource records | 16/16 complete CPU/RSS/context-switch observations |
+| Validity | `valid=true`, suite complete, `diagnostic_only=true` |
+
+Portable evidence: [validation/40383065/](validation/40383065/).
+Full raw logs/configuration/binaries are archived on Jed at
+`~/consensusarena-results/swiftpaxos-upstream-40383065/`; the local archive is
+`results/jed/matched-40383065.tar.gz` (ignored). No production-load 27-scene suite
+or fault suite was run. This integration verifies the matched adapter, not an
+architecture speedup. Upstream/master protocol differences still require a
+separate same-semantics comparison before attributing latency to modularity.

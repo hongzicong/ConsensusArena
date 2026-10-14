@@ -198,6 +198,17 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual((self.base / 'config/quorum.conf').read_text(), '')
         self.assertNotIn('leader:', (self.base / 'config/cluster.conf').read_text())
 
+    def test_collector_rejects_workload_mode_contamination(self):
+        suite = self.base
+        item = dict(replicas=5, topology_id=1, profile='A')
+        self.base = suite / 'scenes' / harness.scene_name(item)
+        self.fixture()
+        harness.write_json(self.base / 'outcome.json', dict(valid=True, error=None, runner_exit=0))
+        harness.write_json(suite / 'suite.json', dict(scenes=[item], settings=dict(benchmark_mode='matched')))
+        self.assertEqual(harness.collect(suite), 2)
+        status = json.loads((suite / 'suite-status.json').read_text())
+        self.assertIn('benchmark_mode', status['scenes'][0]['error'])
+
 
 
 if __name__ == '__main__':
