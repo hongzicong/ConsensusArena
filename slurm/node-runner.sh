@@ -9,7 +9,15 @@ quorum="$run_dir/config/quorum.conf"
 binary="$run_dir/binary/consensusarena-linux-amd64"
 pids=()
 cleanup() {
-    for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+    for pid in "${pids[@]}"; do
+        children=$(pgrep -P "$pid" || true)
+        if [[ -n "$children" ]]; then
+            # Stop the app first so GNU time can flush its final resource record.
+            for child in $children; do kill "$child" 2>/dev/null || true; done
+        else
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
     for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
 }
 trap cleanup EXIT INT TERM
@@ -21,7 +29,8 @@ wait_marker() {
     done
 }
 run_app() {
-    GOMAXPROCS=${SLURM_CPUS_PER_TASK:-8} /usr/bin/time \
+    export GOMAXPROCS=${SLURM_CPUS_PER_TASK:-8}
+    exec /usr/bin/time \
       -o "$run_dir/stdout/resources-rank-$rank.txt" \
       -f 'elapsed_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kb=%M\nvoluntary_context_switches=%w\ninvoluntary_context_switches=%c\nexit_status=%x' \
       "$binary" "$@"

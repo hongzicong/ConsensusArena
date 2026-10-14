@@ -1,4 +1,5 @@
 import csv
+import importlib.util
 import json
 from pathlib import Path
 import tempfile
@@ -104,6 +105,31 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(harness.collect(suite), 2)
         status = json.loads((suite / 'suite-status.json').read_text())
         self.assertIn('identity', status['scenes'][0]['error'])
+
+    def test_listener_probe_only_accepts_listen_state(self):
+        spec = importlib.util.spec_from_file_location('listener_ready', harness.ROOT / 'slurm/listener-ready.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        table = self.base / 'tcp'
+        table.write_text('header\n0: 00000000:1B9E 00000000:0000 01\n')
+        self.assertFalse(module.listening(7070, [table]))
+        table.write_text('header\n0: 00000000:1B9E 00000000:0000 0A\n')
+        self.assertTrue(module.listening(7070, [table]))
+        self.assertFalse(module.listening(7071, [table]))
+
+    def test_missing_participant_resource_evidence_is_rejected(self):
+        metadata = self.fixture()
+        metadata['resource_observer'] = 'gnu-time'
+        harness.write_json(self.base / 'metadata.json', metadata)
+        (self.base / 'stdout').mkdir()
+        self.assertFalse(harness.summarize(self.base))
+        for rank in range(16):
+            (self.base / 'stdout' / f'resources-rank-{rank}.txt').write_text(
+                'elapsed_seconds=1\nuser_seconds=.1\nsystem_seconds=.1\nmax_rss_kb=100\n'
+                'voluntary_context_switches=10\ninvoluntary_context_switches=1\nexit_status=0\n')
+        self.assertTrue(harness.summarize(self.base))
+        (self.base / 'stdout' / 'resources-rank-15.txt').unlink()
+        self.assertFalse(harness.summarize(self.base))
 
 
 if __name__ == '__main__':

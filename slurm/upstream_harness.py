@@ -158,6 +158,21 @@ def summarize(base):
                         completed_per_second=len(values)/seconds if seconds else '')
         rows.append(identity)
         all_values.extend(values)
+    resources = []
+    if metadata.get('resource_observer') == 'gnu-time':
+        for rank in range(metadata['replica_count'] + len(metadata['clients']) + 1):
+            path = base / 'stdout' / f'resources-rank-{rank}.txt'
+            text = path.read_text() if path.exists() else ''
+            fields = dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
+            keys = ('elapsed_seconds', 'user_seconds', 'system_seconds', 'max_rss_kb',
+                    'voluntary_context_switches', 'involuntary_context_switches', 'exit_status')
+            try:
+                complete = all(math.isfinite(float(fields[key])) and float(fields[key]) >= 0 for key in keys)
+                complete = complete and float(fields['max_rss_kb']) > 0
+            except (KeyError, ValueError):
+                complete = False
+            resources.append(dict(rank=rank, complete=complete, fields=fields))
+            valid = valid and complete
     aggregate = dict(protocol=metadata['protocol'], replicas=metadata['replica_count'],
                      topology_id=metadata['topology_id'], profile=metadata['profile'], repetition=1,
                      workload_kind=metadata['workload_kind'], operation='ALL', valid=valid,
@@ -172,8 +187,10 @@ def summarize(base):
             writer = csv.DictWriter(output, fieldnames=list(records[0]))
             writer.writeheader()
             writer.writerows(records)
-    write_json(base / 'validation.json', dict(valid=valid, clients=rows,
-                                            claim='upstream-native latency only; not matched Poisson or recovery evidence'))
+    claim = ('diagnostic integration only; no comparative performance evidence' if metadata['diagnostic_only']
+             else 'upstream-native latency only; not matched Poisson or recovery evidence')
+    write_json(base / 'validation.json', dict(valid=valid, clients=rows, resources=resources,
+                                            diagnostic_only=metadata['diagnostic_only'], claim=claim))
     return valid
 
 
@@ -210,6 +227,7 @@ def scene(base, specification, env):
     metadata.update(job_id=env['SLURM_JOB_ID'], allocation_nodes=allocated, scene_nodes=allocated[:nodes],
                     partition=env.get('SLURM_JOB_PARTITION', 'unrecorded'),
                     qos=env.get('SLURM_JOB_QOS', 'unrecorded'),
+                    resource_observer='gnu-time',
                     cpus_per_task=cpus, latency_backend='toxiproxy', latency_rounding='ceil(RTT/2) per stream direction',
                     adapter_revision=env.get('UPSTREAM_ADAPTER_REVISION', 'unrecorded'),
                     harness_sha256=sha256(ROOT / 'slurm/upstream_harness.py'),
@@ -274,6 +292,8 @@ def collect(base):
         path = base / 'scenes' / scene_name(item)
         try:
             metadata = json.loads((path / 'metadata.json').read_text())
+            if metadata['diagnostic_only'] != (manifest.get('kind', 'latency') == 'smoke'):
+                raise ValueError('diagnostic flag differs from suite kind')
             if (metadata['replica_count'], metadata['topology_id'], metadata['profile']) != (item['replicas'], item['topology_id'], item['profile']):
                 raise ValueError('scene identity differs from suite manifest')
             outcome = json.loads((path / 'outcome.json').read_text())
@@ -295,7 +315,8 @@ def collect(base):
     complete = all(item['complete'] for item in status)
     write_json(base / 'suite-status.json', dict(complete=complete, expected_scenes=len(status),
                                               completed_scenes=sum(item['complete'] for item in status), scenes=status))
-    print('Latency suite {}: {}'.format('completed successfully' if complete else 'INCOMPLETE', base), flush=True)
+    print('{} suite {}: {}'.format(manifest.get('kind', 'latency').title(),
+                                  'completed successfully' if complete else 'INCOMPLETE', base), flush=True)
     return 0 if complete else 2
 
 
