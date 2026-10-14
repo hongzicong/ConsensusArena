@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,14 @@ func runReplica(c *config.Config, logger *dlog.Logger) {
 	log.Printf("Server starting on port %d", port)
 	maddr := fmt.Sprintf("%s:%d", c.MasterAddr, c.MasterPort)
 	addr := c.ReplicaAddrs[c.Alias]
+	// Slurm co-locates replicas on a host with distinct listening ports.
+	if host, configuredPort, err := net.SplitHostPort(addr); err == nil {
+		parsed, err := strconv.Atoi(configuredPort)
+		if err != nil || parsed != port {
+			log.Fatalf("replica endpoint %q does not match configured port %d", addr, port)
+		}
+		addr = host
+	}
 	replicaId, nodeList, isLeader := registerWithMaster(addr, maddr, port)
 	f := (len(c.ReplicaAddrs) - 1) / 2
 	log.Printf("Tolerating %d max. failures", f)

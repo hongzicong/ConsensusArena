@@ -303,7 +303,7 @@ func (c *Client) dial(addr string, connect bool) (net.Conn, error) {
 	)
 
 	for try := 0; try < 3; try++ {
-		conn, err = net.DialTimeout("tcp", addr, 3*time.Second)
+		conn, err = net.DialTimeout("tcp", defs.DialAddress(addr), 3*time.Second)
 		if err == nil {
 			if connect {
 				io.WriteString(conn, "CONNECT "+rpc.DefaultRPCPath+" HTTP/1.0\n\n")
@@ -353,7 +353,7 @@ func (c *Client) findClosest(alive []bool) error {
 			addr = "127.0.0.1"
 		}
 
-		if addr == c.server {
+		if addr == c.server || c.replicas[i] == c.server {
 			c.ClosestId = i
 		}
 

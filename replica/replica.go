@@ -143,7 +143,7 @@ func (r *Replica) ConnectToPeers() {
 
 	for i := 0; i < int(r.Id); i++ {
 		for {
-			if conn, err := net.Dial("tcp", r.PeerAddrList[i]); err == nil {
+			if conn, err := net.Dial("tcp", defs.DialAddress(r.PeerAddrList[i])); err == nil {
 				r.Peers[i] = conn
 				break
 			}
@@ -180,7 +180,7 @@ func (r *Replica) ConnectToPeersNoListeners() {
 
 	for i := 0; i < int(r.Id); i++ {
 		for {
-			if conn, err := net.Dial("tcp", r.PeerAddrList[i]); err == nil {
+			if conn, err := net.Dial("tcp", defs.DialAddress(r.PeerAddrList[i])); err == nil {
 				r.Peers[i] = conn
 				break
 			}

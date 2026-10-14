@@ -84,3 +84,12 @@ It computes the expected latencies and estimates how the protocols perform in su
 [quorum]: quorum.conf
 [latency]: latency.conf
 [flint]: https://github.com/vonaka/flint
+
+## ConsensusArena upstream Slurm branch
+
+This branch pins the upstream implementation and adds platform adapters for
+SCITAS Jed while retaining the original protocol packages and source structure.
+See [the Slurm implementation and operating notes](docs/SLURM.md) for building,
+submitting latency scenes, source provenance, and comparison limitations.
+Results use the upstream request-count workload; they are not matched Poisson
+benchmarks or crash-recovery promotion evidence.

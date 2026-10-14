@@ -47,6 +47,14 @@ func main() {
 		c.Protocol = *protocol
 	}
 	defs.LatencyConf = *latency
+	if path := os.Getenv("CONSENSUSARENA_DIAL_MAP"); path != "" {
+		if *latency != "" {
+			log.Fatal("Toxiproxy and -latency cannot both inject network delay")
+		}
+		if err := defs.ConfigureDialMap(path); err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	switch *machineType {
 	case "replica":

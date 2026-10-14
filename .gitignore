@@ -1,0 +1,7 @@
+/.gocache/
+/results/
+/consensusarena-linux-amd64
+/swiftpaxos
+/swiftpaxos.exe
+/slurm-*.out
+__pycache__/

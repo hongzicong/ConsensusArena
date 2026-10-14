@@ -3,6 +3,7 @@ package replica
 import (
 	"bufio"
 	"errors"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -197,7 +198,8 @@ func NewQuorumsFromFile(qfile string, r *Replica) ([]Quorum, []int32, error) {
 
 		for rid := int32(0); rid < int32(r.N); rid++ {
 			paddr := strings.Split(r.PeerAddrList[rid], ":")[0]
-			if addr == paddr {
+			_, _, endpointErr := net.SplitHostPort(addr)
+			if (endpointErr == nil && addr == r.PeerAddrList[rid]) || (endpointErr != nil && addr == paddr) {
 				id = rid
 				break
 			}
