@@ -1,7 +1,7 @@
 """External startup policy equivalent to the pinned master's plan.go functions.
 
-No protocol implementation or registry is imported. Differential checks against
-the actual donor Go policies are in check-benchmark-parity.py.
+No protocol implementation or registry is imported. The donor revision and
+source hashes are recorded in upstream-provenance.json.
 """
 import itertools
 import math

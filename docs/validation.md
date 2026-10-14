@@ -104,3 +104,12 @@ Full raw logs/configuration/binaries are archived on Jed at
 or fault suite was run. This integration verifies the matched adapter, not an
 architecture speedup. Upstream/master protocol differences still require a
 separate same-semantics comparison before attributing latency to modularity.
+
+
+## Test-file cleanup
+
+The development-only Go test files, Python harness tests, donor-parity checker,
+and upstream source-check script were removed after the recorded validation.
+The observations above describe checks performed before this cleanup. Benchmark
+implementation, runtime result validation, source provenance, and the archived
+Slurm evidence are retained.

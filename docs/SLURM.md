@@ -60,12 +60,12 @@ client ingress without a global leader or fixed voter set. Both `slow-first`
 (default) and `fast-first` objectives match master. Custom client weights are
 rejected explicitly. N²Paxos has no master counterpart and requires native mode.
 
-`check-benchmark-parity.py` compiles an independent oracle from the pinned
-master's actual Go config, placement, and `plan.go` source. It checks all nine
-size/topology cases for all five shared protocols and both objectives (90 cases),
-including identities, routes, predicted costs, and tie breaking. It also checks
-all ten sampling/clock functions, both preload functions, and `workload.conf`
-against the reference source. Re-run it after updating adapters or the reference.
+The implementation-time comparison used the pinned master's actual Go policies
+for all nine size/topology cases, five shared protocols and both objectives
+(90 cases). The sampling/clock functions, preload functions and workload template
+were also checked against that reference. The temporary test and source-check
+scripts have been removed; source pins and hashes remain in
+`upstream-provenance.json`, and observations remain in the validation record.
 
 Wiki grounding: `ConsensusWiki/wiki/protocols/SwiftPaxos.md`, Roles and Fast path;
 `ConsensusWiki/wiki/papers/SwiftPaxos-2024.md`, quorum system and artifact mapping.
@@ -159,15 +159,10 @@ all observed latency differences to modularity. Per-protocol logging and
 completion behavior also remain source-specific. `optread` is disabled.
 
 Native Windows builds retain upstream's Linux-only SIGUSR1 hook; build the
-complete executable for Linux. Shared adapters and their tests run on Windows.
+complete executable for Linux. The complete executable targets Linux.
 All six protocols compile; the real-network validation currently targets SwiftPaxos.
 
-```powershell
-go test -timeout 7200s ./client ./config ./state ./replica/...
-python slurm/verify-upstream.py
-python slurm/check-benchmark-parity.py
-python -m unittest discover -s slurm -p test_upstream_harness.py
-```
+
 
 See [validation.md](validation.md) for real-job evidence and its limits.
 Historical native evidence remains tagged as native; it is not relabeled matched.
