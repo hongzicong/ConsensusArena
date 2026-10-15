@@ -107,6 +107,8 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 	}
 	d, _ := planningPaths(latency)
 	levels := make([][]candidate, m)
+	// heads[p] holds the first (least-knowledge) level of each of p's delegate chains.
+	heads := make([][]Requirement, m)
 	signature := func(r Requirement) string {
 		b := make([]byte, 8*len(r))
 		for i, v := range r {
@@ -151,6 +153,7 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 				return arrivals[i].a < arrivals[j].a
 			})
 			r := make(Requirement, m)
+			heads[p] = append(heads[p], nil)
 			for i, e := range arrivals {
 				if e.t > maxBudget {
 					break
@@ -159,10 +162,17 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 				if i+1 < len(arrivals) && arrivals[i+1].t == e.t {
 					continue
 				}
-				if e.t < minBudget || !r.valid(m, voters/2) || r[leader] != r.Quorum() {
+				if e.t < minBudget {
 					continue
 				}
+				// Upstream asserts this: shortest paths make every level a valid normal form.
+				if !r.valid(m, voters/2) || r[leader] != r.Quorum() {
+					return Plan{}, fmt.Errorf("invalid knowledge level for proposer %d via leader %d at %s", p, leader, e.t)
+				}
 				c := candidate{req: append(Requirement(nil), r...), budget: e.t, leader: leader, cost: e.t + latency[leader][p]}
+				if heads[p][len(heads[p])-1] == nil {
+					heads[p][len(heads[p])-1] = c.req
+				}
 				sig := signature(r)
 				old, ok := byRequirement[sig]
 				if !ok || c.cost < old.cost || (c.cost == old.cost && c.leader < old.leader) {
@@ -207,6 +217,12 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 			}
 			if !dominated {
 				keep = append(keep, c)
+			}
+			// Knowledge only grows along a chain, so a level compatible with
+			// every other chain head is compatible with every other level:
+			// costlier levels can never be needed (upstream max_levels).
+			if !dominated && compatibleWithHeads(c.req, p, heads, voters/2) {
+				break
 			}
 		}
 		levels[p] = keep
@@ -499,4 +515,18 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 	}
 	copy(plan.Digest[:], h.Sum(nil))
 	return plan, validateRequirements(plan.Requirements, voters)
+}
+
+func compatibleWithHeads(r Requirement, p int, heads [][]Requirement, f int) bool {
+	for q, hs := range heads {
+		if q == p {
+			continue
+		}
+		for _, h := range hs {
+			if h != nil && !Compatible(r, h, f) {
+				return false
+			}
+		}
+	}
+	return true
 }
