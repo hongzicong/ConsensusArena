@@ -17,11 +17,10 @@ export LC_ALL=C
 repo_root=${CONSENSUSARENA_ROOT:-${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR is not set}}
 repo_root=$(cd "$repo_root" && pwd)
 script_dir="$repo_root/slurm"
-if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    echo "Job arrays are not supported; submit one serial allocation." >&2
-    exit 2
-fi
 if [[ "${CONSENSUSARENA_SCENE_WORKER:-0}" != 1 ]]; then
+    if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
+        exec "${CONSENSUSARENA_PYTHON:-python3}" "$script_dir/benchmark-suite.py" task latency "$repo_root"
+    fi
     exec "${CONSENSUSARENA_PYTHON:-python3}" "$script_dir/benchmark-suite.py" serial latency "$repo_root"
 fi
 replica_counts_spec=${CONSENSUSARENA_REPLICAS:-5:9:13}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Submit serial Slurm scenes and collect complete or partial evidence.
+"""Submit parallel Slurm arrays or serial scenes and collect their evidence.
 
 Run from ConsensusArena: python3 slurm/benchmark-suite.py submit latency|fault
 Environment overrides are shared with the existing single-scene harnesses.
@@ -15,6 +15,7 @@ import time
 import uuid
 
 TIMEOUT = 7200
+DEFAULT_MAX_PARALLEL = 6
 
 
 def scenes(env):
@@ -54,7 +55,7 @@ def write_json(path, value):
     temp.replace(path)
 
 
-def run_scene(kind, repo, root, plan, index, env):
+def run_scene(kind, repo, root, plan, index, env, array=False):
     env = dict(os.environ if env is None else env)
     scene = plan[index]
     base = root / 'scenes' / scene_name(scene)
@@ -67,9 +68,11 @@ def run_scene(kind, repo, root, plan, index, env):
                CONSENSUSARENA_YCSB_PROFILES=scene['profile'],
                CONSENSUSARENA_CASES='{replicas}-{topology_id}'.format(**scene),
                CONSENSUSARENA_RUN_DIR=str(base))
-    print('Serial scene {}: {} -> {}'.format(index, scene_name(scene), base), flush=True)
+    print('{} scene {}: {} -> {}'.format('Array' if array else 'Serial', index, scene_name(scene), base), flush=True)
     command = ['bash', str(repo / 'slurm' / ('run-' + kind + '.sbatch'))]
     outcome = dict(**scene, scene_index=index)
+    if array:
+        outcome['array_task_id'] = index
     try:
         log = root / 'scene-logs' / (scene_name(scene) + '.out')
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +92,24 @@ def publish_manifest(root, manifest):
     if (root / 'suite.json').exists() and json.loads((root / 'suite.json').read_text()) != manifest:
         raise ValueError('run directory belongs to a different suite')
     write_json(root / 'suite.json', manifest)
+
+
+def task(kind, repo, env=None):
+    """Run one selected scene in this array element's own allocation."""
+    env = dict(os.environ if env is None else env)
+    plan = scenes(env)
+    index = int(env['SLURM_ARRAY_TASK_ID'])
+    job = env['SLURM_ARRAY_JOB_ID']
+    if not job.isdigit() or index < 0:
+        raise ValueError('invalid Slurm array identity')
+    # Direct sbatch arrays may retain 27 indices after selecting fewer scenes.
+    if index >= len(plan):
+        print('No selected scene for array index ' + str(index), flush=True)
+        return 0
+    root = suite_root(kind, job, env)
+    publish_manifest(root, dict(kind=kind, array_job_id=job, scenes=plan,
+                                execution='isolated_slurm_array', nodes_per_scene=3))
+    return run_scene(kind, repo, root, plan, index, env, array=True)
 
 
 def clean_steps(job):
@@ -142,7 +163,11 @@ def serial(kind, repo, env=None):
     return collect(kind, root)
 
 
-def submit(kind, repo, account, exports='ALL', walltime=None):
+def submit(kind, repo, account, exports='ALL', walltime=None, mode='array', max_parallel=None):
+    if mode not in ('array', 'serial'):
+        raise ValueError('expected array or serial mode')
+    if max_parallel is not None and (mode != 'array' or max_parallel < 1):
+        raise ValueError('--max-parallel requires array mode and a positive limit')
     env = dict(os.environ)
     for entry in exports.split(','):
         if entry == 'ALL':
@@ -158,14 +183,32 @@ def submit(kind, repo, account, exports='ALL', walltime=None):
     command = ['sbatch', '--parsable', '--account=' + account, '--export=ALL']
     if walltime is not None:
         command.append('--time=' + walltime)
+    if mode == 'array':
+        limit = DEFAULT_MAX_PARALLEL if max_parallel is None else max_parallel
+        command.extend(['--array=0-{}%{}'.format(len(plan) - 1, limit),
+                        '--output=slurm-%A_%a.out'])
     command.append(str(worker))
     output = subprocess.check_output(command, cwd=repo, env=env, text=True, timeout=TIMEOUT)
     job = output.strip().split(';')[0]
     if not job.isdigit():
         raise ValueError('unexpected sbatch job ID: ' + output)
     root = suite_root(kind, job, env)
-    print('Serial job: {} | scenes: {} | run directory: {}'.format(job, len(plan), root), flush=True)
-    print('Results are collected inside the same allocation; log: slurm-{}.out'.format(job), flush=True)
+    print('{} job: {} | scenes: {} | run directory: {}'.format(mode.title(), job, len(plan), root), flush=True)
+    if mode == 'serial':
+        print('Results are collected inside the same allocation; log: slurm-{}.out'.format(job), flush=True)
+        return
+    try:
+        collector = subprocess.check_output(
+            ['sbatch', '--parsable', '--account=' + account, '--export=ALL',
+             '--dependency=afterany:' + job, str(repo / 'slurm/collect-suite.sbatch'),
+             str(repo), kind, str(root)], cwd=repo, env=env, text=True, timeout=TIMEOUT).strip().split(';')[0]
+        if not collector.isdigit():
+            raise ValueError('unexpected collector job ID: ' + collector)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        print('Array is submitted, but collector submission failed. Collect manually with:\n'
+              'python3 slurm/benchmark-suite.py collect {} {}'.format(kind, root), file=sys.stderr)
+        raise
+    print('Collector job: {} | log: slurm-{}.out'.format(collector, collector), flush=True)
 
 
 def merge_csv(paths, output):
@@ -254,23 +297,27 @@ def collect(kind, root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('plan', 'submit', 'serial', 'collect'):
+    for name in ('plan', 'submit', 'task', 'serial', 'collect'):
         command = commands.add_parser(name)
         command.add_argument('kind', choices=('latency', 'fault'))
-        if name in ('serial', 'collect'):
+        if name in ('task', 'serial', 'collect'):
             command.add_argument('path', type=Path)
         if name == 'submit':
             command.add_argument('--account', default='dcl')
             command.add_argument('--export', default='ALL', help='ALL and comma-separated NAME=value overrides')
-            command.add_argument('--mode', choices=('serial',), default='serial',
-                                 help='serial only; retained for existing submission commands')
-            command.add_argument('--time', help='Slurm wall-time limit for the entire suite')
+            command.add_argument('--mode', choices=('array', 'serial'), default='array',
+                                 help='parallel array (default) or one serial allocation')
+            command.add_argument('--max-parallel', type=int,
+                                 help='maximum simultaneous array scenes (default: 6)')
+            command.add_argument('--time', help='Slurm wall-time limit per array scene or entire serial suite')
     args = parser.parse_args()
     repo = Path(__file__).resolve().parent.parent
     if args.command == 'plan':
         print(json.dumps(scenes(os.environ), indent=2))
     elif args.command == 'submit':
-        submit(args.kind, repo, args.account, args.export, args.time)
+        submit(args.kind, repo, args.account, args.export, args.time, args.mode, args.max_parallel)
+    elif args.command == 'task':
+        return task(args.kind, args.path)
     elif args.command == 'serial':
         return serial(args.kind, args.path)
     else:
