@@ -13,6 +13,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/client"
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/dlog"
+	"github.com/hongzicong/ConsensusArena/heatprofile"
 	"github.com/hongzicong/ConsensusArena/master"
 	"github.com/hongzicong/ConsensusArena/placement"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
@@ -24,6 +25,9 @@ var (
 	machineAlias = flag.String("alias", "", "An `alias` of this participant")
 	machineType  = flag.String("run", "server", "Run a `participant`, which is either a server (or replica), a client, a master, or plan (inspect startup placement)")
 	protocol     = flag.String("protocol", "", "Protocol to run. Overwrites `protocol` field of the config file")
+	heatRequests = flag.Int("heat-samples", 1000000, "Independent offline offered requests to sample")
+	heatSeed     = flag.Int64("heat-seed", 101, "Independent offline sampling seed")
+	heatOutput   = flag.String("heat-out", "", "Output profile file for -run heat-sample")
 )
 
 func main() {
@@ -42,6 +46,26 @@ func main() {
 
 	if *protocol != "" {
 		c.Protocol = *protocol
+	}
+	if *machineType == "heat-sample" {
+		if *heatOutput == "" {
+			log.Fatal("-heat-out is required")
+		}
+		profile, err := client.SampleHeat(c, *heatRequests, *heatSeed)
+		if err != nil {
+			log.Fatal(err)
+		}
+		digest, err := heatprofile.Write(*heatOutput, profile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+			"profile": *heatOutput, "sha256": digest, "requests": profile.Requests,
+			"observed_keys": len(profile.Keys), "sample_seed": profile.SampleSeed,
+		}); err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
 	p, ok := lookupProtocol(c.Protocol)
 	if !ok {

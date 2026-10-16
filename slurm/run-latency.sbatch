@@ -395,6 +395,7 @@ run_scale() {
             "$run_dir/config/cluster.conf" > "$profile_dir/config/cluster.conf"
         cp "$run_dir/config/address-map.txt" "$profile_dir/config/address-map.txt"
         cp "$run_dir/config/latency.conf" "$profile_dir/config/latency.conf"
+        python3 "$script_dir/prepare-heat-profile.py" "$binary" "$profile_dir/config/cluster.conf"
         # Inspect the executable's own plan for provenance, never feed it back as config.
         "$binary" -run plan -config "$profile_dir/config/cluster.conf" > "$profile_dir/plan.json"
         printf 'ycsb_profile=%s\nread_ratio_percent=%s\nwrite_ratio_percent=%s\nrepetitions=%s\nworkload_seed=%s\npreload_enabled=%s\npreload_records=%s\npreload_value_size=%s\npreload_seed=%s\n' \

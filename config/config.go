@@ -121,10 +121,13 @@ type Config struct {
 	// Scatter Zipf ranks over key IDs using one mapping shared by all clients.
 	ShuffleKeys    bool
 	KeyMappingSeed int
-	Preload        bool
-	PreloadSeed    int
-	WorkloadSeed   int
-	Pipeline       bool
+	// Immutable empirical input for Bodega deployment planning.
+	HeatProfilePath   string
+	HeatProfileSHA256 string
+	Preload           bool
+	PreloadSeed       int
+	WorkloadSeed      int
+	Pipeline          bool
 	// when pipelining the frequency of syncs
 	Syncs int
 	// when pipelining the maximal number of pending commands
@@ -302,6 +305,18 @@ func Read(filename, alias string) (*Config, error) {
 				ok = true
 			case "keycount":
 				c.KeyCount, err = expectInt(words)
+				ok = true
+			case "heatprofile":
+				parts := strings.SplitN(s.Text(), ":", 2)
+				if len(parts) == 2 {
+					c.HeatProfilePath = strings.TrimSpace(parts[1])
+				}
+				if c.HeatProfilePath == "" {
+					err = Err("heatProfile", "profile path is empty")
+				}
+				ok = true
+			case "heatprofilesha256":
+				c.HeatProfileSHA256, err = expectString(words)
 				ok = true
 			case "uniquekeys":
 				c.UniqueKeys, err = expectBool(words)

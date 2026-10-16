@@ -205,6 +205,8 @@ def run_one(repo, base, config_dir, protocol, profile, repetition, binary, toxi,
         if p.is_file(): shutil.copy2(p,run/'config'/p.name)
     workload = amend((run/'config/cluster.conf').read_text(),dict(protocol=protocol,writes={'A':50,'B':5,'C':0}[profile],warmup=str(WARMUP_S)+'s',duration=str(MEASUREMENT_S)+'s',repetitions=1,**options))
     (run/'config/cluster.conf').write_text(workload)
+    subprocess.run(['python3', str(repo/'slurm/prepare-heat-profile.py'),
+                    str(binary), str(run/'config/cluster.conf')], check=True, timeout=7200)
     # This is diagnostic output from the same planner used at process startup.
     selection=json.loads(subprocess.check_output(
         [str(binary),'-run','plan','-config',str(run/'config/cluster.conf')],
