@@ -26,10 +26,12 @@ type File struct {
 	Keys       []KeyCount `json:"keys"`
 }
 
-// Profile contains validated frozen observations and their content hash.
+// Arrays are immutable after loading; clones in one process share them.
 type Profile struct {
-	File   File
-	SHA256 string
+	File          File
+	SHA256        string
+	Ranks         []int32
+	Probabilities []float64
 }
 
 func CanonicalKeys(keys []KeyCount) {
@@ -74,11 +76,13 @@ func Load(path, expected string, keyCount int) (*Profile, error) {
 	if input.Schema != 1 || input.KeyCount != keyCount || keyCount <= 0 || int64(keyCount) > int64(1<<31-1) || input.Requests == 0 || input.Source != "independent-offline-offered-requests" {
 		return nil, fmt.Errorf("invalid heat profile schema, domain, provenance or sample count")
 	}
-	p := &Profile{File: input, SHA256: digest}
-	seen := make(map[int]bool, len(input.Keys))
+	p := &Profile{File: input, SHA256: digest, Ranks: make([]int32, keyCount), Probabilities: make([]float64, keyCount)}
+	for key := range p.Ranks {
+		p.Ranks[key] = -1
+	}
 	var total uint64
 	for rank, row := range input.Keys {
-		if row.Key < 0 || row.Key >= keyCount || seen[row.Key] || row.Reads > input.Requests || row.Writes > input.Requests-row.Reads {
+		if row.Key < 0 || row.Key >= keyCount || p.Ranks[row.Key] >= 0 || row.Reads > input.Requests || row.Writes > input.Requests-row.Reads {
 			return nil, fmt.Errorf("invalid or duplicate sampled key at rank %d", rank)
 		}
 		count := row.Reads + row.Writes
@@ -93,7 +97,8 @@ func Load(path, expected string, keyCount int) (*Profile, error) {
 			}
 		}
 		total += count
-		seen[row.Key] = true
+		p.Ranks[row.Key] = int32(rank)
+		p.Probabilities[rank] = float64(count) / float64(input.Requests)
 	}
 	if total != input.Requests {
 		return nil, fmt.Errorf("heat sample total mismatch: %d != %d", total, input.Requests)

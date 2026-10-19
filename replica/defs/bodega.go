@@ -31,9 +31,14 @@ func ValidBodegaRanges(ranges []BodegaResponderRange, n int) bool {
 
 // BodegaRosterReply is a routing hint, not a lease or a commit certificate.
 type BodegaRosterReply struct {
-	Ballot     uint64
-	Leader     int
-	Ready      bool
-	Responders uint64
-	Ranges     []BodegaResponderRange
+	// XPaxos extends the shared routing hint with its cold-path state.
+	// Bodega leaves these fields at their zero values.
+	ColdMigrated                      bool
+	ColdBallot, ColdEpoch, ColdQuorum uint64
+	ColdReady                         bool
+	Ballot                            uint64
+	Leader                            int
+	Ready                             bool
+	Responders                        uint64
+	Ranges                            []BodegaResponderRange
 }

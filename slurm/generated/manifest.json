@@ -1,0 +1,17 @@
+{
+  "name": "generalization-example",
+  "topologies": [
+    "n5-c5-topology-00",
+    "n5-c5-topology-01",
+    "n5-c5-topology-02",
+    "n9-c9-topology-00",
+    "n9-c9-topology-01",
+    "n9-c9-topology-02",
+    "n13-c13-topology-00",
+    "n13-c13-topology-01",
+    "n13-c13-topology-02",
+    "n17-c17-topology-00",
+    "n17-c17-topology-01",
+    "n17-c17-topology-02"
+  ]
+}

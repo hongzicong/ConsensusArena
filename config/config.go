@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hongzicong/ConsensusArena/heatprofile"
 )
 
 type Error struct {
@@ -124,6 +126,7 @@ type Config struct {
 	// Immutable empirical input for Bodega deployment planning.
 	HeatProfilePath   string
 	HeatProfileSHA256 string
+	HeatProfile       *heatprofile.Profile
 	Preload           bool
 	PreloadSeed       int
 	WorkloadSeed      int

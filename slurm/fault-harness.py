@@ -156,8 +156,8 @@ def rank_runner(repo, run, binary, toxi):
     if failed: sys.exit(1)
 
 def choose_target(run, protocol):
-    if protocol == 'bodega':
-        # Bodega elects independently of the advisory master. Require agreement
+    if protocol in ('bodega', 'xpaxos'):
+        # Both elect independently of the advisory master. Require agreement
         # in the latest installed roster records before choosing its leader.
         logs = list((run/'logs').glob('*-replica.log'))
         counts = {}
@@ -170,9 +170,9 @@ def choose_target(run, protocol):
         agreed = [(ballot, leader, count) for (ballot, leader), count in counts.items()
                   if count >= len(logs)//2 + 1]
         if not agreed:
-            raise RuntimeError('no majority installed Bodega roster evidence')
+            raise RuntimeError('no majority installed ' + protocol + ' roster evidence')
         ballot, leader, count = max(agreed)
-        return dict(rank=leader, kind='bodega_majority_installed_roster',
+        return dict(rank=leader, kind=protocol+'_majority_installed_roster',
                     ballot=ballot, agreeing_replicas=count, selected_ns=time.time_ns())
     if protocol in ('epaxos','fastpaxos','kcensus'):
         return dict(rank=3,kind='designated_replica_no_global_leader',selected_ns=time.time_ns())

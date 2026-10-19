@@ -9,7 +9,8 @@ source "$script_dir/topology.sh"
 address_map="$run_dir/config/address-map.txt"
 latency_matrix="$run_dir/config/latency.conf"
 control_port=$((18000 + rank))
-proxy_port_base=$((20000 + rank * 16))
+# Disjoint 128-port blocks cover up to 63 data/mesh endpoints and control ports.
+proxy_port_base=$((20000 + rank * 128))
 dial_map="$run_dir/config/dial-map-$rank.txt"
 pid_file="$run_dir/status/toxiproxy-$rank.pid"
 proxy_snapshot="$run_dir/config/toxiproxy-$rank.json"
@@ -95,7 +96,6 @@ kcensus=false
 if awk 'tolower($1) == "protocol:" && tolower($2) == "kcensus" { found=1 } END { exit !found }' "$run_dir/config/cluster.conf"; then
     kcensus=true
     # Space for every voting/non-voting process, including configured clones.
-    proxy_port_base=$((20000 + rank * 64))
 fi
 targets="$run_dir/config/toxiproxy-targets-$rank.txt"
 : > "$targets"
@@ -128,9 +128,9 @@ for ordinal, alias in enumerate(sorted(clients)):
         print(endpoint, f'{host}:{port}')
 PY
 fi
-# Bodega discovers the installed roster on the replica control port. Shape
+# Bodega and XPaxos discover the installed roster on the replica control port. Shape
 # these hints with the same geographic links as its requests, not an oracle.
-if awk 'tolower($1) == "protocol:" && tolower($2) == "bodega" { found=1 } END { exit !found }' "$run_dir/config/cluster.conf"; then
+if awk 'tolower($1) == "protocol:" && (tolower($2) == "bodega" || tolower($2) == "xpaxos") { found=1 } END { exit !found }' "$run_dir/config/cluster.conf"; then
     traffic_types+=(control)
 fi
 target_index=0
@@ -149,7 +149,7 @@ while read -r latency_endpoint target_endpoint; do
         if [[ "$traffic" == control ]]; then
             target_endpoint="${data_endpoint%:*}:$(( ${data_endpoint##*:} + 1000 ))"
             proxy_name+="-control"
-            listen="127.0.0.1:$((proxy_port + 10000))"
+            listen="127.0.0.1:$((proxy_port + 64))"
         fi
         post_json /proxies \
             "{\"name\":\"$proxy_name\",\"listen\":\"$listen\",\"upstream\":\"$target_endpoint\",\"enabled\":true}"

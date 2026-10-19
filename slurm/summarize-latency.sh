@@ -9,10 +9,21 @@ summary="$results_dir/summary.csv"
 raw_dir="$run_dir/raw-latency"
 mkdir -p "$raw_dir"
 
-regions=(
-    ap-east-1 ap-northeast-1 ap-southeast-2 eu-west-1 ca-central-1
-    sa-east-1 us-east-1 us-east-2 us-west-1 us-west-2
-)
+if [[ -f "$run_dir/status/start-unix-ns" ]]; then
+    script_dir=$(cd "$(dirname "$0")" && pwd)
+    python3 "$script_dir/latency-barrier.py" validate "$run_dir"
+fi
+
+mapfile -t regions < <(awk '
+    { sub(/\r$/, "") }
+    $0 == "-- Clients --" { clients = 1; next }
+    clients && /^-- / { exit }
+    clients && NF && $1 !~ /^\/\// { print $1 }
+' "$config")
+if [[ ${#regions[@]} == 0 ]]; then
+    echo "No clients found in $config" >&2
+    exit 1
+fi
 clones=$(awk '$1 == "clones:" { print $2; exit }' "$config")
 expected_files=$((clones + 1))
 slow_path_commands=0
@@ -61,6 +72,15 @@ for region in "${regions[@]}"; do
         exit 1
     fi
     for file in "${files[@]}"; do
+        read -r measured completed < <(awk '
+            /Measured requests / { measured=$NF; reports++ }
+            /latency / && ($(NF-1)=="READ" || $(NF-1)=="UPDATE") { completed++ }
+            END { if (reports != 1 || measured <= 0) measured=-1; print measured, completed+0 }
+        ' "$file")
+        if [[ "$measured" != "$completed" ]]; then
+            echo "Incomplete measured requests in $file: $completed/$measured" >&2
+            exit 1
+        fi
         read -r client_slow_paths client_completed < <(
             awk '/Slow Paths:/ { last = $NF; completed++ }
                  END { printf "%d %d\n", last + 0, completed + 0 }' "$file"

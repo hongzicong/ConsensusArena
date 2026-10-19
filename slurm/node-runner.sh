@@ -83,6 +83,7 @@ if [[ -n "$client_alias" ]]; then
         sleep 1
     done
 
+    export CONSENSUSARENA_LATENCY_RUN="$run_dir"
     set +e
     run_app -run client -config "$config" \
         -alias "$client_alias" -log "$run_dir/results/${client_alias}-client-" \

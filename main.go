@@ -200,6 +200,9 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	if err := b.ConfigureFaultRun(c.Alias, i); err != nil {
 		log.Fatal(err)
 	}
+	if err := b.ConfigureLatencyRun(c.Alias, i); err != nil {
+		log.Fatal(err)
+	}
 	waitFrom := b.LeaderId
 	if b.Fast || b.Leaderless || c.WaitClosest {
 		waitFrom = b.ClosestId

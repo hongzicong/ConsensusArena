@@ -16,6 +16,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/placement"
 	protocolapi "github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/swift"
+	"github.com/hongzicong/ConsensusArena/xpaxos"
 )
 
 // replicaStart contains deployment inputs; quorum and recovery rules stay in
@@ -45,6 +46,21 @@ func lookupProtocol(name string) (protocolSpec, bool) {
 }
 
 var protocols = map[string]protocolSpec{
+	"xpaxos": {
+		planDeployment: xpaxos.PlanDeployment,
+		configureClient: func(c *config.Config) {
+			c.Leaderless = true
+			c.Fast = false
+			c.WaitClosest = true
+		},
+		installClient: func(b *client.BufferClient, c *config.Config, _ int) {
+			xpaxos.NewClient(b, c)
+		},
+		newReplica: func(s replicaStart) protocolapi.Machine {
+			log.Println("Starting XPaxos replica...")
+			return xpaxos.New(s.config.Alias, s.id, s.addrs, s.leader, s.config, s.logger)
+		},
+	},
 	"kcensus": {
 		planDeployment: kcensus.PlanDeployment,
 		installClient: func(b *client.BufferClient, c *config.Config, clone int) {
