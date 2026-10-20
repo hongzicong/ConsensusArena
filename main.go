@@ -62,6 +62,7 @@ func main() {
 		if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
 			"profile": *heatOutput, "sha256": digest, "requests": profile.Requests,
 			"observed_keys": len(profile.Keys), "sample_seed": profile.SampleSeed,
+			"schema": profile.Schema, "sampled_clients": len(profile.Clients),
 		}); err != nil {
 			log.Fatal(err)
 		}

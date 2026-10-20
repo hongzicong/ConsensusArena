@@ -27,6 +27,8 @@ const (
 	leaseRevoked
 	acceptNote
 	committedEntry
+	lightHeartbeat
+	rosterRequest
 	kindCount
 )
 

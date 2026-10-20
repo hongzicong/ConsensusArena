@@ -45,6 +45,7 @@ type statistics struct {
 	Batches, BatchCommands, MaxBatchCommands                                        uint64
 	PrepareEntries, PrepareCompleted, PrepareNanos, Revokes, RevokeAcks             uint64
 	CompactedSlots                                                                  uint64
+	RosterValidations, RosterReuses                                                 uint64
 }
 
 // engine has no goroutines. All callbacks and transitions are serialized.
@@ -52,6 +53,7 @@ type engine struct {
 	id, n, majority               int
 	opt                           options
 	current, pending              roster
+	heartbeatBallot               uint64 // ballot of the last full-roster broadcast attempt
 	log                           map[uint64]entry
 	committed                     map[uint64]bool
 	votes                         map[uint64]replicaset.Set
@@ -159,10 +161,22 @@ func (e *engine) emit(to int, m message) bool {
 
 func (e *engine) broadcast(m message) {
 	e.stats.Messages += uint64(e.n - 1)
-	drops := e.tryBroadcast(e.prepareMessage(m))
+	m = e.prepareMessage(m)
+	drops := e.tryBroadcast(m)
 	if m.Kind != promise {
 		e.stats.DroppedMessages += uint64(drops)
 	}
+	if m.Kind == heartbeat {
+		e.heartbeatBallot = m.Roster.Ballot
+	}
+}
+
+func (e *engine) heartbeatMessage() message {
+	m := message{Kind: heartbeat, Prefix: e.prefix}
+	if e.active() && e.current.Leader == e.id && e.prepared {
+		m.CommitPrefix = e.prefix
+	}
+	return m
 }
 
 func (e *engine) tracePeerAges(event string, now time.Time, healthy uint64) {
@@ -198,9 +212,12 @@ func (e *engine) stable(now time.Time) bool {
 func (e *engine) tick(now time.Time) {
 	e.refreshPeer(e.id, now)
 	e.install(now)
-	hb := message{Kind: heartbeat, Prefix: e.prefix}
-	if e.active() && e.current.Leader == e.id && e.prepared {
-		hb.CommitPrefix = e.prefix
+	hb := e.prepareMessage(e.heartbeatMessage())
+	// Paper §5.2: unchanged rosters need only their ballot on the wire.
+	// Peers missing a full roster request it again; a failed peer must not
+	// force full-roster broadcasts to healthy peers indefinitely.
+	if hb.Roster.Ballot != 0 && hb.Roster.Ballot == e.heartbeatBallot {
+		hb.Kind = lightHeartbeat
 	}
 	e.broadcast(hb)
 	if !e.active() {
@@ -287,6 +304,33 @@ func (e *engine) receive(m message, now time.Time) {
 		return
 	}
 	e.refreshPeer(m.From, now)
+	if m.Kind == rosterRequest {
+		// Reply with the latest complete roster, even while installation waits
+		// for old leases. A compact heartbeat alone never installs a roster.
+		if e.current.Ballot != 0 || e.pending.Ballot != 0 {
+			e.emit(m.From, e.heartbeatMessage())
+		}
+		return
+	}
+	// Only local substitution can mark a roster as known. current and pending
+	// were fully validated and cloned by observeValidatedRoster; their ranges
+	// remain immutable until a different roster replaces them.
+	knownRoster := false
+	if m.Kind == lightHeartbeat {
+		switch {
+		case m.Roster.Ballot != 0 && m.Roster.Ballot == e.current.Ballot:
+			m.Roster = e.current
+		case m.Roster.Ballot != 0 && m.Roster.Ballot == e.pending.Ballot:
+			m.Roster = e.pending
+		default:
+			if m.Roster.Ballot > e.current.Ballot && m.Roster.Ballot > e.pending.Ballot {
+				e.emit(m.From, message{Kind: rosterRequest})
+			}
+			return
+		}
+		knownRoster = true
+		m.Kind = heartbeat
+	}
 	// Revocation must work while either party is waiting to install a roster.
 	if e.receiveRevocation(m, now) {
 		return
@@ -307,12 +351,19 @@ func (e *engine) receive(m message, now time.Time) {
 			return
 		}
 		m.Roster = e.current
+		knownRoster = true
 	}
-	if !e.validRoster(m.Roster) {
-		return
+	if knownRoster {
+		e.stats.RosterReuses++
+	} else {
+		// Full external configurations must still be checked, even when their
+		// ballot matches an installed configuration. Never trust a ballot alone.
+		if !e.validRoster(m.Roster) {
+			return
+		}
+		e.observeValidatedRoster(m.Roster, now)
 	}
-	e.observe(m.Roster, now)
-	if !e.active() || !sameRoster(m.Roster, e.current) {
+	if !e.active() || (!knownRoster && !sameRoster(m.Roster, e.current)) {
 		return
 	}
 	if m.From == e.current.Leader && m.ReadPrefix > e.readPrefix {
