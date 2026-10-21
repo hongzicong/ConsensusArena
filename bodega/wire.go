@@ -100,6 +100,11 @@ func (m *message) Marshal(w io.Writer) {
 		}
 		e.u64(m.Prefix)
 		e.u64(m.CommitPrefix)
+	case lightHeartbeat:
+		e.u64(m.Prefix)
+		e.u64(m.CommitPrefix)
+	case rosterRequest:
+		// The sender asks for the peer's latest full roster, not a lease.
 	case leaseRequest:
 		e.u64(m.Sequence)
 	case leaseReply:
@@ -277,6 +282,11 @@ func (m *message) Unmarshal(r io.Reader) error {
 		}
 		m.Prefix = d.u64()
 		m.CommitPrefix = d.u64()
+	case lightHeartbeat:
+		m.Prefix = d.u64()
+		m.CommitPrefix = d.u64()
+	case rosterRequest:
+		// No payload beyond the common sender/ballot header.
 	case leaseRequest:
 		m.Sequence = d.u64()
 	case leaseReply:

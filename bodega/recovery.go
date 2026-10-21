@@ -18,11 +18,22 @@ func (e *engine) proposeRoster(leader int, responders uint64, now time.Time) {
 }
 
 func (e *engine) validRoster(r roster) bool {
+	e.stats.RosterValidations++
 	return r.Ballot > 0 && r.Leader >= 0 && r.Leader < e.n && r.Responders&bit(r.Leader) != 0 && r.Responders>>uint(e.n) == 0 && defs.ValidBodegaRanges(r.Ranges, e.n)
 }
 
 func (e *engine) observe(r roster, now time.Time) {
-	if !e.validRoster(r) || r.Ballot <= e.current.Ballot || r.Ballot <= e.pending.Ballot {
+	if !e.validRoster(r) {
+		return
+	}
+	e.observeValidatedRoster(r, now)
+}
+
+// observeValidatedRoster accepts only a roster that the caller fully checked.
+// Clone its ranges before retaining it: current/pending are immutable validated
+// configurations, reused by compact messages without rescanning their ranges.
+func (e *engine) observeValidatedRoster(r roster, now time.Time) {
+	if r.Ballot <= e.current.Ballot || r.Ballot <= e.pending.Ballot {
 		return
 	}
 	r.Ranges = slices.Clone(r.Ranges)

@@ -37,6 +37,7 @@ type BufferClient struct {
 	keyMappingSeed int64
 	warmup         time.Duration
 	duration       time.Duration
+	latency        *latencyRun
 
 	rand          *rand.Rand
 	valueRand     *rand.Rand
@@ -170,111 +171,10 @@ func (c *BufferClient) Loop() {
 }
 
 type scheduledRequest struct {
-	key      int64
-	write    bool
-	measured bool
-}
-
-type requestTiming struct {
-	sentAt   time.Time
-	measured bool
-	write    bool
-}
-
-func (c *BufferClient) loopOpen(getKey func() int64) {
-	c.Printf("Workload seed %d\n", c.workloadSeed)
-	c.Printf("Open-loop Poisson arrival rate %v requests/second\n", c.arrivalRate)
-	c.Printf("Warm-up %v, measurement duration %v\n", c.warmup, c.duration)
-
-	c.sendScheduledRequest(scheduledRequest{
-		key:   getKey(),
-		write: c.randomTrue(c.writes),
-	})
-	<-c.Reply
-
-	requests := make(chan scheduledRequest, 1024)
-	stopReplies := make(chan struct{})
-	var senders sync.WaitGroup
-	var replies sync.WaitGroup
-	var timings sync.Map
-	measuredRequests := 0
-	warmupRequests := 0
-
-	go func() {
-		for {
-			select {
-			case reply := <-c.Reply:
-				value, exists := timings.LoadAndDelete(reply.Seqnum)
-				if !exists {
-					continue
-				}
-				timing := value.(requestTiming)
-				if timing.measured {
-					d := reply.Time.Sub(timing.sentAt)
-					milliseconds := float64(d.Nanoseconds()) / float64(time.Millisecond)
-					operation := "READ"
-					if timing.write {
-						operation = "UPDATE"
-					}
-					c.Printf("latency %s %v\n", operation, milliseconds)
-				}
-				replies.Done()
-			case <-stopReplies:
-				return
-			}
-		}
-	}()
-
-	senders.Add(1)
-	go func() {
-		defer senders.Done()
-		for request := range requests {
-			sentAt := time.Now()
-			sequence := int(c.seqnum + 1)
-			timings.Store(sequence, requestTiming{
-				sentAt:   sentAt,
-				measured: request.measured,
-				write:    request.write,
-			})
-			replies.Add(1)
-			c.sendScheduledRequest(request)
-		}
-	}()
-
-	start := time.Now()
-	warmupEnd := start.Add(c.warmup)
-	measurementEnd := warmupEnd.Add(c.duration)
-	nextArrival := start
-	for {
-		nextArrival = nextArrival.Add(c.poissonInterval())
-		if !nextArrival.Before(measurementEnd) {
-			break
-		}
-		if delay := time.Until(nextArrival); delay > 0 {
-			time.Sleep(delay)
-		}
-
-		measured := !nextArrival.Before(warmupEnd)
-		if measured {
-			measuredRequests++
-		} else {
-			warmupRequests++
-		}
-		requests <- scheduledRequest{
-			key:      getKey(),
-			write:    c.randomTrue(c.writes),
-			measured: measured,
-		}
-	}
-	close(requests)
-	senders.Wait()
-	replies.Wait()
-	close(stopReplies)
-
-	c.Printf("Warm-up requests %d\n", warmupRequests)
-	c.Printf("Measured requests %d\n", measuredRequests)
-	c.Printf("Test took %v\n", time.Since(start))
-	c.Disconnect()
+	key       int64
+	write     bool
+	measured  bool
+	plannedAt time.Time
 }
 
 func (c *BufferClient) poissonInterval() time.Duration {

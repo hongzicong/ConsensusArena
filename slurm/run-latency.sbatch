@@ -23,8 +23,16 @@ if [[ "${CONSENSUSARENA_SCENE_WORKER:-0}" != 1 ]]; then
     fi
     exec "${CONSENSUSARENA_PYTHON:-python3}" "$script_dir/benchmark-suite.py" serial latency "$repo_root"
 fi
+generated=false
+if [[ -n "${CONSENSUSARENA_CASE:-}" ]]; then
+    generated=true
+    source "$script_dir/topology.sh"
+    export CONSENSUSARENA_REPLICAS=$replica_count
+    export CONSENSUSARENA_TOPOLOGY=$topology_id
+    export CONSENSUSARENA_CASES="$replica_count-$topology_id"
+fi
 replica_counts_spec=${CONSENSUSARENA_REPLICAS:-5:9:13}
-if [[ ! "$replica_counts_spec" =~ ^(5|9|13)(:(5|9|13))*$ ]]; then
+if ! $generated && [[ ! "$replica_counts_spec" =~ ^(5|9|13)(:(5|9|13))*$ ]]; then
     echo "Invalid replica sizes: $replica_counts_spec (expected 5, 9, or 13 separated by colons)" >&2
     exit 1
 fi
@@ -42,7 +50,7 @@ done
 cases_spec=${CONSENSUSARENA_CASES:-}
 declare -A selected_cases=()
 if [[ -n "$cases_spec" ]]; then
-    [[ "$cases_spec" =~ ^(5|9|13)-[123](:(5|9|13)-[123])*$ ]] || { echo "Invalid size-topology cases: $cases_spec" >&2; exit 1; }
+    [[ "$cases_spec" =~ ^[0-9]+-[0-9]+(:[0-9]+-[0-9]+)*$ ]] || { echo "Invalid size-topology cases: $cases_spec" >&2; exit 1; }
     IFS=: read -r -a case_names <<< "$cases_spec"
     for case_name in "${case_names[@]}"; do
         [[ -n "${seen_replica_counts[${case_name%-*}]:-}" && -z "${selected_cases[$case_name]:-}" ]] || { echo "Duplicate or unrequested case: $case_name" >&2; exit 1; }
@@ -51,16 +59,20 @@ if [[ -n "$cases_spec" ]]; then
 fi
 required_tasks=$((max_replica_count + 11))
 required_nodes=$(((required_tasks + 7) / 8))
+if $generated; then
+    required_tasks=$task_count
+    required_nodes=$node_count
+fi
 if (( ${SLURM_NTASKS:-0} < required_tasks || ${SLURM_JOB_NUM_NODES:-0} < required_nodes || ${SLURM_CPUS_PER_TASK:-8} < 8 )); then
-    echo "Replica sizes $replica_counts_spec require at least $required_tasks tasks on $required_nodes nodes and 8 CPUs/task; use run-latency.sbatch with its default allocation" >&2
+    echo "Replica sizes $replica_counts_spec require at least $required_tasks tasks on $required_nodes nodes and 8 CPUs/task; submit with benchmark-suite.py for allocation sizing" >&2
     exit 1
 fi
 binary=${CONSENSUSARENA_BINARY:-$repo_root/consensusarena-linux-amd64}
 expected_binary_sha256=${CONSENSUSARENA_BINARY_SHA256:-}
 toxiproxy_source=${CONSENSUSARENA_TOXIPROXY_SERVER:-$repo_root/toxiproxy-server-linux-amd64}
 expected_toxiproxy_sha256=${CONSENSUSARENA_TOXIPROXY_SHA256:-556d891134a3c582dc1e1a3f7335fd55142e5965769855a00b944e13e48302fc}
-latency_jitter_ms=${CONSENSUSARENA_LATENCY_JITTER_MS:-0}
-bandwidth_kbps=${CONSENSUSARENA_BANDWIDTH_KBPS:-125000}
+latency_jitter_ms=${CONSENSUSARENA_LATENCY_JITTER_MS:-${case_latency_jitter_ms:-0}}
+bandwidth_kbps=${CONSENSUSARENA_BANDWIDTH_KBPS:-${case_bandwidth_kbps:-125000}}
 scratch_root=${SCRATCH:-/scratch/$USER}
 run_dir=${CONSENSUSARENA_RUN_DIR:-$scratch_root/consensusarena-$SLURM_JOB_ID}
 replica_ready_timeout=${REPLICA_READY_TIMEOUT_SECONDS:-900}
@@ -163,7 +175,13 @@ printf '%s\n' \
     'ycsb_semantics=ratio-only; READ is mapped to GET; UPDATE is mapped to PUT' \
     'request_distribution=zipfian' >> "$run_dir/metadata.txt"
 printf 'resource_observer=GNU time per role; exit-time CPU, RSS, context switches\n' >> "$run_dir/metadata.txt"
-printf 'experiment_design=three_topologies_one_run_each\ntopology_ids=1:2:3\nrepetitions_per_topology=1\nlatency_source=CloudPing 1Y P50\n' >> "$run_dir/metadata.txt"
+if $generated; then
+    printf 'experiment_design=generated_one_run_each\ncase=%s\ncase_sha256=%s\nrepetitions_per_topology=1\nlatency_source=generated\n' \
+        "$(basename "$CONSENSUSARENA_CASE")" "$CONSENSUSARENA_CASE_SHA256" >> "$run_dir/metadata.txt"
+else
+    printf 'experiment_design=three_topologies_one_run_each\ntopology_ids=1:2:3\nrepetitions_per_topology=1\nlatency_source=CloudPing 1Y P50\n' >> "$run_dir/metadata.txt"
+fi
+printf 'warmup_s=5\nramp_s=2.5\nmeasurement_s=10\nworkload_model=synchronized-ramp-sustain-v1\nlatency_origin=scheduled_arrival\nsustain_until=all_measured_replies\n' >> "$run_dir/metadata.txt"
 printf 'selected_cases=%s\n' "$cases_spec" >> "$run_dir/metadata.txt"
 
 run_scale() {
@@ -203,6 +221,11 @@ run_scale() {
     awk -f "$script_dir/remap-addresses.awk" \
         "$run_dir/config/address-map.txt" "$run_dir/config/logical/workload.conf" \
         > "$run_dir/config/cluster.conf"
+    # All ordinary latency scenes have the same time window and run once.
+    awk '$1 != "requests:" && $1 != "warmup:" && $1 != "duration:" && $1 != "repetitions:" { print }
+         END { print "warmup: 5s\nduration: 10s\nrepetitions: 1" }' \
+        "$run_dir/config/cluster.conf" > "$run_dir/config/cluster.conf.tmp"
+    mv "$run_dir/config/cluster.conf.tmp" "$run_dir/config/cluster.conf"
     if [[ -n "${CONSENSUSARENA_WORKLOAD_SEED:-}" ]]; then
         if [[ ! "$CONSENSUSARENA_WORKLOAD_SEED" =~ ^[0-9]+$ ]]; then
             echo "Invalid workload seed: $CONSENSUSARENA_WORKLOAD_SEED" >&2
@@ -336,6 +359,9 @@ run_scale() {
             sleep 2
         done
 
+        python3 "$script_dir/latency-barrier.py" run "$repetition_dir" \
+            --runner-pid "$runner_pid" --ready-timeout "$replica_ready_timeout" --timeout "$client_timeout"
+
         deadline=$((SECONDS + client_timeout))
         while true; do
             done_count=$(find "$repetition_dir/status" -maxdepth 1 -name 'client-*.done' | wc -l | tr -d ' ')
@@ -430,7 +456,9 @@ for filename in summary.csv repetition-summaries.csv; do
     : > "$run_dir/$filename"
 done
 for requested_count in "${requested_replica_counts[@]}"; do
-  for requested_topology in 1 2 3; do
+  requested_topologies=(1 2 3)
+  if $generated; then requested_topologies=("$CONSENSUSARENA_TOPOLOGY"); fi
+  for requested_topology in "${requested_topologies[@]}"; do
     if [[ -n "$cases_spec" && -z "${selected_cases[$requested_count-$requested_topology]:-}" ]]; then continue; fi
     run_scale "$requested_count" "$requested_topology"
     for filename in summary.csv repetition-summaries.csv; do

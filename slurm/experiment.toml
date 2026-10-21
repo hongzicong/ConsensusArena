@@ -1,0 +1,43 @@
+[experiment]
+name = "generalization-example"
+seed = 20260930
+topologies_per_scale = 3
+arrival_rate_per_client = 1000.0
+arrival_rate_per_client_range = [500.0, 1800.0]
+command_size = 1000
+command_size_options = [256, 1000, 2048]
+key_count = 1000000
+key_count_options = [250000, 1000000]
+zipf_skew = 0.9
+zipf_skew_range = [0.65, 1.15]
+preload = true
+preload_seed = 1
+
+[network]
+minimum_rtt_ms = 2
+minimum_rtt_ms_range = [1, 12]
+maximum_rtt_ms = 320
+maximum_rtt_ms_range = [120, 420]
+latency_jitter_ms = 5
+latency_jitter_ms_options = [0, 3, 10, 20]
+bandwidth_kbps = 125000
+bandwidth_kbps_options = [25000, 125000, 500000]
+asymmetry = 0.08
+asymmetry_range = [0.0, 0.20]
+topology_models = ["uniform", "clustered", "replica_adjacent"]
+
+[[scale]]
+replicas = 5
+clients = 5
+
+[[scale]]
+replicas = 9
+clients = 9
+
+[[scale]]
+replicas = 13
+clients = 13
+
+[[scale]]
+replicas = 17
+clients = 17

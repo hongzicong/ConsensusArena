@@ -6,10 +6,6 @@ run_dir=$1
 expected_repetitions=$2
 summary="$run_dir/summary.csv"
 details="$run_dir/repetition-summaries.csv"
-regions=(
-    ap-east-1 ap-northeast-1 ap-southeast-2 eu-west-1 ca-central-1
-    sa-east-1 us-east-1 us-east-2 us-west-1 us-west-2 OVERALL
-)
 operations=(READ UPDATE ALL)
 
 shopt -s nullglob
@@ -18,6 +14,7 @@ if [[ ${#files[@]} != "$expected_repetitions" ]]; then
     echo "Expected $expected_repetitions repetition summaries but found ${#files[@]}" >&2
     exit 1
 fi
+mapfile -t regions < <(awk -F, 'NR > 1 && !seen[$1]++ { print $1 }' "${files[0]}")
 
 printf 'Repetition,Region,Operation,Count,MeanMs,MedianMs,P95Ms,P99Ms,MinMs,MaxMs,FallbackRatio\n' > "$details"
 for file in "${files[@]}"; do

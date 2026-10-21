@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
 
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/heatprofile"
@@ -32,14 +33,24 @@ func SampleHeat(cfg *config.Config, requests int, seed int64) (heatprofile.File,
 		mapping = sharedKeyMapping(cfg.KeyCount, int64(cfg.KeyMappingSeed))
 	}
 	counts := make([]heatprofile.KeyCount, cfg.KeyCount)
+	// Only Bodega needs origin-preserving deployment inputs. Keep the existing
+	// global schema and exact aggregate sample for other protocol planners.
+	regional := strings.EqualFold(cfg.Protocol, "bodega")
+	var clients []heatprofile.ClientCounts
 	participants := len(aliases) * (cfg.Clones + 1)
 	for i, alias := range aliases {
+		observed := heatprofile.ClientCounts{Client: alias}
+		var local map[int]heatprofile.KeyCount
+		if regional {
+			local = make(map[int]heatprofile.KeyCount)
+		}
 		for clone := 0; clone <= cfg.Clones; clone++ {
 			ordinal := i*(cfg.Clones+1) + clone
 			n := requests / participants
 			if ordinal < requests%participants {
 				n++
 			}
+			observed.Requests += uint64(n)
 			rng := rand.New(rand.NewSource(DeriveWorkloadSeed(seed, alias, clone)))
 			for j := 0; j < n; j++ {
 				// Mirror the common offered-request generator's random draw order.
@@ -59,7 +70,24 @@ func SampleHeat(cfg *config.Config, requests int, seed int64) (heatprofile.File,
 				} else {
 					counts[key].Reads++
 				}
+				if regional {
+					row := local[key]
+					row.Key = key
+					if write {
+						row.Writes++
+					} else {
+						row.Reads++
+					}
+					local[key] = row
+				}
 			}
+		}
+		if regional {
+			for _, row := range local {
+				observed.Keys = append(observed.Keys, row)
+			}
+			heatprofile.CanonicalKeys(observed.Keys)
+			clients = append(clients, observed)
 		}
 	}
 	file := heatprofile.File{Schema: 1, Source: "independent-offline-offered-requests", KeyCount: cfg.KeyCount, Requests: uint64(requests), SampleSeed: seed}
@@ -69,5 +97,9 @@ func SampleHeat(cfg *config.Config, requests int, seed int64) (heatprofile.File,
 		}
 	}
 	heatprofile.CanonicalKeys(file.Keys)
+	if regional {
+		file.Schema = 2
+		file.Clients = clients
+	}
 	return file, nil
 }

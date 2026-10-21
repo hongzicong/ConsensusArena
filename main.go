@@ -62,6 +62,7 @@ func main() {
 		if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
 			"profile": *heatOutput, "sha256": digest, "requests": profile.Requests,
 			"observed_keys": len(profile.Keys), "sample_seed": profile.SampleSeed,
+			"schema": profile.Schema, "sampled_clients": len(profile.Clients),
 		}); err != nil {
 			log.Fatal(err)
 		}
@@ -198,6 +199,9 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 		log.Fatal(err)
 	}
 	if err := b.ConfigureFaultRun(c.Alias, i); err != nil {
+		log.Fatal(err)
+	}
+	if err := b.ConfigureLatencyRun(c.Alias, i); err != nil {
 		log.Fatal(err)
 	}
 	waitFrom := b.LeaderId

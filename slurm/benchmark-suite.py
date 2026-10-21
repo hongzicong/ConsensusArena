@@ -3,9 +3,11 @@
 
 Run from ConsensusArena: python3 slurm/benchmark-suite.py submit latency|fault
 Environment overrides are shared with the existing single-scene harnesses.
+Latency and fault default to fixed; --suite generated opts into generated latency inputs.
 """
 import argparse
 import csv
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,11 +16,38 @@ import sys
 import time
 import uuid
 
+from topology import generated_layouts
+
 TIMEOUT = 7200
 DEFAULT_MAX_PARALLEL = 6
+ROOT = Path(__file__).resolve().parent.parent
 
 
-def scenes(env):
+def scenes(env, kind='latency'):
+    suite = env.get('CONSENSUSARENA_SUITE', 'fixed')
+    if suite not in ('generated', 'fixed'):
+        raise ValueError('expected generated or fixed suite')
+    if suite == 'generated':
+        if kind != 'latency':
+            raise ValueError('generated inputs currently support latency; use --suite fixed for fault runs')
+        root = Path(env.get('CONSENSUSARENA_GENERATED_ROOT', ROOT / 'slurm/generated'))
+        layouts = generated_layouts(root)
+        available = {row['replica_count'] for row in layouts}
+        counts = [int(n) for n in env.get('CONSENSUSARENA_REPLICAS', ':'.join(map(str, sorted(available)))).split(':')]
+        profiles = [p.strip().upper() for p in env.get('CONSENSUSARENA_YCSB_PROFILES', 'A:B:C').split(':')]
+        if not counts or len(set(counts)) != len(counts) or not set(counts) <= available:
+            raise ValueError('replica filter must select distinct sizes in the generated manifest')
+        if not profiles or len(set(profiles)) != len(profiles) or any(p not in ('A', 'B', 'C') for p in profiles):
+            raise ValueError('expected distinct YCSB profiles from A:B:C')
+        selected = env.get('CONSENSUSARENA_CASES', '').split(':') if env.get('CONSENSUSARENA_CASES') else None
+        available_cases = {f"{r['replica_count']}-{r['topology_id']}" for r in layouts if r['replica_count'] in counts}
+        if selected and (len(set(selected)) != len(selected) or not set(selected) <= available_cases):
+            raise ValueError('invalid, duplicate or unrequested generated size-topology cases')
+        return [dict(replicas=r['replica_count'], topology_id=r['topology_id'], profile=p,
+                     clients=len(r['clients']), case=r['case'], case_sha256=r['case_sha256'])
+                for r in layouts if r['replica_count'] in counts
+                and (selected is None or f"{r['replica_count']}-{r['topology_id']}" in selected)
+                for p in profiles]
     counts = [int(n) for n in env.get('CONSENSUSARENA_REPLICAS', '5:9:13').split(':')]
     profiles = [p.strip().upper() for p in env.get('CONSENSUSARENA_YCSB_PROFILES', 'A:B:C').split(':')]
     if not counts or len(set(counts)) != len(counts) or any(n not in (5, 9, 13) for n in counts):
@@ -38,7 +67,26 @@ def scenes(env):
 
 
 def scene_name(scene):
+    if 'case' in scene:
+        return scene['case'] + '-ycsb-' + scene['profile']
     return 'replicas-{replicas}-topology-{topology_id}-ycsb-{profile}'.format(**scene)
+
+
+def allocation(plan):
+    if 'case' not in plan[0]:
+        return 3, 24
+    tasks = max(scene['replicas'] + scene['clients'] + 1 for scene in plan)
+    return (tasks + 7) // 8, tasks
+
+
+def plan_sha256(plan):
+    return hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def check_plan(env, plan):
+    expected = env.get('CONSENSUSARENA_PLAN_SHA256')
+    if expected and expected != plan_sha256(plan):
+        raise ValueError('suite inputs or scene selection changed after submission')
 
 
 def suite_root(kind, job, env):
@@ -62,12 +110,19 @@ def run_scene(kind, repo, root, plan, index, env, array=False):
     base.parent.mkdir(parents=True, exist_ok=True)
     if base.exists():
         raise FileExistsError('refusing to overwrite scene evidence: ' + str(base))
-    env.update(CONSENSUSARENA_SCENE_WORKER='1',
+    env.update(CONSENSUSARENA_ROOT=str(repo), CONSENSUSARENA_SCENE_WORKER='1',
                CONSENSUSARENA_REPLICAS=str(scene['replicas']),
                CONSENSUSARENA_TOPOLOGY=str(scene['topology_id']),
                CONSENSUSARENA_YCSB_PROFILES=scene['profile'],
                CONSENSUSARENA_CASES='{replicas}-{topology_id}'.format(**scene),
                CONSENSUSARENA_RUN_DIR=str(base))
+    if 'case' in scene:
+        generated = Path(env.get('CONSENSUSARENA_GENERATED_ROOT', repo / 'slurm/generated')).resolve()
+        env.update(CONSENSUSARENA_CASE=str(generated / scene['case']),
+                   CONSENSUSARENA_CASE_SHA256=scene['case_sha256'])
+    else:
+        env.pop('CONSENSUSARENA_CASE', None)
+        env.pop('CONSENSUSARENA_CASE_SHA256', None)
     print('{} scene {}: {} -> {}'.format('Array' if array else 'Serial', index, scene_name(scene), base), flush=True)
     command = ['bash', str(repo / 'slurm' / ('run-' + kind + '.sbatch'))]
     outcome = dict(**scene, scene_index=index)
@@ -97,7 +152,8 @@ def publish_manifest(root, manifest):
 def task(kind, repo, env=None):
     """Run one selected scene in this array element's own allocation."""
     env = dict(os.environ if env is None else env)
-    plan = scenes(env)
+    plan = scenes(env, kind)
+    check_plan(env, plan)
     index = int(env['SLURM_ARRAY_TASK_ID'])
     job = env['SLURM_ARRAY_JOB_ID']
     if not job.isdigit() or index < 0:
@@ -108,7 +164,7 @@ def task(kind, repo, env=None):
         return 0
     root = suite_root(kind, job, env)
     publish_manifest(root, dict(kind=kind, array_job_id=job, scenes=plan,
-                                execution='isolated_slurm_array', nodes_per_scene=3))
+                                execution='isolated_slurm_array', nodes_per_scene=allocation(plan)[0]))
     return run_scene(kind, repo, root, plan, index, env, array=True)
 
 
@@ -144,12 +200,13 @@ def serial(kind, repo, env=None):
     job = env['SLURM_JOB_ID']
     if not job.isdigit():
         raise ValueError('invalid Slurm job ID')
-    plan = scenes(env)
+    plan = scenes(env, kind)
+    check_plan(env, plan)
     root = suite_root(kind, job, env)
     if root.exists():
         raise FileExistsError('refusing to overwrite suite evidence: ' + str(root))
     publish_manifest(root, dict(kind=kind, job_id=job, scenes=plan,
-                                execution='serial_slurm_allocation', nodes_per_scene=3))
+                                execution='serial_slurm_allocation', nodes_per_scene=allocation(plan)[0]))
     print('Serial suite: {} | scenes: {} | run directory: {}'.format(job, len(plan), root), flush=True)
     try:
         for index, scene in enumerate(plan):
@@ -163,7 +220,8 @@ def serial(kind, repo, env=None):
     return collect(kind, root)
 
 
-def submit(kind, repo, account, exports='ALL', walltime=None, mode='array', max_parallel=None):
+def submit(kind, repo, account, exports='ALL', walltime=None, mode='array', max_parallel=None,
+           suite=None, generated_root=None):
     if mode not in ('array', 'serial'):
         raise ValueError('expected array or serial mode')
     if max_parallel is not None and (mode != 'array' or max_parallel < 1):
@@ -176,15 +234,25 @@ def submit(kind, repo, account, exports='ALL', walltime=None, mode='array', max_
         if not separator or not key.isidentifier():
             raise ValueError('--export accepts ALL and NAME=value entries')
         env[key] = value
-    plan = scenes(env)
+    if suite is not None:
+        env['CONSENSUSARENA_SUITE'] = suite
+    if generated_root is not None:
+        env['CONSENSUSARENA_GENERATED_ROOT'] = str(generated_root.resolve())
+    env.setdefault('CONSENSUSARENA_SUITE', 'fixed')
+    env['CONSENSUSARENA_GENERATED_ROOT'] = str(Path(env.get('CONSENSUSARENA_GENERATED_ROOT', repo / 'slurm/generated')).resolve())
+    plan = scenes(env, kind)
+    nodes, tasks = allocation(plan)
+    env['CONSENSUSARENA_PLAN_SHA256'] = plan_sha256(plan)
     worker = repo / 'slurm' / ('run-' + kind + '.sbatch')
     env['CONSENSUSARENA_ROOT'] = str(repo)
     env['CONSENSUSARENA_SCENE_WORKER'] = '0'
-    command = ['sbatch', '--parsable', '--account=' + account, '--export=ALL']
+    command = ['sbatch', '--parsable', '--account=' + account, '--export=ALL',
+               '--nodes=' + str(nodes), '--ntasks=' + str(tasks)]
     if walltime is not None:
         command.append('--time=' + walltime)
     if mode == 'array':
-        limit = DEFAULT_MAX_PARALLEL if max_parallel is None else max_parallel
+        # Retain the existing default budget of at most 18 simultaneous nodes.
+        limit = min(DEFAULT_MAX_PARALLEL, max(1, 18 // nodes)) if max_parallel is None else max_parallel
         command.extend(['--array=0-{}%{}'.format(len(plan) - 1, limit),
                         '--output=slurm-%A_%a.out'])
     command.append(str(worker))
@@ -193,7 +261,8 @@ def submit(kind, repo, account, exports='ALL', walltime=None, mode='array', max_
     if not job.isdigit():
         raise ValueError('unexpected sbatch job ID: ' + output)
     root = suite_root(kind, job, env)
-    print('{} job: {} | scenes: {} | run directory: {}'.format(mode.title(), job, len(plan), root), flush=True)
+    print('{} job: {} | scenes: {} | nodes/allocation: {} | tasks/allocation: {} | run directory: {}'.format(
+        mode.title(), job, len(plan), nodes, tasks, root), flush=True)
     if mode == 'serial':
         print('Results are collected inside the same allocation; log: slurm-{}.out'.format(job), flush=True)
         return
@@ -265,17 +334,25 @@ def collect(kind, root):
                     status['error'] = 'invalid fault measurements'
                 elif any(str(validation[0].get(key)) != str(scene[key]) for key in scene):
                     raise ValueError('fault measurement identity mismatch')
-            for filename, paths in files.items():
-                if (base / filename).exists():
-                    paths.append(base / filename)
-                elif filename != 'request-cohorts.csv':
+            for filename in files:
+                if not (base / filename).exists() and filename != 'request-cohorts.csv':
                     status['error'] = 'missing ' + filename
             if kind == 'latency' and (base / 'baseline-latency.csv').exists():
                 with (base / 'baseline-latency.csv').open(newline='') as source:
                     rows = list(csv.DictReader(source))
                 if len(rows) != 1 or any(str(rows[0][key]) != str(scene[key]) for key in scene):
                     raise ValueError('latency measurement identity mismatch')
+                if rows[0].get('workload_model') == 'synchronized-ramp-sustain-v1':
+                    runs = [path.parent.parent for path in base.rglob('repetition-01/config/cluster.conf')]
+                    if len(runs) != 1:
+                        raise ValueError('missing or duplicate synchronized latency run')
+                    subprocess.run([sys.executable, str(Path(__file__).with_name('latency-barrier.py')),
+                                    'validate', str(runs[0])], check=True, timeout=TIMEOUT)
             status['complete'] = outcome['returncode'] == 0 and 'error' not in status
+            if status['complete']:
+                for filename, paths in files.items():
+                    if (base / filename).exists():
+                        paths.append(base / filename)
         except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:
             status['error'] = str(exc)
         statuses.append(status)
@@ -300,6 +377,11 @@ def main():
     for name in ('plan', 'submit', 'task', 'serial', 'collect'):
         command = commands.add_parser(name)
         command.add_argument('kind', choices=('latency', 'fault'))
+        if name in ('plan', 'submit'):
+            command.add_argument('--suite', choices=('generated', 'fixed'),
+                                 help='default: fixed for latency and fault; generated supports latency only')
+            command.add_argument('--generated-root', type=Path,
+                                 help='manifest directory (default: slurm/generated)')
         if name in ('task', 'serial', 'collect'):
             command.add_argument('path', type=Path)
         if name == 'submit':
@@ -308,14 +390,20 @@ def main():
             command.add_argument('--mode', choices=('array', 'serial'), default='array',
                                  help='parallel array (default) or one serial allocation')
             command.add_argument('--max-parallel', type=int,
-                                 help='maximum simultaneous array scenes (default: 6)')
+                                 help='maximum simultaneous array scenes (default: up to 6 within 18 nodes)')
             command.add_argument('--time', help='Slurm wall-time limit per array scene or entire serial suite')
     args = parser.parse_args()
     repo = Path(__file__).resolve().parent.parent
     if args.command == 'plan':
-        print(json.dumps(scenes(os.environ), indent=2))
+        env = dict(os.environ)
+        if args.suite is not None:
+            env['CONSENSUSARENA_SUITE'] = args.suite
+        if args.generated_root is not None:
+            env['CONSENSUSARENA_GENERATED_ROOT'] = str(args.generated_root.resolve())
+        print(json.dumps(scenes(env, args.kind), indent=2))
     elif args.command == 'submit':
-        submit(args.kind, repo, args.account, args.export, args.time, args.mode, args.max_parallel)
+        submit(args.kind, repo, args.account, args.export, args.time, args.mode, args.max_parallel,
+               args.suite, args.generated_root)
     elif args.command == 'task':
         return task(args.kind, args.path)
     elif args.command == 'serial':
