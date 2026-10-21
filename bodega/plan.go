@@ -10,6 +10,7 @@ import (
 
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/heatprofile"
+	"github.com/hongzicong/ConsensusArena/paxos"
 	"github.com/hongzicong/ConsensusArena/placement"
 )
 
@@ -62,16 +63,30 @@ type sampledRegion struct {
 
 // PlanDeployment learns per-region hot keys exclusively from a frozen sample.
 // Regions are the nearest-replica groups in the public deployment topology.
-// Uniform-compatible samples use all replicas as responders. Otherwise original
-// key IDs are preserved, and only adjacent keys with identical responder sets
-// are coalesced into roster ranges. Neither path reads generator parameters.
+// Samples with reads and no observed writes, or uniform-compatible samples, use
+// all replicas as responders. Otherwise original key IDs are preserved, and only
+// adjacent keys with identical responder sets are coalesced into roster ranges.
+// The leader follows Paxos's topology-only placement rule. No path reads
+// generator parameters.
 func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
 	profile, err := heatprofile.LoadRegional(c.HeatProfilePath, c.HeatProfileSHA256, c.KeyCount, t.Clients)
 	if err != nil {
 		return config.DeploymentPlan{}, fmt.Errorf("Bodega regional empirical profile: %w", err)
 	}
 	uniformity := sampledUniformity(profile.File)
-	leader := t.Replicas[0]
+	var sampleReads, sampleWrites uint64
+	for _, row := range profile.File.Keys {
+		sampleReads += row.Reads
+		sampleWrites += row.Writes
+	}
+	sampleReadOnly := sampleReads > 0 && sampleWrites == 0
+	allResponders := sampleReadOnly || !uniformity.NonUniform
+	leaderPlan, err := paxos.PlanDeployment(c, t)
+	if err != nil {
+		return config.DeploymentPlan{}, fmt.Errorf("Bodega Paxos leader placement: %w", err)
+	}
+	leader := *leaderPlan.Leader
+	leaderMask := uint64(1) << uint(leader.Rank)
 	p := config.DeploymentPlan{
 		Model: "sampled-regional-hot-key-ranges", Leader: &leader,
 		ClientRoutes: t.NearestRoutes(), Responders: []string{leader.Alias},
@@ -99,7 +114,7 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 	for i := range regions {
 		region := &regions[i]
 		region.ObservedReadKeys = len(region.reads)
-		if !uniformity.NonUniform {
+		if allResponders {
 			continue
 		}
 		keys := make([]int, 0, len(region.reads))
@@ -120,15 +135,19 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 		region.SelectedKeys = len(keys)
 		for _, key := range keys {
 			region.SelectedReads += region.reads[key]
-			selected[key] |= uint64(1)<<uint(i) | 1 // leader zero is always implicit
+			selected[key] |= uint64(1)<<uint(i) | leaderMask
 		}
 	}
-	ranges, rangeCount := sampledRanges(selected, t.Replicas)
+	ranges, rangeCount := sampledRanges(selected, t.Replicas, leaderMask)
 	p.ResponderRanges = ranges
 	branch := "non-uniform"
-	if !uniformity.NonUniform {
+	if allResponders {
 		branch = "uniform-compatible"
 		p.Model = "sampled-uniform-all-responders"
+		if sampleReadOnly {
+			branch = "read-only"
+			p.Model = "sampled-read-only-all-responders"
+		}
 		p.Responders = nil
 		for _, replica := range t.Replicas {
 			p.Responders = append(p.Responders, replica.Alias)
@@ -141,7 +160,10 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 		"policy": p.Model, "profile_sha256": profile.SHA256,
 		"sample_source": profile.File.Source, "sample_seed": profile.File.SampleSeed,
 		"sample_requests": profile.File.Requests, "observed_keys": len(profile.File.Keys),
-		"branch": branch, "uniformity_check": uniformity,
+		"sample_reads": sampleReads, "sample_writes": sampleWrites, "sample_read_only": sampleReadOnly,
+		"leader": leader.Alias, "leader_selection": leaderPlan.Model,
+		"leader_selection_mean_ms": leaderPlan.FastMean,
+		"branch":                   branch, "uniformity_check": uniformity,
 		"uniform_false_rejection_bound": uniformFalseRejection,
 		"uniformity_assumption":         "independent identically distributed sampled keys",
 		"known_key_count":               c.KeyCount,
@@ -152,10 +174,13 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 		"regions":                       regions, "selected_keys_union": len(selected), "range_count": rangeCount,
 		"default_responders": p.Responders, "frozen": true,
 	}
-	if !uniformity.NonUniform {
+	if allResponders {
 		delete(record, "hot_key_fraction_basis")
 		delete(record, "hot_key_fraction")
 		record["selection"] = "all replicas for all keys; sample does not reject uniformity"
+		if sampleReadOnly {
+			record["selection"] = "all replicas for all keys; sample contains reads and no observed writes"
+		}
 	}
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -169,10 +194,10 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 
 // sampledRanges never spans a gap or combines different responder sets.
 // Leader-only selections need no override of the leader-only default.
-func sampledRanges(selected map[int]uint64, replicas []config.PlannedReplica) (string, int) {
+func sampledRanges(selected map[int]uint64, replicas []config.PlannedReplica, leaderMask uint64) (string, int) {
 	keys := make([]int, 0, len(selected))
 	for key, mask := range selected {
-		if mask != 1 {
+		if mask != leaderMask {
 			keys = append(keys, key)
 		}
 	}
