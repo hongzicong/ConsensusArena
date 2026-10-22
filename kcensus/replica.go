@@ -12,10 +12,11 @@ import (
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
+// Replica owns runtime resources and exposes the external protocol event boundary.
 type Replica struct {
 	*replica.Replica
 	topology       processTopology
-	engine         *core
+	core           *core
 	inbox          chan fastrpc.Serializable
 	code           uint8
 	peers          *replica.PeerStreams
@@ -23,7 +24,7 @@ type Replica struct {
 	pendingReplies map[defs.RequestID]replyJob
 }
 
-func New(alias string, rid int, addrs []string, conf *config.Config, l *dlog.Logger) *Replica {
+func New(alias string, replicaID int, addrs []string, conf *config.Config, logger *dlog.Logger) *Replica {
 	if conf.Noop {
 		panic("KCensus requires noop: false (client replies require execution)")
 	}
@@ -37,25 +38,11 @@ func New(alias string, rid int, addrs []string, conf *config.Config, l *dlog.Log
 		panic(err)
 	}
 	plan := topology.Plan
-	l.Printf("KCENSUS_PLAN replica=%d digest=%x processes=%v delegates=%v predicted_mean=%s budgets=%v returns=%v synthesis=%s requirements=%v", rid, plan.Digest, topology.Aliases, plan.Leaders, plan.Mean, plan.Budgets, plan.Returns, time.Since(start), plan.Requirements)
-	l.Printf("KCENSUS_PRIORITY replica=%d order=%v", rid, plan.leaderPriority())
-	r := &Replica{topology: topology, Replica: replica.New(alias, rid, n/2, addrs, false, true, false, conf, l), engine: newCore(rid, plan, conf.KCensusFailure), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[defs.RequestID]*defs.GPropose), pendingReplies: make(map[defs.RequestID]replyJob)}
-	r.engine.execute = func(v Record) state.Value { return v.Command.Execute(r.State) }
-	r.engine.complete = func(id defs.RequestID, v state.Value) {
-		if p := r.proposals[id]; p != nil {
-			r.pendingReplies[id] = replyJob{p, defs.ProposeReplyTS{OK: defs.TRUE, CommandId: id.Sequence, Value: v, Timestamp: p.Timestamp}}
-		} else if int(id.Client) >= r.engine.n && int(id.Client) < r.engine.m {
-			record, ok := r.engine.known[id]
-			delegate := plan.Leaders[int(id.Client)]
-			recoveryReply := r.engine.peerFailed(delegate) && r.engine.coordinator() == rid
-			if ok && (record.Command.Op == state.GET || delegate == rid || recoveryReply) {
-				if recoveryReply && record.Command.Op == state.PUT {
-					r.engine.stats.RecoveryResultReplies++
-				}
-				r.engine.send(int(id.Client), message{Kind: executedResult, Key: record.Command.K, ID: id, Result: v})
-			}
-		}
-	}
+	logger.Printf("KCENSUS_PLAN replica=%d digest=%x processes=%v delegates=%v predicted_mean=%s budgets=%v returns=%v synthesis=%s requirements=%v", replicaID, plan.Digest, topology.Aliases, plan.Leaders, plan.Mean, plan.Budgets, plan.Returns, time.Since(start), plan.Requirements)
+	logger.Printf("KCENSUS_PRIORITY replica=%d order=%v", replicaID, plan.leaderPriority())
+	r := &Replica{topology: topology, Replica: replica.New(alias, replicaID, n/2, addrs, true, conf, logger), core: newCore(replicaID, plan, conf.KCensusFailure), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[defs.RequestID]*defs.GPropose), pendingReplies: make(map[defs.RequestID]replyJob)}
+	r.core.execute = func(cmd state.Command) state.Value { return cmd.Execute(r.State) }
+	r.core.reply = r.queueReply
 	r.code = r.RPC.Register(&wireMessage{}, r.inbox)
 	go r.run()
 	return r

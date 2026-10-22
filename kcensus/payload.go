@@ -224,7 +224,7 @@ func (c *core) drainPayload() {
 				}
 				m := w.message
 				if c.resolveMessage(&m) {
-					c.stepMessage(m, true)
+					c.receiveMessage(m, true)
 				} else {
 					c.queuePayload(m, false)
 				}

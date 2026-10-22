@@ -3,7 +3,7 @@ package swift
 import "github.com/hongzicong/ConsensusArena/replica/defs"
 
 // Execution ordering, result deduplication, and protocol completion.
-func (r *Replica) deliver(desc *commandDesc, cmdId defs.RequestID) {
+func (c *core) apply(desc *commandDesc, cmdID defs.RequestID) {
 	// TODO: what if desc.propose is nil ?
 	//       is that possible ?
 	//
@@ -11,71 +11,62 @@ func (r *Replica) deliver(desc *commandDesc, cmdId defs.RequestID) {
 	//       Now I do
 	// TODO: How is that possible ?
 
-	if desc.propose == nil || r.delivered.Has(cmdId.String()) || !r.Exec {
+	if desc.propose == nil || c.delivered.Has(cmdID.String()) || !c.executeEnabled() {
 		return
 	}
 
-	if desc.phase != COMMIT && (!r.optExec || r.Id != r.leader()) {
+	if desc.phase != COMMIT && (!c.optExec || c.ID != c.leader()) {
 		return
 	}
 
-	for _, cmdIdPrime := range desc.dep {
-		if !r.delivered.Has(cmdIdPrime.String()) {
+	for _, cmdIDPrime := range desc.dep {
+		if !c.delivered.Has(cmdIDPrime.String()) {
 			return
 		}
 	}
 
-	r.delivered.Set(cmdId.String(), struct{}{})
-	v := desc.cmd.Execute(r.State)
+	c.delivered.Set(cmdID.String(), struct{}{})
+	v := c.execute(desc.cmd)
 
 	desc.successorsL.Lock()
 	if desc.successors != nil {
-		for _, sucCmdId := range desc.successors {
-			go func(sucCmdId defs.RequestID) {
-				r.deliverChan <- sucCmdId
-			}(sucCmdId)
+		for _, sucCmdID := range desc.successors {
+			c.scheduleDelivery(sucCmdID)
 		}
 	}
 	desc.successorsL.Unlock()
 
-	if !r.Dreply {
+	if !c.replyAfterExecution() {
 		return
 	}
 
-	r.repchan.reply(desc, cmdId, v)
+	c.queueReply(desc, cmdID, v)
 	if desc.seq {
-		// wait for the slot number and ignore any other message
-		for {
-			switch slot := (<-desc.msgs).(type) {
-			case int:
-				r.handleMsg(slot, desc, cmdId)
-				return
-			}
-		}
+		c.awaitReply(desc, cmdID)
 	}
 }
 
 // completeReply runs on the existing reply worker, preserving send/bookkeeping order.
-func (r *Replica) completeReply(args *replyArgs) {
-	if args.propose.Proxy && !r.optExec {
+func (c *core) completeReply(args *replyArgs) {
+	if args.propose.Proxy && !c.optExec {
 		acc := &MAccept{
-			Replica: r.Id,
-			Ballot:  r.ballot,
-			CmdId:   args.cmdId,
+			Replica: c.ID,
+			Ballot:  c.ballot,
+			CmdId:   args.cmdID,
 			Rep:     args.val,
 		}
-		r.SendClientMsg(args.propose.ClientId, r.cs.acceptRPC, acc)
-	} else if r.optExec && r.Id == r.leader() {
+		c.sendClient(args.propose.ClientId, c.codes.acceptRPC, acc)
+	} else if c.optExec && c.ID == c.leader() {
 		reply := &MReply{
-			Replica:  r.Id,
-			Ballot:   r.ballot,
-			CmdId:    args.cmdId,
+			Replica:  c.ID,
+			Ballot:   c.ballot,
+			CmdId:    args.cmdID,
 			Checksum: args.hs,
 			Rep:      args.val,
 		}
-		r.SendClientMsg(args.propose.ClientId, r.cs.replyRPC, reply)
+		c.sendClient(args.propose.ClientId, c.codes.replyRPC, reply)
 	}
 	// TODO: what if it is optimistically executed by the leader?
-	r.historySize = (r.historySize % HISTORY_SIZE) + 1
-	args.finish <- (r.historySize - 1)
+	c.historySize = (c.historySize % HISTORY_SIZE) + 1
+	args.finish <- (c.historySize - 1)
 }

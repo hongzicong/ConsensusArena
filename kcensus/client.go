@@ -25,7 +25,7 @@ type clientRequest struct {
 type Client struct {
 	client.StandardClient
 	topology    processTopology
-	engine      *core
+	core        *core
 	inbox       chan message
 	control     chan message
 	resultInbox chan message
@@ -55,11 +55,11 @@ func NewClient(b *client.BufferClient, conf *config.Config, clone int) *Client {
 	if pid < 0 {
 		panic("KCensus client alias/clone is not configured")
 	}
-	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, topology: topology, engine: newCore(pid, topology.Plan, conf.KCensusFailure), inbox: make(chan message, 65536), resultInbox: make(chan message, 4096), proposals: make(chan Record, 65536), stop: make(chan struct{}), requests: make(map[defs.RequestID]*clientRequest)}
-	b.ClientId = int32(pid)
-	c.control = make(chan message, 4*c.engine.m)
+	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, topology: topology, core: newCore(pid, topology.Plan, conf.KCensusFailure), inbox: make(chan message, 65536), resultInbox: make(chan message, 4096), proposals: make(chan Record, 65536), stop: make(chan struct{}), requests: make(map[defs.RequestID]*clientRequest)}
+	b.ClientID = int32(pid)
+	c.control = make(chan message, 4*c.core.m)
 	b.SkipPing = true
-	b.ClosestId = topology.Plan.Leaders[pid]
+	b.ClosestID = topology.Plan.Leaders[pid]
 	c.peers = replica.NewPeerStreams(len(topology.Aliases))
 	b.SetProtocol(c)
 	return c
@@ -72,19 +72,19 @@ func (*Client) RetryPolicy() string {
 }
 
 func (c *Client) Start() error {
-	c.ClosestId = c.engine.plan.Leaders[c.engine.id]
-	if c.PeerCount() != c.engine.n {
+	c.ClosestID = c.core.plan.Leaders[c.core.id]
+	if c.PeerCount() != c.core.n {
 		return fmt.Errorf("KCensus client membership differs from configured topology")
 	}
-	listener, err := net.Listen("tcp", c.topology.Listeners[c.engine.id])
+	listener, err := net.Listen("tcp", c.topology.Listeners[c.core.id])
 	if err != nil {
 		return fmt.Errorf("KCensus client listener: %w", err)
 	}
 	c.listener = listener
-	c.Printf("KCENSUS_CLIENT pid=%d alias=%s delegate=%d digest=%x listener=%s", c.engine.id, c.topology.Aliases[c.engine.id], c.engine.plan.Leaders[c.engine.id], c.engine.plan.Digest, listener.Addr())
+	c.Printf("KCENSUS_CLIENT pid=%d alias=%s delegate=%d digest=%x listener=%s", c.core.id, c.topology.Aliases[c.core.id], c.core.plan.Leaders[c.core.id], c.core.plan.Digest, listener.Addr())
 	go c.run()
 	go c.acceptMesh()
-	for id := c.engine.id + 1; id < c.engine.m; id++ {
+	for id := c.core.id + 1; id < c.core.m; id++ {
 		go c.dialMesh(id)
 	}
 	return nil
@@ -97,7 +97,7 @@ func (c *Client) WaitReplies(_ int) {
 			return
 		default:
 		}
-		for id := 0; id < c.engine.n; id++ {
+		for id := 0; id < c.core.n; id++ {
 			if c.Connection(id) != nil {
 				if c.bindStream(id, c.Connection(id), c.Writer(id)) == nil {
 					go c.readStream(id, c.Connection(id), c.Reader(id))
@@ -116,7 +116,7 @@ func (c *Client) SendProposal(p defs.Propose) {
 		panic(err)
 	}
 	select {
-	case c.proposals <- Record{defs.RequestID{Client: int32(c.engine.id), Sequence: p.CommandId}, p.Command}:
+	case c.proposals <- Record{defs.RequestID{Client: int32(c.core.id), Sequence: p.CommandId}, p.Command}:
 	case <-c.stop:
 	}
 }
@@ -132,19 +132,19 @@ func (c *Client) Close() {
 }
 
 func (c *Client) selectedDelegate() int {
-	leader := c.engine.plan.Leaders[c.engine.id]
+	leader := c.core.plan.Leaders[c.core.id]
 	if c.Connection(leader) != nil && !c.PeerFailed(leader) {
 		return leader
 	}
-	alive := make([]bool, c.engine.n)
+	alive := make([]bool, c.core.n)
 	for id := range alive {
 		alive[id] = c.Connection(id) != nil && !c.PeerFailed(id)
 	}
-	if delegate := survivingReadDelegate(c.topology.Latency, c.engine.id, c.engine.n, c.engine.f, alive); delegate >= 0 {
+	if delegate := survivingReadDelegate(c.topology.Latency, c.core.id, c.core.n, c.core.f, alive); delegate >= 0 {
 		return delegate
 	}
-	for _, id := range c.engine.priority {
-		if id < c.engine.n && c.Connection(id) != nil && !c.PeerFailed(id) {
+	for _, id := range c.core.priority {
+		if id < c.core.n && c.Connection(id) != nil && !c.PeerFailed(id) {
 			return id
 		}
 	}
@@ -153,22 +153,12 @@ func (c *Client) selectedDelegate() int {
 
 func (c *Client) receiveResult(m message) {
 	q := c.requests[m.ID]
-	if m.From < 0 || m.From >= c.engine.n || q == nil || q.record.Command.K != m.Key || c.ReplyCompleted(m.ID) {
+	if q == nil || !c.core.acceptsResult(m, q.record) || c.ReplyCompleted(m.ID) {
 		return
 	}
 	c.CompleteReply(m.ID, m.Result, func() {
 		delete(c.requests, m.ID)
-		if q.record.Command.Op == state.PUT {
-			c.engine.recordWriteCompletion(m.ID, c.engine.executed(m.Key))
-			// A voter has executed this exact input. Stop offering it while local
-			// commit/payload catch-up continues; this does not advance a slot prefix.
-			c.engine.ordered[m.ID] = true
-			delete(c.engine.repairHandoffs, payloadObject{m.Key, c.engine.commandUIDs[m.ID]})
-			c.engine.results[m.ID] = append(state.Value(nil), m.Result...)
-			s := c.engine.shard(m.Key)
-			delete(s.queued, m.ID)
-			delete(s.shared, m.ID)
-		}
+		c.core.recordResult(m, q.record)
 	}, nil)
 }
 
@@ -187,7 +177,7 @@ func (c *Client) queryResults() {
 			continue
 		}
 		c.queryQueue = append(c.queryQueue, id)
-		if c.engine.now < q.nextQuery || budget == 0 {
+		if c.core.now < q.nextQuery || budget == 0 {
 			continue
 		}
 		if q.record.Command.Op == state.GET {
@@ -197,23 +187,23 @@ func (c *Client) queryResults() {
 			}
 			// A live delegate will deliver this GET's own result. Other voters
 			// do not execute this read and cannot answer a cache lookup for it.
-			q.nextQuery = c.engine.now + c.engine.retry
+			q.nextQuery = c.core.now + c.core.retry
 			continue
 		}
 		if q.delegate >= 0 && c.Connection(q.delegate) != nil && !c.PeerFailed(q.delegate) {
-			q.nextQuery = c.engine.now + c.engine.retry
+			q.nextQuery = c.core.now + c.core.retry
 			continue
 		}
-		for attempt := 0; attempt < c.engine.n; attempt++ {
+		for attempt := 0; attempt < c.core.n; attempt++ {
 			peer := q.queryPeer
 			if peer < 0 {
 				peer = 0
 			}
-			q.queryPeer = (peer + 1) % c.engine.n
+			q.queryPeer = (peer + 1) % c.core.n
 			if c.Connection(peer) == nil || c.PeerFailed(peer) {
 				continue
 			}
-			c.engine.send(peer, message{Kind: resultQuery, Key: q.record.Command.K, ID: id})
+			c.core.send(peer, message{Kind: resultQuery, Key: q.record.Command.K, ID: id})
 			budget--
 			break
 		}
@@ -221,7 +211,7 @@ func (c *Client) queryResults() {
 		if q.queryDelay > 8*time.Second {
 			q.queryDelay = 8 * time.Second
 		}
-		q.nextQuery = c.engine.now + q.queryDelay
+		q.nextQuery = c.core.now + q.queryDelay
 	}
 	if c.queryHead > 4096 && c.queryHead*2 >= len(c.queryQueue) {
 		copy(c.queryQueue, c.queryQueue[c.queryHead:])
@@ -233,6 +223,6 @@ func (c *Client) queryResults() {
 func (c *Client) sendRead(q *clientRequest) {
 	if q.delegate >= 0 {
 		r := q.record
-		c.engine.send(q.delegate, message{Kind: delegateRead, Key: r.Command.K, ID: r.ID, Request: &r})
+		c.core.send(q.delegate, message{Kind: delegateRead, Key: r.Command.K, ID: r.ID, Request: &r})
 	}
 }

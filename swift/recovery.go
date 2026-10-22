@@ -4,65 +4,51 @@ package swift
 import (
 	"log"
 	"sort"
-	"sync"
 	"time"
 
-	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
 	"github.com/orcaman/concurrent-map"
 )
 
-func (r *Replica) handleNewLeader(msg *MNewLeader) {
-	if r.ballot >= msg.Ballot {
+func (c *core) handleNewLeader(msg *MNewLeader) {
+	if c.ballot >= msg.Ballot {
 		return
 	}
 	log.Println("Recovering... with the ballot", msg.Ballot)
 
-	r.status = RECOVERING
-	r.ballot = msg.Ballot
-	r.recStart = time.Now()
+	c.status = RECOVERING
+	c.ballot = msg.Ballot
+	c.recStart = time.Now()
 
-	r.repchan.stop()
-	r.stopDescs()
+	c.stopReplies()
+	c.stopDescriptors()
 
 	newLeaderAckN := &MNewLeaderAckN{
-		Replica: r.Id,
-		Ballot:  r.ballot,
-		Cballot: r.cballot,
+		Replica: c.ID,
+		Ballot:  c.ballot,
+		Cballot: c.cballot,
 	}
-	r.fillNewLeaderAckN(newLeaderAckN)
+	c.fillNewLeaderAckN(newLeaderAckN)
 
-	if msg.Replica != r.Id {
-		_ = r.Messages().Send(int(msg.Replica), r.cs.newLeaderAckNRPC, newLeaderAckN)
+	if msg.Replica != c.ID {
+		_ = c.send(int(msg.Replica), c.codes.newLeaderAckNRPC, newLeaderAckN)
 	} else {
-		r.handleNewLeaderAckN(newLeaderAckN)
+		c.handleNewLeaderAckN(newLeaderAckN)
 	}
 
-	// stop processing normal channels:
-	for r.status == RECOVERING {
-		select {
-		case m := <-r.cs.newLeaderChan:
-			protocol.Must(r.Handle(m, time.Time{}))
-
-		case m := <-r.cs.newLeaderAckNChan:
-			protocol.Must(r.Handle(m, time.Time{}))
-
-		case m := <-r.cs.syncChan:
-			protocol.Must(r.Handle(m, time.Time{}))
-		}
-	}
+	c.awaitRecovery()
 }
 
-func (r *Replica) handleNewLeaderAckN(msg *MNewLeaderAckN) {
-	if r.status != RECOVERING || r.ballot != msg.Ballot {
+func (c *core) handleNewLeaderAckN(msg *MNewLeaderAckN) {
+	if c.status != RECOVERING || c.ballot != msg.Ballot {
 		return
 	}
 
-	r.newLeaderAckNs.Add(msg.Replica, false, msg)
+	c.newLeaderAckNs.Add(msg.Replica, false, msg)
 }
 
-func (r *Replica) handleNewLeaderAckNs(_ interface{}, msgs []interface{}) {
+func (c *core) handleNewLeaderAckNs(_ interface{}, msgs []interface{}) {
 	maxCbal := int32(-1)
 	var U map[*MNewLeaderAckN]struct{}
 
@@ -84,39 +70,39 @@ func (r *Replica) handleNewLeaderAckNs(_ interface{}, msgs []interface{}) {
 	for newLeaderAckN := range U {
 		for i, phase := range newLeaderAckN.Phases {
 			if phase == COMMIT || phase == ACCEPT {
-				cmdId := newLeaderAckN.CmdIds[i]
-				phases[cmdId] = phase
-				cmds[cmdId] = newLeaderAckN.Cmds[i]
-				deps[cmdId] = Dep(newLeaderAckN.Deps[i].Dep)
+				cmdID := newLeaderAckN.CmdIds[i]
+				phases[cmdID] = phase
+				cmds[cmdID] = newLeaderAckN.Cmds[i]
+				deps[cmdID] = Dep(newLeaderAckN.Deps[i].Dep)
 			}
 		}
 	}
 
 	sync := &MSync{
-		Replica: r.Id,
-		Ballot:  r.ballot,
+		Replica: c.ID,
+		Ballot:  c.ballot,
 		Phases:  phases,
 		Cmds:    cmds,
 		Deps:    deps,
 	}
-	r.SendToAll(sync, r.cs.syncRPC)
-	r.handleSync(sync)
+	c.broadcast(sync, c.codes.syncRPC)
+	c.handleSync(sync)
 }
 
-func (r *Replica) fillNewLeaderAckN(newLeaderAckN *MNewLeaderAckN) {
-	cmdIds := []defs.RequestID{}
+func (c *core) fillNewLeaderAckN(newLeaderAckN *MNewLeaderAckN) {
+	cmdIDs := []defs.RequestID{}
 	phases := []int{}
 	cmds := []state.Command{}
 	deps := []SDep{}
 	seen := make(map[defs.RequestID]struct{})
 
-	r.cmdDescs.IterCb(func(_ string, v interface{}) {
+	c.descriptors.IterCb(func(_ string, v interface{}) {
 		desc := v.(*commandDesc)
 		if desc.propose != nil {
-			cmdId := desc.propose.RequestID()
-			if _, exists := seen[cmdId]; !exists {
-				seen[cmdId] = struct{}{}
-				cmdIds = append(cmdIds, cmdId)
+			cmdID := desc.propose.RequestID()
+			if _, exists := seen[cmdID]; !exists {
+				seen[cmdID] = struct{}{}
+				cmdIDs = append(cmdIDs, cmdID)
 				phases = append(phases, desc.phase)
 				cmds = append(cmds, desc.cmd)
 				deps = append(deps, SDep{desc.dep})
@@ -124,179 +110,184 @@ func (r *Replica) fillNewLeaderAckN(newLeaderAckN *MNewLeaderAckN) {
 		}
 	})
 
-	for cmdId := range r.proposes {
-		if _, exists := seen[cmdId]; exists || r.delivered.Has(cmdId.String()) {
+	for cmdID := range c.proposes {
+		if _, exists := seen[cmdID]; exists || c.delivered.Has(cmdID.String()) {
 			continue
 		}
-		cmdIds = append(cmdIds, cmdId)
+		cmdIDs = append(cmdIDs, cmdID)
 		phases = append(phases, ACCEPT)
 		cmds = append(cmds, state.NOOP()[0])
 		deps = append(deps, SDep{[]defs.RequestID{}})
 	}
 
-	newLeaderAckN.CmdIds = cmdIds
+	newLeaderAckN.CmdIds = cmdIDs
 	newLeaderAckN.Phases = phases
 	newLeaderAckN.Cmds = cmds
 	newLeaderAckN.Deps = deps
 }
 
-func (r *Replica) handleSync(msg *MSync) {
-	if r.ballot > msg.Ballot || (r.ballot == msg.Ballot && r.status == NORMAL) {
+func (c *core) handleSync(msg *MSync) {
+	if c.ballot > msg.Ballot || (c.ballot == msg.Ballot && c.status == NORMAL) {
 		return
 	}
 
-	if r.status == NORMAL {
-		r.recStart = time.Now()
-		r.repchan.stop()
-		r.stopDescs()
+	if c.status == NORMAL {
+		c.recStart = time.Now()
+		c.stopReplies()
+		c.stopDescriptors()
 	}
 
-	// clear cmdDescs:
-	r.cmdDescs.IterCb(func(_ string, v interface{}) {
+	// clear descriptors:
+	c.descriptors.IterCb(func(_ string, v interface{}) {
 		desc := v.(*commandDesc)
 		if desc.propose != nil {
-			cmdId := desc.propose.RequestID()
-			if _, exists := msg.Phases[cmdId]; !exists {
-				go func(propose *defs.GPropose) {
-					r.ProposeChan <- propose
-				}(desc.propose)
+			cmdID := desc.propose.RequestID()
+			if _, exists := msg.Phases[cmdID]; !exists {
+				c.requeueProposal(desc.propose)
 			}
 		}
 		desc.msgs = nil
 		desc.stopChan = nil
 		desc.slowPathH.Free()
 		desc.fastPathH.Free()
-		r.freeDesc(desc)
+		c.freeDesc(desc)
 	})
 
-	r.keys = make(map[state.Key]keyInfo)
-	r.routineCount = 0
-	r.cmdDescs = cmap.New()
-	r.status = NORMAL
-	r.ballot = msg.Ballot
-	r.cballot = msg.Ballot
-	r.installRecoveryHashBoundary(msg.Phases)
-	if r.fixedMajority {
-		r.FQ = r.qs.AQ(r.ballot)
+	c.keys = make(map[state.Key]keyInfo)
+	c.resetDescriptors()
+	c.descriptors = cmap.New()
+	c.status = NORMAL
+	c.ballot = msg.Ballot
+	c.cballot = msg.Ballot
+	c.installRecoveryHashBoundary(msg.Phases)
+	if c.fixedMajority {
+		c.FQ = c.qs.AQ(c.ballot)
 	}
-	r.repchan = NewReplyChan(r)
-	r.historySize = 0
+	c.resetReplies()
+	c.historySize = 0
 
 	i := 0
 	sorted := make([]defs.RequestID, len(msg.Phases))
-	for cmdId := range msg.Phases {
-		sorted[i] = cmdId
+	for cmdID := range msg.Phases {
+		sorted[i] = cmdID
 		i++
 	}
 	sort.Slice(sorted, func(i, j int) bool {
 		return msg.Deps[sorted[j]].Contains(sorted[i])
 	})
 
-	for _, cmdId := range sorted {
-		desc := r.getCmdDesc(cmdId, nil, nil)
+	for _, cmdID := range sorted {
+		desc := c.getCmdDesc(cmdID, nil, nil)
 		if desc != nil {
-			desc.phase = msg.Phases[cmdId]
-			desc.cmd = msg.Cmds[cmdId]
-			desc.dep = msg.Deps[cmdId]
-			desc.proposeDep = msg.Deps[cmdId]
+			desc.phase = msg.Phases[cmdID]
+			desc.cmd = msg.Cmds[cmdID]
+			desc.dep = msg.Deps[cmdID]
+			desc.proposeDep = msg.Deps[cmdID]
 
-			for _, cmdIdPrime := range msg.Deps[cmdId] {
-				descPrime := r.getCmdDesc(cmdIdPrime, nil, nil)
+			for _, cmdIDPrime := range msg.Deps[cmdID] {
+				descPrime := c.getCmdDesc(cmdIDPrime, nil, nil)
 				if descPrime != nil {
-					descPrime.successors = append(descPrime.successors, cmdId)
+					descPrime.successors = append(descPrime.successors, cmdID)
 				}
-				go func(cmdIdPrime defs.RequestID) {
-					r.deliverChan <- cmdIdPrime
-				}(cmdIdPrime)
+				c.scheduleDelivery(cmdIDPrime)
 			}
 
-			go func(cmdId defs.RequestID) {
-				r.deliverChan <- cmdId
-			}(cmdId)
+			c.scheduleDelivery(cmdID)
 
 			if desc.phase != COMMIT && desc.phase != ACCEPT {
 				desc.phase = ACCEPT
 			}
 		}
 
-		if propose, exists := r.proposes[cmdId]; exists {
+		if propose, exists := c.proposes[cmdID]; exists {
 			if desc != nil {
 				desc.propose = propose
 			}
 
-			finishAck := r.sendRecoveryAck(cmdId, msg.Deps[cmdId], propose, desc)
+			finishAck := c.sendRecoveryAck(cmdID, msg.Deps[cmdID], propose, desc)
 			defer finishAck()
 		}
 	}
 
-	for cmdId, propose := range r.proposes {
-		if _, exists := msg.Phases[cmdId]; exists {
+	for cmdID, propose := range c.proposes {
+		if _, exists := msg.Phases[cmdID]; exists {
 			continue
 		}
 		acc := &MAccept{
-			Replica: r.Id,
-			Ballot:  r.ballot,
-			CmdId:   cmdId,
+			Replica: c.ID,
+			Ballot:  c.ballot,
+			CmdId:   cmdID,
 		}
-		r.SendClientMsg(propose.ClientId, r.cs.acceptRPC, acc)
+		c.sendClient(propose.ClientId, c.codes.acceptRPC, acc)
 	}
 
 	log.Println("Recovered!")
-	log.Println("Ballot:", r.ballot)
-	log.Println("FQ:", r.FQ, "SQ:", r.SQ)
-	log.Println("recovered in", time.Now().Sub(r.recStart))
+	log.Println("Ballot:", c.ballot)
+	log.Println("FQ:", c.FQ, "SQ:", c.SQ)
+	log.Println("recovered in", time.Now().Sub(c.recStart))
 }
 
-func (r *Replica) stopDescs() {
-	var wg sync.WaitGroup
-	r.cmdDescs.IterCb(func(_ string, v interface{}) {
-		desc := v.(*commandDesc)
-		if desc.active && !desc.seq {
-			wg.Add(1)
-			desc.stopChan <- &wg
-		}
-	})
-	wg.Wait()
-
-	// TODO: maybe add to history even if stopped this way ?
-}
-
-func (r *Replica) reinitNewLeaderAckNs() {
+func (c *core) reinitNewLeaderAckNs() {
 	accept := func(_, _ interface{}) bool {
 		return true
 	}
 	free := func(_ interface{}) {}
-	Q := NewMajorityOf(r.N)
-	r.newLeaderAckNs = r.newLeaderAckNs.ReinitMsgSet(Q, accept, free, r.handleNewLeaderAckNs)
+	Q := NewMajorityOf(c.N)
+	c.newLeaderAckNs = c.newLeaderAckNs.ReinitMsgSet(Q, accept, free, c.handleNewLeaderAckNs)
 }
 
-func (r *Replica) beginRecovery(newBallot int32) {
+type leaderDecision struct {
+	reply   defs.BeTheLeaderReply
+	recover bool
+	ballot  int32
+}
+
+func (c *core) handleLeaderCall() leaderDecision {
+	decision := leaderDecision{}
+	if !c.delivered.IsEmpty() {
+		decision.recover = true
+		decision.ballot = c.qs.BallotAt(1)
+		decision.reply.Leader = c.ID
+	} else {
+		decision.reply.Leader = c.leader()
+	}
+	decision.reply.NextLeader = Leader(c.qs.BallotAt(1), c.N)
+	if decision.reply.Leader == 0 {
+		decision.reply.Leader = -2
+	}
+	if decision.reply.NextLeader == 0 {
+		decision.reply.NextLeader = -2
+	}
+	return decision
+}
+
+func (c *core) beginRecovery(newBallot int32) {
 	newLeader := &MNewLeader{
-		Replica: r.Id,
-		Ballot:  r.ballot,
+		Replica: c.ID,
+		Ballot:  c.ballot,
 	}
 	if newBallot != -1 {
 		if newBallot > newLeader.Ballot {
 			newLeader.Ballot = newBallot
 		} else {
-			newLeader.Ballot = r.qs.SameHigher(newBallot, newLeader.Ballot)
+			newLeader.Ballot = c.qs.SameHigher(newBallot, newLeader.Ballot)
 		}
 	} else {
-		newLeader.Ballot = NextBallotOf(r.Id, newLeader.Ballot, r.N)
+		newLeader.Ballot = NextBallotOf(c.ID, newLeader.Ballot, c.N)
 	}
-	for quorumIsAlive := false; r.fixedMajority && !quorumIsAlive; {
+	for quorumIsAlive := false; c.fixedMajority && !quorumIsAlive; {
 		quorumIsAlive = true
-		r.qs.AQ(newLeader.Ballot).Range(func(rid int) bool {
-			if rid != int(r.Id) && !r.Alive[rid] {
-				newLeader.Ballot = NextBallotOf(r.Id, newLeader.Ballot, r.N)
+		c.qs.AQ(newLeader.Ballot).Range(func(rid int) bool {
+			if rid != int(c.ID) && !c.peerAlive(rid) {
+				newLeader.Ballot = NextBallotOf(c.ID, newLeader.Ballot, c.N)
 				quorumIsAlive = false
 				return false
 			}
 			return true
 		})
 	}
-	r.SendToAll(newLeader, r.cs.newLeaderRPC)
-	r.reinitNewLeaderAckNs()
-	r.handleNewLeader(newLeader)
+	c.broadcast(newLeader, c.codes.newLeaderRPC)
+	c.reinitNewLeaderAckNs()
+	c.handleNewLeader(newLeader)
 
 }

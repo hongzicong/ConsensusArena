@@ -10,42 +10,43 @@ import (
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
+// Replica owns runtime resources and exposes the external protocol event boundary.
 type Replica struct {
 	*replica.Replica
-	recovery *protocolRuntime
+	runtime *runtime
 }
 
-func New(alias string, rid int, addrs []string, exec bool, f int, conf *config.Config, logger *dlog.Logger) *Replica {
+func New(alias string, replicaID int, addrs []string, executeEnabled bool, f int, conf *config.Config, logger *dlog.Logger) *Replica {
 	// The protocol runtime owns normal operation and recovery state.
-	r := &Replica{Replica: replica.New(alias, rid, f, addrs, false, exec, false, conf, logger)}
+	r := &Replica{Replica: replica.New(alias, replicaID, f, addrs, executeEnabled, conf, logger)}
 
 	ballot := conf.Plan.LeaderID()
 
-	var cs CommunicationSupply
-	initCs(&cs, r.RPC)
+	var channels transportChannels
+	registerRPCs(&channels, r.RPC)
 
-	r.recovery = newProtocolRuntime(r.Replica, ballot)
-	r.recovery.ReplyMessage = func(req Request, value state.Value, fast bool, ballot int32) (uint8, fastrpc.Serializable) {
+	r.runtime = newRuntime(r.Replica, ballot)
+	r.runtime.ReplyMessage = func(req Request, value state.Value, fast bool, ballot int32) (uint8, fastrpc.Serializable) {
 		id := req.ID
 		if fast {
-			return cs.replyRPC, &MReply{Replica: r.Id, Ballot: ballot, CmdId: id, Rep: value, Ok: TRUE}
+			return channels.replyRPC, &MReply{Replica: r.ID, Ballot: ballot, CmdId: id, Rep: value, Ok: TRUE}
 		}
-		return cs.syncReplyRPC, &MSyncReply{Replica: r.Id, Ballot: ballot, CmdId: id, Rep: value}
+		return channels.syncReplyRPC, &MSyncReply{Replica: r.ID, Ballot: ballot, CmdId: id, Rep: value}
 	}
-	r.recovery.RecordMessage = func(req Request, positive bool, ballot int32) (uint8, fastrpc.Serializable) {
+	r.runtime.RecordMessage = func(req Request, positive bool, ballot int32) (uint8, fastrpc.Serializable) {
 		ok := FALSE
 		if positive {
 			ok = TRUE
 		}
-		return cs.recordAckRPC, &MRecordAck{Replica: r.Id, Ballot: ballot, CmdId: req.ID, Ok: ok}
+		return channels.recordAckRPC, &MRecordAck{Replica: r.ID, Ballot: ballot, CmdId: req.ID, Ok: ok}
 	}
-	go r.recovery.Run()
+	go r.runtime.Run()
 
 	return r
 }
 
 // Retain message registrations in their existing order for wire compatibility.
-type CommunicationSupply struct {
+type transportChannels struct {
 	replyChan     chan fastrpc.Serializable
 	acceptChan    chan fastrpc.Serializable
 	acceptAckChan chan fastrpc.Serializable
@@ -65,27 +66,24 @@ type CommunicationSupply struct {
 	syncReplyRPC uint8
 }
 
-func initCs(cs *CommunicationSupply, t *fastrpc.Table) {
-	cs.replyChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.acceptChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.acceptAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.aacksChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.recordAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.commitChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.syncChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.syncReplyChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+func registerRPCs(channels *transportChannels, t *fastrpc.Table) {
+	channels.replyChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.acceptChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.acceptAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.aacksChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.recordAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.commitChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.syncChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.syncReplyChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
 
-	cs.replyRPC = t.Register(new(MReply), cs.replyChan)
-	cs.acceptRPC = t.Register(new(MAccept), cs.acceptChan)
-	cs.acceptAckRPC = t.Register(new(MAcceptAck), cs.acceptAckChan)
-	cs.aacksRPC = t.Register(new(MAAcks), cs.aacksChan)
-	cs.recordAckRPC = t.Register(new(MRecordAck), cs.recordAckChan)
-	cs.commitRPC = t.Register(new(MCommit), cs.commitChan)
-	cs.syncRPC = t.Register(new(MSync), cs.syncChan)
-	cs.syncReplyRPC = t.Register(new(MSyncReply), cs.syncReplyChan)
+	channels.replyRPC = t.Register(new(MReply), channels.replyChan)
+	channels.acceptRPC = t.Register(new(MAccept), channels.acceptChan)
+	channels.acceptAckRPC = t.Register(new(MAcceptAck), channels.acceptAckChan)
+	channels.aacksRPC = t.Register(new(MAAcks), channels.aacksChan)
+	channels.recordAckRPC = t.Register(new(MRecordAck), channels.recordAckChan)
+	channels.commitRPC = t.Register(new(MCommit), channels.commitChan)
+	channels.syncRPC = t.Register(new(MSync), channels.syncChan)
+	channels.syncReplyRPC = t.Register(new(MSyncReply), channels.syncReplyChan)
 }
 
 // Register must run before Run and in the same order at every replica.
-func (r *transportRuntime) Register(message fastrpc.Serializable) uint8 {
-	return r.Base.RPC.Register(message, r.in)
-}

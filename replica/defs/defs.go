@@ -134,8 +134,8 @@ const (
 )
 
 var (
-	Storage      = ""
-	StoreFilname = "stable_store"
+	Storage       = ""
+	StoreFilename = "stable_store"
 )
 
 func NewBeTheLeaderReply() *BeTheLeaderReply {
@@ -154,8 +154,8 @@ func UpdateBeTheLeaderReply(btlr *BeTheLeaderReply) {
 	}
 }
 
-func (r *BeTheLeaderReply) IsDefault() bool {
-	return r.Leader == -1 && r.NextLeader == -1
+func (m *BeTheLeaderReply) IsDefault() bool {
+	return m.Leader == -1 && m.NextLeader == -1
 }
 
 type Stats struct {
@@ -168,54 +168,54 @@ type Stats struct {
 //                                                                           //
 ///////////////////////////////////////////////////////////////////////////////
 
-func (t *PingArgs) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *PingArgs) BinarySize() (nbytes int, sizeKnown bool) {
 	return 1, true
 }
 
-func (t *PingArgs) Marshal(wire io.Writer) {
+func (m *PingArgs) Marshal(wire io.Writer) {
 	var b [1]byte
 	var bs []byte
 	bs = b[:1]
-	bs[0] = byte(t.ActAsLeader)
+	bs[0] = byte(m.ActAsLeader)
 	wire.Write(bs)
 }
 
-func (t *PingArgs) Unmarshal(wire io.Reader) error {
+func (m *PingArgs) Unmarshal(wire io.Reader) error {
 	var b [1]byte
 	var bs []byte
 	bs = b[:1]
 	if _, err := io.ReadAtLeast(wire, bs, 1); err != nil {
 		return err
 	}
-	t.ActAsLeader = uint8(bs[0])
+	m.ActAsLeader = uint8(bs[0])
 	return nil
 }
 
-func (t *PingReply) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *PingReply) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, true
 }
 
-func (t *PingReply) Marshal(wire io.Writer) {
+func (m *PingReply) Marshal(wire io.Writer) {
 }
 
-func (t *PingReply) Unmarshal(wire io.Reader) error {
+func (m *PingReply) Unmarshal(wire io.Reader) error {
 	return nil
 }
 
-func (t *BeTheLeaderReply) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *BeTheLeaderReply) BinarySize() (nbytes int, sizeKnown bool) {
 	return 8, true
 }
 
-func (t *BeTheLeaderReply) Marshal(wire io.Writer) {
+func (m *BeTheLeaderReply) Marshal(wire io.Writer) {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]
-	tmp32 := t.Leader
+	tmp32 := m.Leader
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.NextLeader
+	tmp32 = m.NextLeader
 	bs[4] = byte(tmp32)
 	bs[5] = byte(tmp32 >> 8)
 	bs[6] = byte(tmp32 >> 16)
@@ -223,39 +223,39 @@ func (t *BeTheLeaderReply) Marshal(wire io.Writer) {
 	wire.Write(bs)
 }
 
-func (t *BeTheLeaderReply) Unmarshal(wire io.Reader) error {
+func (m *BeTheLeaderReply) Unmarshal(wire io.Reader) error {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]
 	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
 		return err
 	}
-	t.Leader = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.NextLeader = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	m.Leader = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	m.NextLeader = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
 	return nil
 }
 
-func (t *Propose) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *Propose) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, false
 }
 
-func (t *Propose) Marshal(wire io.Writer) {
+func (m *Propose) Marshal(wire io.Writer) {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]
-	tmp32 := t.CommandId
+	tmp32 := m.CommandId
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.ClientId
+	tmp32 = m.ClientId
 	bs[4] = byte(tmp32)
 	bs[5] = byte(tmp32 >> 8)
 	bs[6] = byte(tmp32 >> 16)
 	bs[7] = byte(tmp32 >> 24)
 	wire.Write(bs)
-	t.Command.Marshal(wire)
-	tmp64 := t.Timestamp
+	m.Command.Marshal(wire)
+	tmp64 := m.Timestamp
 	bs[0] = byte(tmp64)
 	bs[1] = byte(tmp64 >> 8)
 	bs[2] = byte(tmp64 >> 16)
@@ -267,41 +267,43 @@ func (t *Propose) Marshal(wire io.Writer) {
 	wire.Write(bs)
 }
 
-func (t *Propose) Unmarshal(wire io.Reader) error {
+func (m *Propose) Unmarshal(wire io.Reader) error {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]
 	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
 		return err
 	}
-	t.CommandId = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.ClientId = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
-	t.Command.Unmarshal(wire)
+	m.CommandId = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	m.ClientId = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	if err := m.Command.Unmarshal(wire); err != nil {
+		return err
+	}
 	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
 		return err
 	}
-	t.Timestamp = int64((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
+	m.Timestamp = int64((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
 	return nil
 }
 
-func (t *ProposeReplyTS) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *ProposeReplyTS) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, false
 }
 
-func (t *ProposeReplyTS) Marshal(wire io.Writer) {
+func (m *ProposeReplyTS) Marshal(wire io.Writer) {
 	var b [8]byte
 	var bs []byte
 	bs = b[:5]
-	bs[0] = byte(t.OK)
-	tmp32 := t.CommandId
+	bs[0] = byte(m.OK)
+	tmp32 := m.CommandId
 	bs[1] = byte(tmp32)
 	bs[2] = byte(tmp32 >> 8)
 	bs[3] = byte(tmp32 >> 16)
 	bs[4] = byte(tmp32 >> 24)
 	wire.Write(bs)
-	t.Value.Marshal(wire)
+	m.Value.Marshal(wire)
 	bs = b[:8]
-	tmp64 := t.Timestamp
+	tmp64 := m.Timestamp
 	bs[0] = byte(tmp64)
 	bs[1] = byte(tmp64 >> 8)
 	bs[2] = byte(tmp64 >> 16)
@@ -313,93 +315,101 @@ func (t *ProposeReplyTS) Marshal(wire io.Writer) {
 	wire.Write(bs)
 }
 
-func (t *ProposeReplyTS) Unmarshal(wire io.Reader) error {
+func (m *ProposeReplyTS) Unmarshal(wire io.Reader) error {
 	var b [8]byte
 	var bs []byte
 	bs = b[:5]
 	if _, err := io.ReadAtLeast(wire, bs, 5); err != nil {
 		return err
 	}
-	t.OK = uint8(bs[0])
-	t.CommandId = int32((uint32(bs[1]) | (uint32(bs[2]) << 8) | (uint32(bs[3]) << 16) | (uint32(bs[4]) << 24)))
-	t.Value.Unmarshal(wire)
+	m.OK = uint8(bs[0])
+	m.CommandId = int32((uint32(bs[1]) | (uint32(bs[2]) << 8) | (uint32(bs[3]) << 16) | (uint32(bs[4]) << 24)))
+	if err := m.Value.Unmarshal(wire); err != nil {
+		return err
+	}
 	bs = b[:8]
 	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
 		return err
 	}
-	t.Timestamp = int64((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
+	m.Timestamp = int64((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
 	return nil
 }
 
-func (t *Read) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *Read) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, false
 }
 
-func (t *Read) Marshal(wire io.Writer) {
+func (m *Read) Marshal(wire io.Writer) {
 	var b [4]byte
 	var bs []byte
 	bs = b[:4]
-	tmp32 := t.CommandId
+	tmp32 := m.CommandId
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
 	wire.Write(bs)
-	t.Key.Marshal(wire)
+	m.Key.Marshal(wire)
 }
 
-func (t *Read) Unmarshal(wire io.Reader) error {
+func (m *Read) Unmarshal(wire io.Reader) error {
 	var b [4]byte
 	var bs []byte
 	bs = b[:4]
 	if _, err := io.ReadAtLeast(wire, bs, 4); err != nil {
 		return err
 	}
-	t.CommandId = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.Key.Unmarshal(wire)
+	m.CommandId = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	if err := m.Key.Unmarshal(wire); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (t *ProposeAndRead) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *ProposeAndRead) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, false
 }
 
-func (t *ProposeAndRead) Marshal(wire io.Writer) {
+func (m *ProposeAndRead) Marshal(wire io.Writer) {
 	var b [4]byte
 	var bs []byte
 	bs = b[:4]
-	tmp32 := t.CommandId
+	tmp32 := m.CommandId
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
 	wire.Write(bs)
-	t.Command.Marshal(wire)
-	t.Key.Marshal(wire)
+	m.Command.Marshal(wire)
+	m.Key.Marshal(wire)
 }
 
-func (t *ProposeAndRead) Unmarshal(wire io.Reader) error {
+func (m *ProposeAndRead) Unmarshal(wire io.Reader) error {
 	var b [4]byte
 	var bs []byte
 	bs = b[:4]
 	if _, err := io.ReadAtLeast(wire, bs, 4); err != nil {
 		return err
 	}
-	t.CommandId = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.Command.Unmarshal(wire)
-	t.Key.Unmarshal(wire)
+	m.CommandId = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	if err := m.Command.Unmarshal(wire); err != nil {
+		return err
+	}
+	if err := m.Key.Unmarshal(wire); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (t *BeaconReply) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *BeaconReply) BinarySize() (nbytes int, sizeKnown bool) {
 	return 8, true
 }
 
-func (t *BeaconReply) Marshal(wire io.Writer) {
+func (m *BeaconReply) Marshal(wire io.Writer) {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]
-	tmp64 := t.Timestamp
+	tmp64 := m.Timestamp
 	bs[0] = byte(tmp64)
 	bs[1] = byte(tmp64 >> 8)
 	bs[2] = byte(tmp64 >> 16)
@@ -411,38 +421,38 @@ func (t *BeaconReply) Marshal(wire io.Writer) {
 	wire.Write(bs)
 }
 
-func (t *BeaconReply) Unmarshal(wire io.Reader) error {
+func (m *BeaconReply) Unmarshal(wire io.Reader) error {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]
 	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
 		return err
 	}
-	t.Timestamp = int64((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
+	m.Timestamp = int64((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
 	return nil
 }
 
-func (t *BeTheLeaderArgs) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *BeTheLeaderArgs) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, true
 }
 
-func (t *BeTheLeaderArgs) Marshal(wire io.Writer) {
+func (m *BeTheLeaderArgs) Marshal(wire io.Writer) {
 }
 
-func (t *BeTheLeaderArgs) Unmarshal(wire io.Reader) error {
+func (m *BeTheLeaderArgs) Unmarshal(wire io.Reader) error {
 	return nil
 }
 
-func (t *ProposeReply) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *ProposeReply) BinarySize() (nbytes int, sizeKnown bool) {
 	return 5, true
 }
 
-func (t *ProposeReply) Marshal(wire io.Writer) {
+func (m *ProposeReply) Marshal(wire io.Writer) {
 	var b [5]byte
 	var bs []byte
 	bs = b[:5]
-	bs[0] = byte(t.OK)
-	tmp32 := t.CommandId
+	bs[0] = byte(m.OK)
+	tmp32 := m.CommandId
 	bs[1] = byte(tmp32)
 	bs[2] = byte(tmp32 >> 8)
 	bs[3] = byte(tmp32 >> 16)
@@ -450,87 +460,91 @@ func (t *ProposeReply) Marshal(wire io.Writer) {
 	wire.Write(bs)
 }
 
-func (t *ProposeReply) Unmarshal(wire io.Reader) error {
+func (m *ProposeReply) Unmarshal(wire io.Reader) error {
 	var b [5]byte
 	var bs []byte
 	bs = b[:5]
 	if _, err := io.ReadAtLeast(wire, bs, 5); err != nil {
 		return err
 	}
-	t.OK = uint8(bs[0])
-	t.CommandId = int32((uint32(bs[1]) | (uint32(bs[2]) << 8) | (uint32(bs[3]) << 16) | (uint32(bs[4]) << 24)))
+	m.OK = uint8(bs[0])
+	m.CommandId = int32((uint32(bs[1]) | (uint32(bs[2]) << 8) | (uint32(bs[3]) << 16) | (uint32(bs[4]) << 24)))
 	return nil
 }
 
-func (t *ReadReply) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *ReadReply) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, false
 }
 
-func (t *ReadReply) Marshal(wire io.Writer) {
+func (m *ReadReply) Marshal(wire io.Writer) {
 	var b [4]byte
 	var bs []byte
 	bs = b[:4]
-	tmp32 := t.CommandId
+	tmp32 := m.CommandId
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
 	wire.Write(bs)
-	t.Value.Marshal(wire)
+	m.Value.Marshal(wire)
 }
 
-func (t *ReadReply) Unmarshal(wire io.Reader) error {
+func (m *ReadReply) Unmarshal(wire io.Reader) error {
 	var b [4]byte
 	var bs []byte
 	bs = b[:4]
 	if _, err := io.ReadAtLeast(wire, bs, 4); err != nil {
 		return err
 	}
-	t.CommandId = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.Value.Unmarshal(wire)
+	m.CommandId = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	if err := m.Value.Unmarshal(wire); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (t *ProposeAndReadReply) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *ProposeAndReadReply) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, false
 }
 
-func (t *ProposeAndReadReply) Marshal(wire io.Writer) {
+func (m *ProposeAndReadReply) Marshal(wire io.Writer) {
 	var b [5]byte
 	var bs []byte
 	bs = b[:5]
-	bs[0] = byte(t.OK)
-	tmp32 := t.CommandId
+	bs[0] = byte(m.OK)
+	tmp32 := m.CommandId
 	bs[1] = byte(tmp32)
 	bs[2] = byte(tmp32 >> 8)
 	bs[3] = byte(tmp32 >> 16)
 	bs[4] = byte(tmp32 >> 24)
 	wire.Write(bs)
-	t.Value.Marshal(wire)
+	m.Value.Marshal(wire)
 }
 
-func (t *ProposeAndReadReply) Unmarshal(wire io.Reader) error {
+func (m *ProposeAndReadReply) Unmarshal(wire io.Reader) error {
 	var b [5]byte
 	var bs []byte
 	bs = b[:5]
 	if _, err := io.ReadAtLeast(wire, bs, 5); err != nil {
 		return err
 	}
-	t.OK = uint8(bs[0])
-	t.CommandId = int32((uint32(bs[1]) | (uint32(bs[2]) << 8) | (uint32(bs[3]) << 16) | (uint32(bs[4]) << 24)))
-	t.Value.Unmarshal(wire)
+	m.OK = uint8(bs[0])
+	m.CommandId = int32((uint32(bs[1]) | (uint32(bs[2]) << 8) | (uint32(bs[3]) << 16) | (uint32(bs[4]) << 24)))
+	if err := m.Value.Unmarshal(wire); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (t *Beacon) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *Beacon) BinarySize() (nbytes int, sizeKnown bool) {
 	return 8, true
 }
 
-func (t *Beacon) Marshal(wire io.Writer) {
+func (m *Beacon) Marshal(wire io.Writer) {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]
-	tmp64 := t.Timestamp
+	tmp64 := m.Timestamp
 	bs[0] = byte(tmp64)
 	bs[1] = byte(tmp64 >> 8)
 	bs[2] = byte(tmp64 >> 16)
@@ -542,13 +556,13 @@ func (t *Beacon) Marshal(wire io.Writer) {
 	wire.Write(bs)
 }
 
-func (t *Beacon) Unmarshal(wire io.Reader) error {
+func (m *Beacon) Unmarshal(wire io.Reader) error {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]
 	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
 		return err
 	}
-	t.Timestamp = int64((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
+	m.Timestamp = int64((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
 	return nil
 }

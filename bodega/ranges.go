@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/hongzicong/ConsensusArena/config"
-	"github.com/hongzicong/ConsensusArena/replica/defs"
 )
 
 func responderMask(text string, members *config.Membership, n int) (uint64, error) {
@@ -29,11 +28,11 @@ func responderMask(text string, members *config.Membership, n int) (uint64, erro
 	return mask, nil
 }
 
-func responderRanges(text string, members *config.Membership, n int) ([]defs.BodegaResponderRange, error) {
+func responderRanges(text string, members *config.Membership, n int) ([]BodegaResponderRange, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, nil
 	}
-	var ranges []defs.BodegaResponderRange
+	var ranges []BodegaResponderRange
 	for _, rule := range strings.Split(text, ";") {
 		span, names, ok := strings.Cut(rule, "=")
 		if !ok {
@@ -55,10 +54,10 @@ func responderRanges(text string, members *config.Membership, n int) ([]defs.Bod
 		if err != nil {
 			return nil, err
 		}
-		ranges = append(ranges, defs.BodegaResponderRange{Start: start, End: end, Responders: mask})
+		ranges = append(ranges, BodegaResponderRange{Start: start, End: end, Responders: mask})
 	}
 	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Start < ranges[j].Start })
-	if !defs.ValidBodegaRanges(ranges, n) {
+	if !ValidBodegaRanges(ranges, n) {
 		return nil, fmt.Errorf("Bodega ranges must be nonoverlapping inclusive intervals with start <= end")
 	}
 	return ranges, nil

@@ -87,8 +87,8 @@ type Config struct {
 	// epaxos thrifty mode
 	Thrifty bool
 	// optimized reads (when available)
-	Optread    bool
-	Leaderless bool
+	OptimizedReads bool
+	Leaderless     bool
 	// replicas send replies directly to clients
 	Fast bool
 	// address of the leader or nil
@@ -279,7 +279,7 @@ func Read(filename, alias string) (*Config, error) {
 				c.Thrifty, err = expectBool(words)
 				ok = true
 			case "optread":
-				c.Optread, err = expectBool(words)
+				c.OptimizedReads, err = expectBool(words)
 				ok = true
 			case "leaderless":
 				c.Leaderless, err = expectBool(words)

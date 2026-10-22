@@ -12,6 +12,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
+	"github.com/hongzicong/ConsensusArena/state"
 )
 
 type replyJob struct {
@@ -20,14 +21,14 @@ type replyJob struct {
 }
 
 func (r *Replica) drain() {
-	r.engine.drainOutputs(r.peers, r.code, nil, func(m message) {
+	drainOutputs(r.core, r.peers, r.code, nil, func(m message) {
 		protocol.Must(r.Handle(localMessage{m}, time.Time{}))
 	})
 }
 
 // Replica and client outputs share fanout, admission and encoding accounting.
 // Cancellation stops at the first eligible remote target, preserving local order.
-func (c *core) drainOutputs(peers *replica.PeerStreams, code uint8, stop <-chan struct{}, local func(message)) {
+func drainOutputs(c *core, peers *replica.PeerStreams, code uint8, stop <-chan struct{}, local func(message)) {
 	cancelled := false
 	var attempts uint64
 	sender := replica.MessageSender{ID: c.id, N: c.m,
@@ -60,9 +61,9 @@ func (c *core) drainOutputs(peers *replica.PeerStreams, code uint8, stop <-chan 
 		if e.Count > 0 {
 			fanout := sender
 			fanout.N = e.Count
-			fanout.SendToAll(&wireMessage{e.Message}, code, replica.SendPlan{IncludeSelf: true, Encode: encode})
+			fanout.SendToAll(&wireMessage{message: e.Message}, code, replica.SendPlan{IncludeSelf: true, Encode: encode})
 		} else {
-			_ = sender.Send(e.To, code, &wireMessage{e.Message}, encode)
+			_ = sender.Send(e.To, code, &wireMessage{message: e.Message}, encode)
 		}
 		// Rejected remote admissions also use an image; local delivery does not.
 		c.stats.ReusedEncodings += attempts - previousAttempts - (c.stats.EncodedFrames - frames)
@@ -81,7 +82,7 @@ func encodeOutput(code uint8, e envelope, stats *Stats) replica.Frame {
 	if stats.EncodedFrames%64 == 1 {
 		before = time.Now()
 	}
-	frame := replica.Encode(code, &wireMessage{e.Message}, true)
+	frame := replica.Encode(code, &wireMessage{message: e.Message}, true)
 	if !before.IsZero() {
 		stats.EncodingSamples++
 		stats.EncodingNanos += uint64(time.Since(before))
@@ -98,12 +99,12 @@ func (r *Replica) configureTransport() {
 	r.PeerSendOptions = replica.SenderOptions{Capacity: -1}
 }
 
-func (r *Replica) bindClient(m message) (int, error) {
-	id, connection := m.From, m.ClientConnection
-	if id < r.engine.n || id >= r.engine.m || r.topology.Identities[id] != connection.Identity {
+func (r *Replica) bindClient(m message, connection *fastrpc.ClientConnection) (int, error) {
+	id := m.From
+	if id < r.core.n || id >= r.core.m || r.topology.Identities[id] != connection.Identity {
 		return -1, fmt.Errorf("invalid KCensus client peer %d", id)
 	}
-	if r.engine.peerFailed(id) {
+	if r.core.peerFailed(id) {
 		return -1, replica.ErrSendClosed
 	}
 	// The shared connection context invokes this exactly once, before delivery.
@@ -112,8 +113,18 @@ func (r *Replica) bindClient(m message) (int, error) {
 	}); err != nil {
 		return -1, err
 	}
-	r.engine.markConnected(id)
+	r.core.markConnected(id)
 	return id, nil
+}
+
+// Report whether this execution belongs to a locally admitted proposal.
+func (r *Replica) queueReply(id defs.RequestID, v state.Value) bool {
+	p := r.proposals[id]
+	if p == nil {
+		return false
+	}
+	r.pendingReplies[id] = replyJob{p, defs.ProposeReplyTS{OK: defs.TRUE, CommandId: id.Sequence, Value: v, Timestamp: p.Timestamp}}
+	return true
 }
 
 func (r *Replica) flushReplies() {
@@ -126,7 +137,7 @@ func (r *Replica) flushReplies() {
 }
 
 func (c *Client) drain() {
-	c.engine.drainOutputs(c.peers, defs.RPC_TABLE, c.stop, c.engine.step)
+	drainOutputs(c.core, c.peers, defs.RPC_TABLE, c.stop, c.core.receive)
 }
 
 func (c *Client) deliver(m message) bool {
@@ -142,7 +153,7 @@ func (c *Client) deliver(m message) bool {
 
 // All client streams use the same immutable registration and fresh factories.
 var clientMessages = func() *fastrpc.Table {
-	t := fastrpc.NewTableId(defs.RPC_TABLE)
+	t := fastrpc.NewTableID(defs.RPC_TABLE)
 	t.Register(&wireMessage{}, nil)
 	return t
 }()
@@ -164,8 +175,8 @@ func (c *Client) readStream(id int, conn net.Conn, r *bufio.Reader) {
 		if err != nil {
 			return
 		}
-		if first.From < c.engine.n || first.From >= c.engine.id || c.bindStream(first.From, conn, nil) != nil {
-			c.Printf("KCENSUS_CLIENT_STREAM rejected_from=%d self=%d", first.From, c.engine.id)
+		if first.From < c.core.n || first.From >= c.core.id || c.bindStream(first.From, conn, nil) != nil {
+			c.Printf("KCENSUS_CLIENT_STREAM rejected_from=%d self=%d", first.From, c.core.id)
 			return
 		}
 		id = first.From
@@ -183,7 +194,7 @@ func (c *Client) readStream(id int, conn net.Conn, r *bufio.Reader) {
 		return
 	}
 	c.Printf("KCENSUS_CLIENT_STREAM peer=%d closed error=%v", id, streamErr)
-	if id < c.engine.n {
+	if id < c.core.n {
 		c.MarkPeerFailed(id)
 	}
 	c.peers.ClosePeer(id)
@@ -191,7 +202,7 @@ func (c *Client) readStream(id int, conn net.Conn, r *bufio.Reader) {
 
 func (c *Client) bindStream(id int, conn net.Conn, w *bufio.Writer) error {
 	options := replica.SenderOptions{Capacity: -1, Writer: w}
-	if id < c.engine.n {
+	if id < c.core.n {
 		options.Locker = c.WriteMutex(id)
 	}
 	return c.peers.BindConnection(id, conn, options)
@@ -203,7 +214,7 @@ func (c *Client) acceptMesh() {
 		if err != nil {
 			return
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(2*time.Second + c.engine.retry))
+		_ = conn.SetReadDeadline(time.Now().Add(2*time.Second + c.core.retry))
 		go c.readStream(-1, conn, bufio.NewReader(conn))
 	}
 }
@@ -213,10 +224,10 @@ func (c *Client) acceptMesh() {
 // crash. The existing heartbeat also supplies the first-frame identity; no
 // separate handshake message or protocol vote is introduced.
 func (c *Client) confirmMesh(id int, conn net.Conn) (*bufio.Reader, message, error) {
-	if err := conn.SetDeadline(time.Now().Add(2*time.Second + c.engine.retry)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(2*time.Second + c.core.retry)); err != nil {
 		return nil, message{}, err
 	}
-	frame := replica.Encode(defs.RPC_TABLE, &wireMessage{message{Kind: heartbeat, From: c.engine.id, Digest: c.engine.plan.Digest}}, true)
+	frame := replica.Encode(defs.RPC_TABLE, &wireMessage{message: message{Kind: heartbeat, From: c.core.id, Digest: c.core.plan.Digest}}, true)
 	if n, err := conn.Write(frame.Data); err != nil {
 		return nil, message{}, err
 	} else if n != len(frame.Data) {

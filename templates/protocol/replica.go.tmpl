@@ -2,6 +2,7 @@ package __PACKAGE__
 
 import (
 	"time"
+
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/dlog"
 	"github.com/hongzicong/ConsensusArena/replica"
@@ -10,13 +11,14 @@ import (
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
+// Replica owns framework resources, request contexts, and core callback wiring.
 type Replica struct {
 	*replica.Replica
-	engine *core
-	inbox chan fastrpc.Serializable
-	code uint8
-	pending map[defs.RequestID]*defs.GPropose
-	peers []*replica.Sender
+	core      *core
+	inbox     chan fastrpc.Serializable
+	code      uint8
+	proposals map[defs.RequestID]*defs.GPropose
+	peers     []*replica.Sender
 }
 
 // Example plumbing interval/capacity, not protocol or quorum assumptions.
@@ -24,15 +26,19 @@ type Replica struct {
 const runtimeInterval = 10 * time.Millisecond
 const queueCapacity = 4096
 
-func New(alias string, id int, addrs []string, conf *config.Config, logger *dlog.Logger) (*Replica, error) {
-	engine, err := newCore(id, len(addrs))
-	if err != nil { return nil, err } // Before allocating state or starting any worker.
-	r := &Replica{
-		Replica: replica.New(alias, id, (len(addrs)-1)/2, addrs, false, true, false, conf, logger),
-		engine: engine, inbox: make(chan fastrpc.Serializable, queueCapacity),
-		pending: make(map[defs.RequestID]*defs.GPropose),
+func New(alias string, replicaID int, addrs []string, conf *config.Config, logger *dlog.Logger) (*Replica, error) {
+	c, err := newCore(replicaID, len(addrs))
+	// Before allocating state or starting any worker.
+	if err != nil {
+		return nil, err
 	}
-	r.engine.execute = func(cmd state.Command) state.Value { return cmd.Execute(r.State) }
+	r := &Replica{
+		Replica:   replica.New(alias, replicaID, (len(addrs)-1)/2, addrs, true, conf, logger),
+		core:      c,
+		inbox:     make(chan fastrpc.Serializable, queueCapacity),
+		proposals: make(map[defs.RequestID]*defs.GPropose),
+	}
+	r.core.execute = func(cmd state.Command) state.Value { return cmd.Execute(r.State) }
 	// Keep the registration order identical on every replica.
 	r.code = r.RPC.Register(&message{}, r.inbox)
 	go r.run()

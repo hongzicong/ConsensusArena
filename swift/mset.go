@@ -43,12 +43,12 @@ func (ms *MsgSet) ReinitMsgSet(q QuorumI, accept func(interface{}, interface{}) 
 	return ms
 }
 
-func (ms *MsgSet) Add(repId int32, isLeader bool, msg interface{}) bool {
-	if !ms.q.Contains(int(repId)) {
+func (ms *MsgSet) Add(repID int32, isLeader bool, msg interface{}) bool {
+	if !ms.q.Contains(int(repID)) {
 		return false
 	}
 
-	if _, seen := ms.msgs[repId]; ms.leaderMsg != nil && seen {
+	if _, seen := ms.msgs[repID]; ms.leaderMsg != nil && seen {
 		return false
 	}
 
@@ -57,9 +57,9 @@ func (ms *MsgSet) Add(repId int32, isLeader bool, msg interface{}) bool {
 	if isLeader {
 		ms.leaderMsg = msg
 		newMsgs := map[int32]interface{}{}
-		for frepId, fmsg := range ms.msgs {
-			if _, seen := newMsgs[frepId]; !seen && ms.accept(fmsg, ms.leaderMsg) {
-				newMsgs[frepId] = fmsg
+		for frepID, fmsg := range ms.msgs {
+			if _, seen := newMsgs[frepID]; !seen && ms.accept(fmsg, ms.leaderMsg) {
+				newMsgs[frepID] = fmsg
 			} else {
 				ms.freeMsg(fmsg)
 			}
@@ -67,7 +67,7 @@ func (ms *MsgSet) Add(repId int32, isLeader bool, msg interface{}) bool {
 		ms.msgs = newMsgs
 		added = true
 	} else if ms.accept(msg, ms.leaderMsg) {
-		ms.msgs[repId] = msg
+		ms.msgs[repID] = msg
 		added = true
 	} else {
 		ms.freeMsg(msg)

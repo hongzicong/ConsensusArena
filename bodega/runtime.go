@@ -15,10 +15,10 @@ import (
 
 type leaderCall struct{ done chan int }
 
-// GetBodegaRoster only observes the serialized engine; unlike BeTheLeader it
+// GetBodegaRoster only observes the serialized core; unlike BeTheLeader it
 // cannot propose a roster or initiate an election.
-func (r *Replica) GetBodegaRoster(_ *defs.GetLeaderArgs, out *defs.BodegaRosterReply) error {
-	done := make(chan defs.BodegaRosterReply, 1)
+func (r *Replica) GetBodegaRoster(_ *defs.GetLeaderArgs, out *BodegaRosterReply) error {
+	done := make(chan BodegaRosterReply, 1)
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	select {
@@ -57,36 +57,29 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 	r.ConnectToPeersConcurrent()
 	defer r.CloseSenders()
 	go r.WaitForClientConnections()
-	waiting := map[defs.RequestID]*defs.GPropose{}
-	e := newEngine(int(r.Id), r.N, opt, time.Now())
-	r.engine, r.waiting = e, waiting
-	e.clock = time.Now
-	e.batching = true
-	e.trace = r.Printf
+	proposals := r.proposals
+	c := r.core
+	c.activate(time.Now())
+	c.clock = time.Now
+	c.batching = true
+	c.trace = r.Printf
 	r.Printf("BODEGA_TIMING lease=%s margin=%s heartbeat=%s failure_min=%s failure_max=%s", opt.Lease, opt.Margin, opt.Heartbeat, opt.Failure, opt.FailureMax)
-	e.execute = func(c state.Command) state.Value { return c.Execute(r.State) }
-	e.trySend = func(to int, m message) bool {
-		if transport.trySend(to, m) {
-			return true
-		}
-		if m.Kind != promise {
-			e.stats.DroppedMessages++
-		}
-		return false
-	}
-	e.tryBroadcast = transport.broadcast
-	e.reply = func(req request, v state.Value) {
-		if p, ok := waiting[req.id()]; ok {
-			if r.sendReply(p, v) {
-				delete(waiting, req.id())
-			} else {
-				e.enqueue(req)
+	c.execute = func(c state.Command) state.Value { return c.Execute(r.State) }
+
+	c.trySend = transport.trySend
+	c.tryBroadcast = transport.broadcast
+	c.reply = func(req request, v state.Value) bool {
+		if p, ok := proposals[req.id()]; ok {
+			if !r.sendReply(p, v) {
+				return false
 			}
+			delete(proposals, req.id())
 		}
+		return true
 	}
 
 	if isLeader {
-		e.proposeRoster(e.id, opt.Responders, time.Now())
+		c.proposeRoster(c.id, opt.Responders, time.Now())
 	}
 	ticker := time.NewTicker(opt.Heartbeat)
 	defer ticker.Stop()
@@ -108,7 +101,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 		case <-ticker.C:
 			protocol.Must(r.Tick(protocol.Tick{Now: time.Now()}))
 		case done := <-r.rosterQueries:
-			done <- defs.BodegaRosterReply{Ballot: e.current.Ballot, Leader: e.current.Leader, Ready: e.active(), Responders: e.current.Responders, Ranges: slices.Clone(e.current.Ranges)}
+			done <- BodegaRosterReply{Ballot: c.current.Ballot, Leader: c.current.Leader, Ready: c.active(), Responders: c.current.Responders, Ranges: slices.Clone(c.current.Ranges)}
 		case call := <-r.control:
 			protocol.Must(r.Handle(call, time.Now()))
 		case <-metrics.C:
@@ -117,16 +110,16 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 				bytes[i] = transport.wireBytes[i].Load()
 				frames[i] = transport.wireFrames[i].Load()
 			}
-			r.Printf("BODEGA_WIRE replica=%d encoded_bytes_by_kind=%v frames_by_kind=%v", e.id, bytes, frames)
-			s, _ := json.Marshal(e.stats)
-			r.Printf("BODEGA_STATS replica=%d ballot=%d leader=%d prefix=%d high=%d pending=%d held=%d accepted_prefix=%d prepared=%t counters=%s", e.id, e.current.Ballot, e.current.Leader, e.prefix, e.high, len(waiting), len(e.held), e.acceptedPrefix, e.prepared, s)
+			r.Printf("BODEGA_WIRE replica=%d encoded_bytes_by_kind=%v frames_by_kind=%v", c.id, bytes, frames)
+			s, _ := json.Marshal(c.stats)
+			r.Printf("BODEGA_STATS replica=%d ballot=%d leader=%d prefix=%d high=%d pending=%d held=%d accepted_prefix=%d prepared=%t counters=%s", c.id, c.current.Ballot, c.current.Leader, c.prefix, c.high, len(proposals), len(c.held), c.acceptedPrefix, c.prepared, s)
 		}
-		if e.current.Ballot != lastBallot {
-			lastBallot = e.current.Ballot
-			r.Printf("BODEGA_ROSTER replica=%d ballot=%d leader=%d responders=%x", e.id, lastBallot, e.current.Leader, e.current.Responders)
-			if len(e.current.Ranges) > 0 {
-				ranges, _ := json.Marshal(e.current.Ranges)
-				r.Printf("BODEGA_RANGES replica=%d ballot=%d ranges=%s", e.id, lastBallot, ranges)
+		if c.current.Ballot != lastBallot {
+			lastBallot = c.current.Ballot
+			r.Printf("BODEGA_ROSTER replica=%d ballot=%d leader=%d responders=%x", c.id, lastBallot, c.current.Leader, c.current.Responders)
+			if len(c.current.Ranges) > 0 {
+				ranges, _ := json.Marshal(c.current.Ranges)
+				r.Printf("BODEGA_RANGES replica=%d ballot=%d ranges=%s", c.id, lastBallot, ranges)
 			}
 		}
 	}
@@ -140,19 +133,19 @@ func (r *Replica) Propose(p *defs.GPropose, now time.Time) error {
 	if err := protocol.ValidateProposal(p); err != nil {
 		return err
 	}
-	req := request{Proposal: *p.Propose, Origin: r.engine.id}
-	if p.Command.Op == defs.BodegaCancelRead {
-		if old, ok := r.waiting[req.id()]; ok && old.Command.Op == state.GET {
-			r.engine.cancelRead(req.id())
-			delete(r.waiting, req.id())
+	req := request{Proposal: *p.Propose, Origin: r.core.id}
+	if p.Command.Op == BodegaCancelRead {
+		if old, ok := r.proposals[req.id()]; ok && old.Command.Op == state.GET {
+			r.core.cancelRead(req.id())
+			delete(r.proposals, req.id())
 		}
 		return nil
 	}
 	if err := (state.CommandPolicy{MaxValueBytes: maxFrame - 4096}).Validate(p.Command); err != nil {
 		return nil
 	}
-	r.waiting[req.id()] = p
-	r.engine.submit(req, now)
+	r.proposals[req.id()] = p
+	r.core.submit(req, now)
 	return nil
 }
 
@@ -162,11 +155,11 @@ func (r *Replica) Handle(event any, now time.Time) error {
 		if m == nil {
 			return protocol.UnsupportedEvent("bodega", event)
 		}
-		r.engine.receive(*m, now)
+		r.core.receive(*m, now)
 	case promisesDrained:
-		r.engine.flushPromises(int(m))
+		r.core.flushPromises(int(m))
 	case leaderCall:
-		r.handleLeaderCall(m, now)
+		m.done <- r.core.handleLeaderCall(now)
 	default:
 		return protocol.UnsupportedEvent("bodega", event)
 	}
@@ -176,26 +169,11 @@ func (r *Replica) Handle(event any, now time.Time) error {
 func (r *Replica) Tick(t protocol.Tick) error {
 	switch t.Kind {
 	case protocol.Maintenance:
-		r.engine.tick(t.Now)
+		r.core.tick(t.Now)
 	case protocol.Batch:
-		r.engine.flushBatch(t.Now)
+		r.core.flushBatch(t.Now)
 	default:
 		return protocol.UnsupportedTimer("bodega", t.Kind)
 	}
 	return nil
-}
-
-func (r *Replica) handleLeaderCall(call leaderCall, now time.Time) {
-	leader := r.engine.current.Leader
-	if r.engine.current.Ballot == 0 || !r.engine.peerHealthy(leader, now) {
-		mask := (uint64(1) << uint(r.engine.n)) - 1
-		for p := range r.engine.seen {
-			if !r.engine.peerHealthy(p, now) {
-				mask &^= bit(p)
-			}
-		}
-		r.engine.proposeFilteredRoster(r.engine.id, mask, now)
-		leader = r.engine.id
-	}
-	call.done <- leader
 }

@@ -27,7 +27,7 @@ func NewTable() *Table {
 	}
 }
 
-func NewTableId(id uint8) *Table {
+func NewTableID(id uint8) *Table {
 	return &Table{
 		id:    id,
 		pairs: make(map[uint8]Pair),

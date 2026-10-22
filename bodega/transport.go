@@ -23,6 +23,7 @@ type sendSource struct {
 func newSendSource(peer int, drained chan int) *sendSource {
 	return &sendSource{data: make(chan replica.Frame, 4096), control: make(chan replica.Frame, 4096), promises: make(chan replica.Frame, 32), stop: make(chan struct{}), peer: peer, drained: drained}
 }
+
 func (q *sendSource) Enqueue(f replica.Frame) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -42,6 +43,7 @@ func (q *sendSource) Enqueue(f replica.Frame) error {
 		return replica.ErrSendFull
 	}
 }
+
 func (q *sendSource) Take() []replica.Frame {
 	var f replica.Frame
 	select {
@@ -65,6 +67,7 @@ func (q *sendSource) Take() []replica.Frame {
 	}
 	return []replica.Frame{f}
 }
+
 func (q *sendSource) Close() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -101,9 +104,11 @@ func (t *replicaTransport) trySend(to int, m message) bool {
 func (t *replicaTransport) broadcast(m message) int {
 	return t.base.Messages().SendToAll(&m, t.code)
 }
+
 func (r *Replica) sendReply(p *defs.GPropose, value state.Value) bool {
 	return r.ReplyResult(p, value, 8192) == nil
 }
+
 func (r *Replica) configureTransport(code uint8) *replicaTransport {
 	t := &replicaTransport{base: r.Replica, drained: make(chan int, r.N), wireBytes: new([kindCount]atomic.Uint64), wireFrames: new([kindCount]atomic.Uint64), code: code}
 	r.PeerSendOptionsFor = func(id int) replica.SenderOptions {

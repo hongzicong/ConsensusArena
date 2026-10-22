@@ -20,7 +20,7 @@ func (c *BufferClient) WaitAnyRepliesWithHandler(onReply func(*defs.ProposeReply
 				if r.OK != defs.TRUE {
 					return true
 				}
-				c.CompleteReply(defs.RequestID{Client: c.ClientId, Sequence: r.CommandId}, r.Value, func() {
+				c.CompleteReply(defs.RequestID{Client: c.ClientID, Sequence: r.CommandId}, r.Value, func() {
 					if onReply != nil {
 						onReply(r)
 					}

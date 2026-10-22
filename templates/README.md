@@ -24,14 +24,19 @@ not choose a leader, quorum size, commit rule, recovery rule, or routing policy.
   `Tick(protocol.Tick) error`. Live loops and external event drivers use the same
   entry points. See [the event contract](../protocol/README.md) for time, ownership,
   errors and output ordering.
-- `core.go` owns protocol state and normal transitions. `Propose`, `Handle`, and
-  `Tick` have explicit inputs and return protocol-authorized outputs.
-- `recovery.go` owns recovery evidence and safe selection; ordinary gap repair
-  belongs here too. Recovery does not belong to the network writer.
-- `execute.go` owns order, deduplication, state-machine application and completion.
+- `core.go` owns protocol state and normal transitions. Its private `submit`,
+  `receive`, and `tick` entries have explicit inputs and return protocol-authorized
+  outputs; the public Replica adapters above call them.
+- `recovery.go` owns recovery evidence and safe selection through `beginRecovery`;
+  ordinary gap repair belongs here too. Recovery does not belong to the network writer.
+- `execute.go` owns order, deduplication, state-machine application and completion
+  through `apply`.
   Committed, executable, executed, and client-completed are distinct conditions.
-- `replica.go` constructs and validates; `runtime.go` drives transitions;
-  `transport.go` adapts outputs to the common `replica.Sender`; `wire.go` encodes messages.
+- `replica.go` constructs, validates, owns framework resources and request contexts,
+  and binds the `execute` callback; `runtime.go` drives transitions and owns timer
+  lifecycle; `transport.go` dispatches outputs through the common `replica.Sender`
+  and reply infrastructure; `wire.go` encodes messages. Queue retry decisions stay
+  in core. Use `c` for core receivers and `r` for Replica receivers.
 - `client.go` chooses routing and validates completion, using the common client
   framework for workload, connections, timing and fault instrumentation.
 - `plan.go` owns startup leader, quorum, responder, and ingress policy, even when

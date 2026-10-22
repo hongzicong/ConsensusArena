@@ -10,18 +10,19 @@ design and the implementation below agree.
 | --- | --- |
 | `defs.go` | Commands, messages, identities, ballots, evidence, output types. |
 | `wire.go` | Factories and encoding for every message, with bounded allocations. |
-| `core.go` | Local state, Propose/Handle/Tick, unique voters, normal commit rule. |
-| `recovery.go` | Evidence collection, safe selection, fallback, missing-data repair. |
-| `execute.go` | Executable order, deduplication, result retention, client completion. |
-| `replica.go` | Configuration validation, stable replica IDs, callback setup, RPC registration. |
+| `core.go` | Local state, submit/receive/tick, unique voters, normal commit rule. |
+| `recovery.go` | beginRecovery: evidence collection, safe selection, fallback, missing-data repair. |
+| `execute.go` | apply: executable order, deduplication, result retention, client completion. |
+| `replica.go` | Configuration validation, stable replica IDs, resources, request contexts, callback setup, RPC registration. |
 | `plan.go` | Initial leader/quorum/responder/ingress policy from deployment inputs, including fixed policies. |
-| `runtime.go` | Serialized event delivery, explicit time, output dispatch, observability. |
-| `transport.go` | Ownership of queued data, queue bounds, failure/retry policy, self-delivery. |
+| `runtime.go` | Serialized event delivery, public framework adapters, explicit time, timer lifecycle, observability. |
+| `transport.go` | Output dispatch, encoding and delivery, ownership of queued data, queue bounds, self-delivery. |
 | `client.go` | Ingress choice, routing, and exact completion evidence. |
 
 `Replica` implements the shared `protocol.Machine` event interface through
 `Propose(*defs.GPropose, time.Time) error`, `Handle(any, time.Time) error`, and
-`Tick(protocol.Tick) error`. Its live loop uses these methods. The core's private
+`Tick(protocol.Tick) error`. Its live loop uses these methods, which validate inputs
+and call the private core entries `submit`, `receive`, and `tick`. The core's private
 `effects` are dispatched inside the method; they are not a framework-wide output
 barrier. Match the ownership and timer rules in `protocol/README.md` at the
 repository root when replacing the guards.
@@ -36,6 +37,11 @@ its runtime does close registered senders when the event loop exits.
 
 Keep the protocol's state transitions free of sockets, goroutines, and wall-clock
 reads. Feed time into transitions and execute every transition on one event loop.
+Use `c` for core receivers and `r` for Replica receivers. `core` owns protocol
+decisions; runtime drives events and transport delivers the resulting effects.
+The `proposals` map retains framework request contexts for replies, not protocol
+acceptance or completion state. Queue retry decisions belong to core; transport
+reports delivery errors.
 The `execute` hook applies a state-machine command; the core must establish the
 required execution condition before invoking it. `effects.Replies` means the
 protocol has authorized client completion, not merely received a proposal.

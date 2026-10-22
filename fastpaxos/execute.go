@@ -20,12 +20,12 @@ func (c *core) apply() {
 			result, done := c.results[v.ID]
 			if !done {
 				if c.execute != nil {
-					result = c.execute(full)
+					result = c.execute(full.Command)
 				}
 				result = append(state.Value(nil), result...)
 				c.results[v.ID] = result
-				if c.complete != nil {
-					c.complete(v.ID, result)
+				if c.reply != nil {
+					c.reply(v.ID, result)
 				}
 			}
 			c.forgetPending(v.ID)

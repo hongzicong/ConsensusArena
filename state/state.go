@@ -34,7 +34,7 @@ type Command struct {
 	V  Value
 }
 
-type Id int64
+type ID int64
 type Phase int8
 
 func NOOP() []Command { return []Command{{NONE, 0, NIL()}} }
@@ -192,52 +192,52 @@ func (c *Command) Execute(st *State) Value {
 	return NIL()
 }
 
-func (t *Value) String() string {
-	if t == nil || len(*t) == 0 {
+func (v *Value) String() string {
+	if v == nil || len(*v) == 0 {
 		return "(void)"
 	}
-	return hex.EncodeToString(*t)
+	return hex.EncodeToString(*v)
 }
 
-func (t *Key) String() string {
-	return strconv.FormatInt(int64(*t), 16)
+func (k *Key) String() string {
+	return strconv.FormatInt(int64(*k), 16)
 }
 
-func (t *Command) String() string {
+func (c *Command) String() string {
 	ret := ""
-	switch t.Op {
+	switch c.Op {
 	case PUT:
-		ret = "PUT( " + t.K.String() + " , " + t.V.String() + " )"
+		ret = "PUT( " + c.K.String() + " , " + c.V.String() + " )"
 	case GET:
-		ret = "GET( " + t.K.String() + " )"
+		ret = "GET( " + c.K.String() + " )"
 	case SCAN:
-		count := binary.LittleEndian.Uint64(t.V)
-		ret = "SCAN( " + t.K.String() + " , " + fmt.Sprint(count) + " )"
+		count := binary.LittleEndian.Uint64(c.V)
+		ret = "SCAN( " + c.K.String() + " , " + fmt.Sprint(count) + " )"
 	default:
-		ret = "UNKNOWN( " + t.V.String() + " , " + t.K.String() + " )"
+		ret = "UNKNOWN( " + c.V.String() + " , " + c.K.String() + " )"
 	}
 	return ret
 }
 
-func (t *Command) Marshal(w io.Writer) {
-	t.Op.Marshal(w)
-	t.K.Marshal(w)
-	t.V.Marshal(w)
+func (c *Command) Marshal(w io.Writer) {
+	c.Op.Marshal(w)
+	c.K.Marshal(w)
+	c.V.Marshal(w)
 }
 
-func (t *Command) Unmarshal(r io.Reader) error {
+func (c *Command) Unmarshal(r io.Reader) error {
 
-	err := t.Op.Unmarshal(r)
+	err := c.Op.Unmarshal(r)
 	if err != nil {
 		return err
 	}
 
-	err = t.K.Unmarshal(r)
+	err = c.K.Unmarshal(r)
 	if err != nil {
 		return err
 	}
 
-	err = t.V.Unmarshal(r)
+	err = c.V.Unmarshal(r)
 	if err != nil {
 		return err
 	}
@@ -245,49 +245,49 @@ func (t *Command) Unmarshal(r io.Reader) error {
 	return nil
 }
 
-func (t *Operation) Marshal(w io.Writer) {
+func (op *Operation) Marshal(w io.Writer) {
 	bs := make([]byte, 1)
-	bs[0] = byte(*t)
+	bs[0] = byte(*op)
 	w.Write(bs)
 }
 
-func (t *Operation) Unmarshal(r io.Reader) error {
+func (op *Operation) Unmarshal(r io.Reader) error {
 	bs := make([]byte, 1)
 	if _, err := io.ReadFull(r, bs); err != nil {
 		return err
 	}
-	*t = Operation(bs[0])
+	*op = Operation(bs[0])
 	return nil
 }
 
-func (t *Key) Marshal(w io.Writer) {
+func (k *Key) Marshal(w io.Writer) {
 	bs := make([]byte, 8)
-	binary.LittleEndian.PutUint64(bs, uint64(*t))
+	binary.LittleEndian.PutUint64(bs, uint64(*k))
 	w.Write(bs)
 }
 
-func (t *Key) Unmarshal(r io.Reader) error {
+func (k *Key) Unmarshal(r io.Reader) error {
 	bs := make([]byte, 8)
 	if _, err := io.ReadFull(r, bs); err != nil {
 		return err
 	}
-	*t = Key(binary.LittleEndian.Uint64(bs))
+	*k = Key(binary.LittleEndian.Uint64(bs))
 	return nil
 }
 
-func (t *Value) Marshal(w io.Writer) {
+func (v *Value) Marshal(w io.Writer) {
 	bs := make([]byte, 4)
-	if t == nil {
+	if v == nil {
 		binary.LittleEndian.PutUint16(bs, 0)
 		w.Write(bs)
 	} else {
-		binary.LittleEndian.PutUint16(bs, uint16(len(*t)))
+		binary.LittleEndian.PutUint16(bs, uint16(len(*v)))
 		w.Write(bs)
-		w.Write(*t)
+		w.Write(*v)
 	}
 }
 
-func (t *Value) Unmarshal(r io.Reader) error {
+func (v *Value) Unmarshal(r io.Reader) error {
 	bs := make([]byte, 4)
 	if _, err := io.ReadFull(r, bs); err != nil {
 		return err
@@ -297,6 +297,6 @@ func (t *Value) Unmarshal(r io.Reader) error {
 	if _, err := io.ReadFull(r, bs); err != nil {
 		return err
 	}
-	*t = Value(bs)
+	*v = Value(bs)
 	return nil
 }

@@ -3,9 +3,6 @@ package swift
 // Replica state, configuration, RPC registration, and startup.
 import (
 	"fmt"
-	"sync"
-	"time"
-
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/dlog"
 	"github.com/hongzicong/ConsensusArena/hook"
@@ -15,11 +12,13 @@ import (
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 	cmap "github.com/orcaman/concurrent-map"
+	"sync"
+	"time"
 )
 
 var MaxDescRoutines = 100
 
-type CommunicationSupply struct {
+type transportChannels struct {
 	maxLatency time.Duration
 
 	fastAckChan       chan fastrpc.Serializable
@@ -38,6 +37,10 @@ type CommunicationSupply struct {
 	collectChan       chan fastrpc.Serializable
 	acceptChan        chan fastrpc.Serializable
 
+	rpcCodes
+}
+
+type rpcCodes struct {
 	fastAckRPC       uint8
 	fastAckClientRPC uint8
 	slowAckRPC       uint8
@@ -55,178 +58,97 @@ type CommunicationSupply struct {
 	acceptRPC        uint8
 }
 
-func initCs(cs *CommunicationSupply, t *fastrpc.Table) {
-	cs.maxLatency = 0
+func registerRPCs(channels *transportChannels, t *fastrpc.Table) {
+	channels.maxLatency = 0
 
-	cs.fastAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.fastAckClientChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.slowAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.lightSlowAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.acksChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.optAcksChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.replyChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.newLeaderChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.newLeaderAckNChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.syncChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.pingChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.pingRepChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.collectChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	cs.acceptChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.fastAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.fastAckClientChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.slowAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.lightSlowAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.acksChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.optAcksChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.replyChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.newLeaderChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.newLeaderAckNChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.syncChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.pingChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.pingRepChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.collectChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	channels.acceptChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
 
-	cs.fastAckRPC = t.Register(new(MFastAck), cs.fastAckChan)
-	cs.fastAckClientRPC = t.Register(new(MFastAckClient), cs.fastAckClientChan)
-	cs.slowAckRPC = t.Register(new(MSlowAck), cs.slowAckChan)
-	cs.lightSlowAckRPC = t.Register(new(MLightSlowAck), cs.lightSlowAckChan)
-	cs.acksRPC = t.Register(new(MAcks), cs.acksChan)
-	cs.optAcksRPC = t.Register(new(MOptAcks), cs.optAcksChan)
-	cs.replyRPC = t.Register(new(MReply), cs.replyChan)
-	cs.newLeaderRPC = t.Register(new(MNewLeader), cs.newLeaderChan)
-	cs.newLeaderAckNRPC = t.Register(new(MNewLeaderAckN), cs.newLeaderAckNChan)
-	cs.syncRPC = t.Register(new(MSync), cs.syncChan)
-	cs.pingRPC = t.Register(new(MPing), cs.pingChan)
-	cs.pingRepRPC = t.Register(new(MPingRep), cs.pingRepChan)
-	cs.collectRPC = t.Register(new(MCollect), cs.collectChan)
-	cs.acceptRPC = t.Register(new(MAccept), cs.acceptChan)
+	channels.fastAckRPC = t.Register(new(MFastAck), channels.fastAckChan)
+	channels.fastAckClientRPC = t.Register(new(MFastAckClient), channels.fastAckClientChan)
+	channels.slowAckRPC = t.Register(new(MSlowAck), channels.slowAckChan)
+	channels.lightSlowAckRPC = t.Register(new(MLightSlowAck), channels.lightSlowAckChan)
+	channels.acksRPC = t.Register(new(MAcks), channels.acksChan)
+	channels.optAcksRPC = t.Register(new(MOptAcks), channels.optAcksChan)
+	channels.replyRPC = t.Register(new(MReply), channels.replyChan)
+	channels.newLeaderRPC = t.Register(new(MNewLeader), channels.newLeaderChan)
+	channels.newLeaderAckNRPC = t.Register(new(MNewLeaderAckN), channels.newLeaderAckNChan)
+	channels.syncRPC = t.Register(new(MSync), channels.syncChan)
+	channels.pingRPC = t.Register(new(MPing), channels.pingChan)
+	channels.pingRepRPC = t.Register(new(MPingRep), channels.pingRepChan)
+	channels.collectRPC = t.Register(new(MCollect), channels.collectChan)
+	channels.acceptRPC = t.Register(new(MAccept), channels.acceptChan)
 }
 
+// Replica owns runtime resources and exposes the external protocol event boundary.
 type Replica struct {
 	*replica.Replica
-
-	ballot  int32
-	cballot int32
-	status  int
-
-	cmdDescs  cmap.ConcurrentMap
-	delivered cmap.ConcurrentMap
-
-	batcher *Batcher
-	repchan *replyChan
-
-	keys map[state.Key]keyInfo
-	hlog map[state.Key]*HashLog
-
-	proposalBatches       uint64
-	deferredHashElisions  uint64
-	hashBacklogDeferrals  uint64
-	proposalBatchCommands uint64
-	proposalBatchMax      int
-	proposedInBallot      map[defs.RequestID]struct{}
-	seqnum                int
-	pendingHashUpds       map[defs.RequestID]*UpdateEntry
-	recoveryCmds          map[defs.RequestID]int // commands installed by the current Sync
-
-	history      []commandStaticDesc
-	historySize  int
-	historyStart int
-
-	qs *QuorumSystem
-	SQ QuorumI
-	FQ QuorumI
-	cs CommunicationSupply
-
-	fixedMajority bool
-
-	optExec     bool
-	fastRead    bool
-	deliverChan chan defs.RequestID
-
-	descPool     sync.Pool
-	poolLevel    int
-	routineCount int
-
-	recover        chan int32
-	recStart       time.Time
-	newLeaderAckNs *MsgSet
-
-	proposes map[defs.RequestID]*defs.GPropose
-
-	// take only slow paths for these addresses
-	slowAddrs map[string]struct{}
+	core                *core
+	channels            transportChannels
+	control             chan leaderCall
+	recover             chan int32
+	delivery            chan defs.RequestID
+	replyWorker         *replyWorker
+	descriptorPool      sync.Pool
+	descriptorPoolLevel int
+	descriptorCount     int
 }
 
-func New(alias string, rid int, addrs []string, exec, fastRead, optExec bool,
-	pl, f int, conf *config.Config, l *dlog.Logger, slowAddrs []string) *Replica {
+func New(alias string, replicaID int, addrs []string, executeEnabled, fastRead, optExec bool,
+	descriptorPoolLevel, f int, conf *config.Config, logger *dlog.Logger, slowAddrs []string) *Replica {
 	cmap.SHARD_COUNT = 32768
 
-	r := &Replica{
-		Replica: replica.New(alias, rid, f, addrs, false, exec, false, conf, l),
-
-		ballot:  0,
-		cballot: 0,
-		status:  NORMAL,
-
-		cmdDescs:  cmap.New(),
-		delivered: cmap.New(),
-
-		keys:             make(map[state.Key]keyInfo),
-		hlog:             make(map[state.Key]*HashLog),
-		seqnum:           0,
-		proposedInBallot: make(map[defs.RequestID]struct{}),
-		pendingHashUpds:  make(map[defs.RequestID]*UpdateEntry),
-
-		history:      make([]commandStaticDesc, HISTORY_SIZE),
-		historySize:  0,
-		historyStart: 0,
-
-		fixedMajority: false,
-
-		optExec:     optExec,
-		fastRead:    fastRead,
-		deliverChan: make(chan defs.RequestID, defs.CHAN_BUFFER_SIZE),
-
-		poolLevel:    pl,
-		routineCount: 0,
-
-		recover: make(chan int32, 8),
-
-		descPool: sync.Pool{
-			New: func() interface{} {
-				return &commandDesc{}
-			},
-		},
-
-		proposes: make(map[defs.RequestID]*defs.GPropose),
-
-		slowAddrs: make(map[string]struct{}),
-	}
-
-	for _, addr := range slowAddrs {
-		r.slowAddrs[addr] = struct{}{}
-	}
-
-	r.SQ = NewMajorityOf(r.N)
-	r.FQ = NewThreeQuartersOf(r.N)
-
-	r.batcher = NewBatcher(r, 16)
-	r.repchan = NewReplyChan(r)
-
+	r := &Replica{Replica: replica.New(alias, replicaID, f, addrs, executeEnabled, conf, logger), control: make(chan leaderCall, 8), recover: make(chan int32, 8), delivery: make(chan defs.RequestID, defs.CHAN_BUFFER_SIZE), descriptorPoolLevel: descriptorPoolLevel, descriptorPool: sync.Pool{New: func() interface{} { return &commandDesc{} }}}
 	initial := replicaset.New()
 	for _, member := range conf.Plan.FastQuorum {
 		initial.Add(member.Rank)
 	}
-	qs, err := NewQuorumSystem(r.N/2+1, r.N, initial, conf.Plan.LeaderID())
-	if err != nil {
-		r.Fatal(err)
-	}
-	r.qs = qs
-	r.ballot = r.qs.BallotAt(0)
-	r.cballot = r.ballot
-	r.fixedMajority = true
-	r.FQ = r.qs.AQ(r.ballot)
 
-	initCs(&r.cs, r.RPC)
+	r.core = newCore(corePorts{
+		N: r.N, ID: r.ID, Logger: r.Logger, codes: &r.channels.rpcCodes,
+		send:                func(id int, code uint8, msg fastrpc.Serializable) error { return r.Messages().Send(id, code, msg) },
+		broadcast:           func(msg fastrpc.Serializable, code uint8) int { return r.SendToAll(msg, code) },
+		sendClient:          r.SendClientMsg,
+		peerAlive:           func(id int) bool { return r.Alive[id] },
+		executeEnabled:      func() bool { return r.ExecuteEnabled },
+		replyAfterExecution: func() bool { return r.ReplyAfterExecution },
+		requeueProposal:     r.requeueProposal, scheduleDelivery: r.scheduleDelivery,
+		startDescriptor: r.startDescriptor, stopDescriptors: r.stopDescriptors, resetDescriptors: func() { r.descriptorCount = 0 },
+		sequentialDescriptor: func() bool { return r.descriptorCount >= MaxDescRoutines }, allocDesc: r.allocDesc, freeDesc: r.freeDesc,
+		stopReplies: func() { r.replyWorker.stop() }, resetReplies: func() { r.replyWorker = newReplyWorker(r) },
+		queueReply: func(d *commandDesc, id defs.RequestID, v state.Value) { r.replyWorker.reply(d, id, v) },
+		awaitReply: r.awaitReply, awaitRecovery: r.awaitRecovery,
+	}, fastRead, optExec, slowAddrs, initial, conf.Plan.LeaderID())
+	r.core.execute = func(cmd state.Command) state.Value { return cmd.Execute(r.State) }
 
-	r.Println("the leader is:", r.leader(), "ballot is:", r.ballot)
+	r.core.batcher = newMessageBatcher(r, 16)
+	r.replyWorker = newReplyWorker(r)
+
+	registerRPCs(&r.channels, r.RPC)
+
+	r.Println("the leader is:", r.core.leader(), "ballot is:", r.core.ballot)
 
 	hook.HookUser1(func() {
 		totalNum := 0
 		slowPaths := 0
 		for i := 0; i < HISTORY_SIZE; i++ {
-			if r.history[i].dep == nil {
+			if r.core.history[i].dep == nil {
 				continue
 			}
 			totalNum++
-			if r.history[i].slowPath {
+			if r.core.history[i].slowPath {
 				slowPaths++
 			}
 		}
@@ -235,8 +157,8 @@ func New(alias string, rid int, addrs []string, exec, fastRead, optExec bool,
 		fmt.Printf("Number of slow paths: %d\n", slowPaths)
 	})
 
-	r.Println("SQ:", r.SQ)
-	r.Println("FQ:", r.FQ)
+	r.Println("SQ:", r.core.SQ)
+	r.Println("FQ:", r.core.FQ)
 
 	go r.run()
 

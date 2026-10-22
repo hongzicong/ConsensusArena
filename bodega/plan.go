@@ -68,8 +68,8 @@ type sampledRegion struct {
 // adjacent keys with identical responder sets are coalesced into roster ranges.
 // The leader follows Paxos's topology-only placement rule. No path reads
 // generator parameters.
-func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
-	profile, err := heatprofile.LoadRegional(c.HeatProfilePath, c.HeatProfileSHA256, c.KeyCount, t.Clients)
+func PlanDeployment(conf *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
+	profile, err := heatprofile.LoadRegional(conf.HeatProfilePath, conf.HeatProfileSHA256, conf.KeyCount, t.Clients)
 	if err != nil {
 		return config.DeploymentPlan{}, fmt.Errorf("Bodega regional empirical profile: %w", err)
 	}
@@ -81,7 +81,7 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 	}
 	sampleReadOnly := sampleReads > 0 && sampleWrites == 0
 	allResponders := sampleReadOnly || !uniformity.NonUniform
-	leaderPlan, err := paxos.PlanDeployment(c, t)
+	leaderPlan, err := paxos.PlanDeployment(conf, t)
 	if err != nil {
 		return config.DeploymentPlan{}, fmt.Errorf("Bodega Paxos leader placement: %w", err)
 	}
@@ -153,7 +153,7 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 			p.Responders = append(p.Responders, replica.Alias)
 		}
 	}
-	if c.BodegaResponderRanges != "" && c.BodegaResponderRanges != p.ResponderRanges {
+	if conf.BodegaResponderRanges != "" && conf.BodegaResponderRanges != p.ResponderRanges {
 		return p, fmt.Errorf("explicit Bodega responder ranges conflict with sampled responder policy")
 	}
 	record := map[string]interface{}{
@@ -166,7 +166,7 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 		"branch":                   branch, "uniformity_check": uniformity,
 		"uniform_false_rejection_bound": uniformFalseRejection,
 		"uniformity_assumption":         "independent identically distributed sampled keys",
-		"known_key_count":               c.KeyCount,
+		"known_key_count":               conf.KeyCount,
 		"hot_key_fraction_basis":        "observed positive-read keys per region, rounded up",
 		"hot_key_fraction":              1.0 / hotKeyDivisor,
 		"selection":                     "positive sampled reads descending, key ID ascending on ties",
@@ -187,8 +187,8 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 		return p, err
 	}
 	fmt.Fprintln(os.Stderr, "BODEGA_SAMPLE_POLICY", string(data))
-	c.BodegaResponders = strings.Join(p.Responders, ",")
-	c.BodegaResponderRanges = p.ResponderRanges
+	conf.BodegaResponders = strings.Join(p.Responders, ",")
+	conf.BodegaResponderRanges = p.ResponderRanges
 	return p, nil
 }
 

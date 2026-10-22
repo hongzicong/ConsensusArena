@@ -47,11 +47,12 @@ func main() {
 	if *protocol != "" {
 		c.Protocol = *protocol
 	}
+	p, ok := lookupProtocol(c.Protocol)
 	if *machineType == "heat-sample" {
 		if *heatOutput == "" {
 			log.Fatal("-heat-out is required")
 		}
-		profile, err := client.SampleHeat(c, *heatRequests, *heatSeed)
+		profile, err := client.SampleHeat(c, *heatRequests, *heatSeed, p.heatSampleOptions)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -68,7 +69,6 @@ func main() {
 		}
 		return
 	}
-	p, ok := lookupProtocol(c.Protocol)
 	if !ok {
 		log.Fatalf("unknown protocol %q", c.Protocol)
 	}
@@ -126,38 +126,38 @@ func main() {
 	run(c)
 }
 
-func run(c *config.Config) {
-	switch c.MachineType {
+func run(conf *config.Config) {
+	switch conf.MachineType {
 	case config.MasterMachine:
-		runMaster(c)
+		runMaster(conf)
 	case config.ClientMachine:
-		runClient(c, true)
+		runClient(conf, true)
 	case config.ReplicaMachine:
-		runReplica(c, dlog.New(*logFile, true))
+		runReplica(conf, dlog.New(*logFile, true))
 	}
 }
 
-func runMaster(c *config.Config) {
-	m := master.New(len(c.ReplicaAddrs), c.MasterPort, c, dlog.New(*logFile, true))
+func runMaster(conf *config.Config) {
+	m := master.New(len(conf.ReplicaAddrs), conf.MasterPort, conf, dlog.New(*logFile, true))
 	m.Run()
 }
 
-func runClient(c *config.Config, verbose bool) {
-	if p, ok := lookupProtocol(c.Protocol); ok && p.configureClient != nil {
-		p.configureClient(c)
+func runClient(conf *config.Config, verbose bool) {
+	if p, ok := lookupProtocol(conf.Protocol); ok && p.configureClient != nil {
+		p.configureClient(conf)
 	}
 	var wg sync.WaitGroup
-	for i := 0; i < c.Clones+1; i++ {
+	for i := 0; i < conf.Clones+1; i++ {
 		wg.Add(1)
 		go func(i int) {
-			runSingleClient(c, i, verbose)
+			runSingleClient(conf, i, verbose)
 			wg.Done()
 		}(i)
 	}
 	wg.Wait()
 }
 
-func runSingleClient(c *config.Config, i int, verbose bool) {
+func runSingleClient(conf *config.Config, i int, verbose bool) {
 	var l *dlog.Logger
 	if i == 0 {
 		l = dlog.New(*logFile, verbose)
@@ -170,43 +170,43 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 		// TODO: remove if already exists
 	}
 
-	server := c.Proxy.ProxyOf(c.ClientAddrs[c.Alias])
-	server = c.ReplicaAddrs[server]
-	cl := client.NewClientLog(server, c.MasterAddr, c.MasterPort, c.Fast, c.Leaderless, verbose, l)
-	workloadSeed := client.DeriveWorkloadSeed(int64(c.WorkloadSeed), c.Alias, i)
-	b := client.NewBufferClient(cl, c.CommandSize, c.Writes, c.KeyCount, c.ZipfSkew, workloadSeed)
-	b.SetKeyMapping(c.ShuffleKeys, int64(c.KeyMappingSeed))
-	if c.UniqueKeys {
-		members, err := c.Membership()
+	server := conf.Proxy.ProxyOf(conf.ClientAddrs[conf.Alias])
+	server = conf.ReplicaAddrs[server]
+	cl := client.NewClientLog(server, conf.MasterAddr, conf.MasterPort, conf.Fast, conf.Leaderless, verbose, l)
+	workloadSeed := client.DeriveWorkloadSeed(int64(conf.WorkloadSeed), conf.Alias, i)
+	b := client.NewBufferClient(cl, conf.CommandSize, conf.Writes, conf.KeyCount, conf.ZipfSkew, workloadSeed)
+	b.SetKeyMapping(conf.ShuffleKeys, int64(conf.KeyMappingSeed))
+	if conf.UniqueKeys {
+		members, err := conf.Membership()
 		if err != nil {
 			log.Fatal(err)
 		}
 		aliases := members.Clients
-		ordinal := sort.SearchStrings(aliases, c.Alias)
-		if ordinal == len(aliases) || aliases[ordinal] != c.Alias {
+		ordinal := sort.SearchStrings(aliases, conf.Alias)
+		if ordinal == len(aliases) || aliases[ordinal] != conf.Alias {
 			log.Fatal("unique-key client alias is not configured")
 		}
-		if err := b.UniqueKeysFor(ordinal*(c.Clones+1)+i, len(aliases)*(c.Clones+1)); err != nil {
+		if err := b.UniqueKeysFor(ordinal*(conf.Clones+1)+i, len(aliases)*(conf.Clones+1)); err != nil {
 			log.Fatal(err)
 		}
 	}
-	b.PoissonArrivals(c.ArrivalRate)
-	b.MeasureFor(c.Warmup, c.Duration)
-	if p, ok := lookupProtocol(c.Protocol); ok {
-		p.installClient(b, c, i)
+	b.PoissonArrivals(conf.ArrivalRate)
+	b.MeasureFor(conf.Warmup, conf.Duration)
+	if p, ok := lookupProtocol(conf.Protocol); ok {
+		p.installClient(b, conf, i)
 	}
 	if err := b.Connect(); err != nil {
 		log.Fatal(err)
 	}
-	if err := b.ConfigureFaultRun(c.Alias, i); err != nil {
+	if err := b.ConfigureFaultRun(conf.Alias, i); err != nil {
 		log.Fatal(err)
 	}
-	if err := b.ConfigureLatencyRun(c.Alias, i); err != nil {
+	if err := b.ConfigureLatencyRun(conf.Alias, i); err != nil {
 		log.Fatal(err)
 	}
-	waitFrom := b.LeaderId
-	if b.Fast || b.Leaderless || c.WaitClosest {
-		waitFrom = b.ClosestId
+	waitFrom := b.LeaderID
+	if b.Fast || b.Leaderless || conf.WaitClosest {
+		waitFrom = b.ClosestID
 	}
 	b.WaitReplies(waitFrom)
 	b.Loop()

@@ -35,6 +35,7 @@ type pendingCommand struct {
 	RetryAt time.Duration
 }
 
+// core owns protocol state, ordering, recovery decisions and completion semantics.
 type core struct {
 	id, n, fastSize                                    int
 	promise                                            uint64
@@ -56,8 +57,8 @@ type core struct {
 	retryCursor                                        int
 	stalled                                            bool
 	windowFallbacks, ageFallbacks                      uint64
-	execute                                            func(record) state.Value
-	complete                                           func(defs.RequestID, state.Value)
+	execute                                            func(state.Command) state.Value
+	reply                                              func(defs.RequestID, state.Value)
 	elections, fastCommits, classicCommits, repaired   uint64
 }
 
@@ -109,8 +110,8 @@ func (c *core) submit(v record) {
 	// A learner may receive the decision before the client's payload.
 	c.apply()
 	if result, ok := c.results[v.ID]; ok {
-		if c.complete != nil {
-			c.complete(v.ID, result)
+		if c.reply != nil {
+			c.reply(v.ID, result)
 		}
 		return
 	}
@@ -228,7 +229,7 @@ func (c *core) flush() {
 	}
 }
 
-func (c *core) step(m message) {
+func (c *core) receive(m message) {
 	if m.From < 0 || m.From >= c.n {
 		return
 	}

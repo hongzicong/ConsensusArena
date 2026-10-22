@@ -2,12 +2,146 @@ package swift
 
 // Protocol state and normal-case transitions.
 import (
-	"sync"
-
+	"github.com/hongzicong/ConsensusArena/dlog"
 	"github.com/hongzicong/ConsensusArena/hook"
+	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
+	cmap "github.com/orcaman/concurrent-map"
+	"sync"
+	"time"
 )
+
+// corePorts exposes runtime observations, output and scheduling capabilities.
+// Worker lifetimes and ingress queues remain owned by Replica.
+type corePorts struct {
+	N  int
+	ID int32
+	*dlog.Logger
+	codes                *rpcCodes
+	send                 func(int, uint8, fastrpc.Serializable) error
+	broadcast            func(fastrpc.Serializable, uint8) int
+	sendClient           func(int32, uint8, fastrpc.Serializable)
+	peerAlive            func(int) bool
+	executeEnabled       func() bool
+	replyAfterExecution  func() bool
+	requeueProposal      func(*proposal)
+	scheduleDelivery     func(defs.RequestID)
+	startDescriptor      func(*commandDesc, defs.RequestID)
+	stopDescriptors      func()
+	resetDescriptors     func()
+	sequentialDescriptor func() bool
+	allocDesc            func() *commandDesc
+	freeDesc             func(*commandDesc)
+	stopReplies          func()
+	resetReplies         func()
+	queueReply           func(*commandDesc, defs.RequestID, state.Value)
+	awaitReply           func(*commandDesc, defs.RequestID)
+	awaitRecovery        func()
+	batcher              ackBatcher
+}
+type ackBatcher interface {
+	SendFastAck(*MFastAck)
+	SendFastAckClient(*MFastAck, int32)
+	SendLightSlowAck(*MLightSlowAck)
+	SendLightSlowAckClient(*MLightSlowAck, int32)
+}
+
+// core owns protocol state, ordering, recovery decisions and completion semantics.
+type core struct {
+	corePorts
+	execute func(state.Command) state.Value
+
+	ballot  int32
+	cballot int32
+	status  int
+
+	descriptors cmap.ConcurrentMap
+	delivered   cmap.ConcurrentMap
+
+	keys map[state.Key]keyInfo
+	hlog map[state.Key]*HashLog
+
+	proposalBatches       uint64
+	deferredHashElisions  uint64
+	hashBacklogDeferrals  uint64
+	proposalBatchCommands uint64
+	proposalBatchMax      int
+	proposedInBallot      map[defs.RequestID]struct{}
+	seqnum                int
+	pendingHashUpds       map[defs.RequestID]*UpdateEntry
+	recoveryCmds          map[defs.RequestID]int // commands installed by the current Sync
+
+	history      []commandStaticDesc
+	historySize  int
+	historyStart int
+
+	qs *QuorumSystem
+	SQ QuorumI
+	FQ QuorumI
+
+	fixedMajority bool
+
+	optExec  bool
+	fastRead bool
+
+	recStart       time.Time
+	newLeaderAckNs *MsgSet
+
+	proposes map[defs.RequestID]*proposal
+
+	// take only slow paths for these addresses
+	slowAddrs map[string]struct{}
+}
+
+func newCore(ports corePorts, fastRead, optExec bool, slowAddrs []string, initial Quorum, initialLeader int32) *core {
+	c := &core{
+		corePorts: ports,
+
+		ballot:  0,
+		cballot: 0,
+		status:  NORMAL,
+
+		descriptors: cmap.New(),
+		delivered:   cmap.New(),
+
+		keys:             make(map[state.Key]keyInfo),
+		hlog:             make(map[state.Key]*HashLog),
+		seqnum:           0,
+		proposedInBallot: make(map[defs.RequestID]struct{}),
+		pendingHashUpds:  make(map[defs.RequestID]*UpdateEntry),
+
+		history:      make([]commandStaticDesc, HISTORY_SIZE),
+		historySize:  0,
+		historyStart: 0,
+
+		fixedMajority: false,
+
+		optExec:  optExec,
+		fastRead: fastRead,
+
+		proposes: make(map[defs.RequestID]*proposal),
+
+		slowAddrs: make(map[string]struct{}),
+	}
+
+	for _, addr := range slowAddrs {
+		c.slowAddrs[addr] = struct{}{}
+	}
+	c.SQ = NewMajorityOf(c.N)
+	c.FQ = NewThreeQuartersOf(c.N)
+	qs, err := NewQuorumSystem(c.N/2+1, c.N, initial, initialLeader)
+	if err != nil {
+		c.Fatal(err)
+	}
+	c.qs = qs
+	c.ballot = c.qs.BallotAt(0)
+	c.cballot = c.ballot
+	c.fixedMajority = true
+	c.FQ = c.qs.AQ(c.ballot)
+	return c
+}
 
 type commandDesc struct {
 	deferFast  bool
@@ -15,7 +149,7 @@ type commandDesc struct {
 	cmd        state.Command
 	dep        Dep
 	hs         []SHash
-	propose    *defs.GPropose
+	propose    *proposal
 	proposeDep Dep
 
 	slowPathH      *MsgSet
@@ -36,7 +170,7 @@ type commandDesc struct {
 }
 
 type commandStaticDesc struct {
-	cmdId    defs.RequestID
+	cmdID    defs.RequestID
 	phase    int
 	cmd      state.Command
 	dep      Dep
@@ -47,31 +181,31 @@ type commandStaticDesc struct {
 type readDesc struct {
 	hs      []SHash
 	dep     Dep
-	propose *defs.GPropose
+	propose *proposal
 }
 
-type deferredProposal struct{ propose *defs.GPropose }
+type deferredProposal struct{ propose *proposal }
 
-func (r *Replica) handlePropose(msg *defs.GPropose, desc *commandDesc, cmdId defs.RequestID) {
-	if r.status != NORMAL || desc.propose != nil {
+func (c *core) handlePropose(msg *proposal, desc *commandDesc, cmdID defs.RequestID) {
+	if c.status != NORMAL || desc.propose != nil {
 		return
 	}
 
 	desc.propose = msg
-	if _, recovered := r.recoveryCmds[cmdId]; recovered {
+	if _, recovered := c.recoveryCmds[cmdID]; recovered {
 		// Sync can arrive before this replica receives the original proposal.
 		// Keep its installed command/phase/dependencies and use recovery evidence;
 		// a restored descriptor has no normal-case hash proposal to broadcast.
-		finishAck := r.sendRecoveryAck(cmdId, desc.dep, msg, desc)
+		finishAck := c.sendRecoveryAck(cmdID, desc.dep, msg, desc)
 		desc.afterPropagate.Recall()
-		if !r.delivered.Has(cmdId.String()) {
+		if !c.delivered.Has(cmdID.String()) {
 			finishAck()
 		}
 		return
 	}
 	desc.cmd = msg.Command
 
-	if !r.FQ.Contains(int(r.Id)) || desc.deferFast {
+	if !c.FQ.Contains(int(c.ID)) || desc.deferFast {
 		desc.afterPropagate.Recall()
 		return
 	}
@@ -79,55 +213,55 @@ func (r *Replica) handlePropose(msg *defs.GPropose, desc *commandDesc, cmdId def
 	desc.dep = desc.proposeDep
 	desc.phase = PRE_ACCEPT
 	if (desc.afterPropagate.Recall() && desc.slowPath) ||
-		r.delivered.Has(cmdId.String()) {
+		c.delivered.Has(cmdID.String()) {
 		// in this case a process already sent an MSlowAck
 		// message, hence, no need to send MFastAck
 		return
 	}
 
-	if _, exists := r.slowAddrs[msg.Addr]; exists && r.Id != r.leader() {
+	if _, exists := c.slowAddrs[msg.Addr]; exists && c.ID != c.leader() {
 		return
 	}
 
 	fastAck := newFastAck()
-	fastAck.Replica = r.Id
-	fastAck.Ballot = r.ballot
-	fastAck.CmdId = cmdId
+	fastAck.Replica = c.ID
+	fastAck.Ballot = c.ballot
+	fastAck.CmdId = cmdID
 	fastAck.Dep = desc.dep
 	fastAck.Checksum = desc.hs
-	if r.Id == r.leader() {
-		fastAck.Seqnum = r.seqnum
-		r.seqnum++
+	if c.ID == c.leader() {
+		fastAck.Seqnum = c.seqnum
+		c.seqnum++
 	}
 
-	isRead := r.fastRead && msg.Command.Op != state.PUT
+	isRead := c.fastRead && msg.Command.Op != state.PUT
 
 	fastAckSend := copyFastAck(fastAck)
-	if !r.optExec {
-		r.batcher.SendFastAck(fastAckSend)
+	if !c.optExec {
+		c.batcher.SendFastAck(fastAckSend)
 	} else {
-		if (r.Id == r.leader() && !isRead) || (isRead && desc.propose.Proxy) {
-			r.batcher.SendFastAck(fastAckSend)
+		if (c.ID == c.leader() && !isRead) || (isRead && desc.propose.Proxy) {
+			c.batcher.SendFastAck(fastAckSend)
 			// TODO: save old state
-			r.deliver(desc, cmdId)
+			c.apply(desc, cmdID)
 		} else {
-			r.batcher.SendFastAckClient(fastAckSend, msg.ClientId)
+			c.batcher.SendFastAckClient(fastAckSend, msg.ClientId)
 		}
 	}
-	r.handleFastAck(fastAck, desc)
+	c.handleFastAck(fastAck, desc)
 }
 
-func (r *Replica) handleFastAck(msg *MFastAck, desc *commandDesc) {
-	if msg.Replica == r.leader() {
-		r.fastAckFromLeader(msg, desc)
+func (c *core) handleFastAck(msg *MFastAck, desc *commandDesc) {
+	if msg.Replica == c.leader() {
+		c.fastAckFromLeader(msg, desc)
 	} else {
-		r.commonCaseFastAck(msg, desc)
+		c.commonCaseFastAck(msg, desc)
 	}
 }
 
-func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
+func (c *core) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 	desc.afterPropagate.Call(func() {
-		if r.status != NORMAL || r.ballot != msg.Ballot {
+		if c.status != NORMAL || c.ballot != msg.Ballot {
 			return
 		}
 
@@ -140,32 +274,32 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 		dep := Dep(msg.Dep)
 		hs := desc.hs
 		neq := !desc.dep.Equals(dep)
-		fast := r.FQ.Contains(int(r.Id))
-		slow := r.SQ.Contains(int(r.Id))
-		sendSlowAck := r.leader() != r.Id && (slow || (fast && neq))
-		msgCmdId := msg.CmdId
+		fast := c.FQ.Contains(int(c.ID))
+		slow := c.SQ.Contains(int(c.ID))
+		sendSlowAck := c.leader() != c.ID && (slow || (fast && neq))
+		msgCmdID := msg.CmdId
 		msgChecksum := msg.Checksum
 
 		defer func() {
-			if r.leader() == r.Id || r.delivered.Has(msgCmdId.String()) {
+			if c.leader() == c.ID || c.delivered.Has(msgCmdID.String()) {
 				return
 			}
-			if !sendSlowAck && r.optExec && !SHashesEq(hs, msgChecksum) {
+			if !sendSlowAck && c.optExec && !SHashesEq(hs, msgChecksum) {
 				lightSlowAck := &MLightSlowAck{
-					Replica: r.Id,
-					Ballot:  r.ballot,
-					CmdId:   msgCmdId,
+					Replica: c.ID,
+					Ballot:  c.ballot,
+					CmdId:   msgCmdID,
 				}
 
-				r.SendClientMsg(msgCmdId.Client, r.cs.lightSlowAckRPC, lightSlowAck)
+				c.sendClient(msgCmdID.Client, c.codes.lightSlowAckRPC, lightSlowAck)
 			}
 		}()
 
 		desc.slowPathH.Add(msg.Replica, true, msg)
-		delivered := r.delivered.Has(msgCmdId.String())
+		delivered := c.delivered.Has(msgCmdID.String())
 		if !delivered {
 			desc.fastPathH.Add(msg.Replica, true, msg)
-			delivered = r.delivered.Has(msgCmdId.String())
+			delivered = c.delivered.Has(msgCmdID.String())
 		}
 
 		if sendSlowAck {
@@ -175,39 +309,39 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 			desc.slowPath = true
 
 			lightSlowAck := &MLightSlowAck{
-				Replica: r.Id,
-				Ballot:  r.ballot,
-				CmdId:   msgCmdId,
+				Replica: c.ID,
+				Ballot:  c.ballot,
+				CmdId:   msgCmdID,
 			}
 
-			if !r.optExec {
-				r.batcher.SendLightSlowAck(lightSlowAck)
+			if !c.optExec {
+				c.batcher.SendLightSlowAck(lightSlowAck)
 			} else {
-				r.batcher.SendLightSlowAckClient(lightSlowAck, msgCmdId.Client)
+				c.batcher.SendLightSlowAckClient(lightSlowAck, msgCmdID.Client)
 			}
 			if !delivered {
-				r.handleLightSlowAck(lightSlowAck, desc)
+				c.handleLightSlowAck(lightSlowAck, desc)
 			}
 		}
 	})
 }
 
-func (r *Replica) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
-	if r.status != NORMAL || r.ballot != msg.Ballot {
+func (c *core) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
+	if c.status != NORMAL || c.ballot != msg.Ballot {
 		return
 	}
 
-	msgCmdId := msg.CmdId
+	msgCmdID := msg.CmdId
 	if msg.Dep == nil {
-		desc.slowPathH.Add(msg.Replica, msg.Replica == r.leader(), msg)
-		if r.delivered.Has(msgCmdId.String()) {
+		desc.slowPathH.Add(msg.Replica, msg.Replica == c.leader(), msg)
+		if c.delivered.Has(msgCmdID.String()) {
 			return
 		}
 	}
-	desc.fastPathH.Add(msg.Replica, msg.Replica == r.leader(), msg)
+	desc.fastPathH.Add(msg.Replica, msg.Replica == c.leader(), msg)
 }
 
-func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {
+func getFastAndSlowAcksHandler(c *core, desc *commandDesc) MsgSetHandler {
 	return func(leaderMsg interface{}, msgs []interface{}) {
 
 		if leaderMsg == nil {
@@ -218,8 +352,8 @@ func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {
 
 		desc.phase = COMMIT
 
-		for _, depCmdId := range desc.dep {
-			depDesc := r.getCmdDesc(depCmdId, nil, nil)
+		for _, depCmdID := range desc.dep {
+			depDesc := c.getCmdDesc(depCmdID, nil, nil)
 			if depDesc == nil {
 				continue
 			}
@@ -228,32 +362,32 @@ func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {
 			depDesc.successorsL.Unlock()
 		}
 
-		r.deliver(desc, leaderFastAck.CmdId)
+		c.apply(desc, leaderFastAck.CmdId)
 	}
 }
 
-func (r *Replica) handleLightSlowAck(msg *MLightSlowAck, desc *commandDesc) {
+func (c *core) handleLightSlowAck(msg *MLightSlowAck, desc *commandDesc) {
 	fastAck := newFastAck()
 	fastAck.Replica = msg.Replica
 	fastAck.Ballot = msg.Ballot
 	fastAck.CmdId = msg.CmdId
 	fastAck.Dep = nil
-	r.commonCaseFastAck(fastAck, desc)
+	c.commonCaseFastAck(fastAck, desc)
 }
 
-func (r *Replica) getCmdDesc(cmdId defs.RequestID, msg interface{}, dep Dep) *commandDesc {
-	return r.getCmdDescSeq(cmdId, msg, dep, nil, false)
+func (c *core) getCmdDesc(cmdID defs.RequestID, msg interface{}, dep Dep) *commandDesc {
+	return c.getCmdDescSeq(cmdID, msg, dep, nil, false)
 }
 
-func (r *Replica) getCmdDescSeq(cmdId defs.RequestID, msg interface{}, dep Dep, hs []SHash, seq bool) *commandDesc {
-	key := cmdId.String()
-	if r.delivered.Has(key) {
+func (c *core) getCmdDescSeq(cmdID defs.RequestID, msg interface{}, dep Dep, hs []SHash, seq bool) *commandDesc {
+	key := cmdID.String()
+	if c.delivered.Has(key) {
 		return nil
 	}
 
 	var desc *commandDesc
 
-	r.cmdDescs.Upsert(key, nil,
+	c.descriptors.Upsert(key, nil,
 		func(exists bool, mapV, _ interface{}) interface{} {
 			defer func() {
 				if dep != nil && desc.proposeDep == nil {
@@ -269,11 +403,10 @@ func (r *Replica) getCmdDescSeq(cmdId defs.RequestID, msg interface{}, dep Dep, 
 				return desc
 			}
 
-			desc = r.newDesc()
+			desc = c.newDesc()
 			desc.seq = seq || desc.seq
 			if !desc.seq {
-				go r.handleDesc(desc, cmdId)
-				r.routineCount++
+				c.startDescriptor(desc, cmdID)
 			}
 
 			return desc
@@ -281,7 +414,7 @@ func (r *Replica) getCmdDescSeq(cmdId defs.RequestID, msg interface{}, dep Dep, 
 
 	if msg != nil {
 		if desc.seq {
-			r.handleMsg(msg, desc, cmdId)
+			c.handleMsg(msg, desc, cmdID)
 		} else {
 			desc.msgs <- msg
 		}
@@ -290,8 +423,8 @@ func (r *Replica) getCmdDescSeq(cmdId defs.RequestID, msg interface{}, dep Dep, 
 	return desc
 }
 
-func (r *Replica) newDesc() *commandDesc {
-	desc := r.allocDesc()
+func (c *core) newDesc() *commandDesc {
+	desc := c.allocDesc()
 	desc.dep = nil
 	desc.hs = nil
 	if desc.msgs == nil {
@@ -306,7 +439,7 @@ func (r *Replica) newDesc() *commandDesc {
 	desc.successors = nil
 	desc.slowPath = false
 	desc.deferFast = false
-	desc.seq = (r.routineCount >= MaxDescRoutines)
+	desc.seq = c.sequentialDescriptor()
 	desc.defered = func() {}
 	desc.propose = nil
 	desc.proposeDep = nil
@@ -332,129 +465,94 @@ func (r *Replica) newDesc() *commandDesc {
 			(Dep(leaderFastAck.Dep)).Equals(fastAck.Dep)
 	}
 
-	h := getFastAndSlowAcksHandler(r, desc)
-	desc.slowPathH = desc.slowPathH.ReinitMsgSet(r.SQ, acceptFastAndSlowAck, func(interface{}) {}, h)
-	desc.fastPathH = desc.fastPathH.ReinitMsgSet(r.FQ, acceptFastAndSlowAck, func(interface{}) {}, h)
+	h := getFastAndSlowAcksHandler(c, desc)
+	desc.slowPathH = desc.slowPathH.ReinitMsgSet(c.SQ, acceptFastAndSlowAck, func(interface{}) {}, h)
+	desc.fastPathH = desc.fastPathH.ReinitMsgSet(c.FQ, acceptFastAndSlowAck, func(interface{}) {}, h)
 
 	return desc
 }
 
-func (r *Replica) allocDesc() *commandDesc {
-	if r.poolLevel > 0 {
-		return r.descPool.Get().(*commandDesc)
-	}
-	return &commandDesc{}
-}
-
-func (r *Replica) freeDesc(desc *commandDesc) {
-	if r.poolLevel > 0 {
-		r.descPool.Put(desc)
-	}
-}
-
-func (r *Replica) handleDesc(desc *commandDesc, cmdId defs.RequestID) {
-	defer func() {
-		for len(desc.stopChan) != 0 {
-			(<-desc.stopChan).Done()
-		}
-	}()
-
-	for desc.active {
-		select {
-		case wg := <-desc.stopChan:
-			desc.active = false
-			wg.Done()
-			return
-		case msg := <-desc.msgs:
-			if r.handleMsg(msg, desc, cmdId) {
-				r.routineCount--
-				return
-			}
-		}
-	}
-}
-
-func (r *Replica) handleMsg(m interface{}, desc *commandDesc, cmdId defs.RequestID) bool {
+func (c *core) handleMsg(m interface{}, desc *commandDesc, cmdID defs.RequestID) bool {
 	switch msg := m.(type) {
 
-	case *defs.GPropose:
-		r.handlePropose(msg, desc, cmdId)
+	case *proposal:
+		c.handlePropose(msg, desc, cmdID)
 	case *deferredProposal:
 		desc.deferFast = true
-		r.handlePropose(msg.propose, desc, cmdId)
+		c.handlePropose(msg.propose, desc, cmdID)
 
 	case *MFastAck:
-		if msg.CmdId == cmdId {
-			r.handleFastAck(msg, desc)
+		if msg.CmdId == cmdID {
+			c.handleFastAck(msg, desc)
 		}
 
 	case *MLightSlowAck:
-		if msg.CmdId == cmdId {
-			r.handleLightSlowAck(msg, desc)
+		if msg.CmdId == cmdID {
+			c.handleLightSlowAck(msg, desc)
 		}
 
 	case string:
 		if msg == "deliver" {
-			r.deliver(desc, cmdId)
+			c.apply(desc, cmdID)
 		}
 
 	case int:
-		r.history[msg].cmdId = cmdId
-		r.history[msg].phase = desc.phase
-		r.history[msg].cmd = desc.cmd
-		r.history[msg].dep = desc.dep
-		r.history[msg].slowPath = desc.slowPath
-		r.history[msg].defered = desc.defered
+		c.history[msg].cmdID = cmdID
+		c.history[msg].phase = desc.phase
+		c.history[msg].cmd = desc.cmd
+		c.history[msg].dep = desc.dep
+		c.history[msg].slowPath = desc.slowPath
+		c.history[msg].defered = desc.defered
 		desc.active = false
 		desc.slowPathH.Free()
 		desc.fastPathH.Free()
-		r.cmdDescs.Remove(cmdId.String())
-		r.freeDesc(desc)
+		c.descriptors.Remove(cmdID.String())
+		c.freeDesc(desc)
 		return true
 	}
 
 	return false
 }
 
-func (r *Replica) leader() int32 {
-	return Leader(r.ballot, r.N)
+func (c *core) leader() int32 {
+	return Leader(c.ballot, c.N)
 }
 
-func (r *Replica) getDepAndHashes(cmd state.Command, cmdId defs.RequestID) (Dep, []SHash) {
-	return r.getDepAndHashesWithUpdate(cmd, cmdId, nil, false)
+func (c *core) getDepAndHashes(cmd state.Command, cmdID defs.RequestID) (Dep, []SHash) {
+	return c.getDepAndHashesWithUpdate(cmd, cmdID, nil, false)
 }
 
-func (r *Replica) getDepAndHashesWithUpdate(cmd state.Command, cmdId defs.RequestID, update *UpdateEntry, deferHash bool) (Dep, []SHash) {
+func (c *core) getDepAndHashesWithUpdate(cmd state.Command, cmdID defs.RequestID, update *UpdateEntry, deferHash bool) (Dep, []SHash) {
 	dep := []defs.RequestID{}
 	hashes := []SHash{}
 	keysOfCmd := keysOf(cmd)
 	if update != nil && len(update.hash) != len(keysOfCmd) {
-		r.Fatal("the number of hashes does not match number of objects", " cmd=", cmdId)
+		c.Fatal("the number of hashes does not match number of objects", " cmd=", cmdID)
 	}
 
 	for i, key := range keysOfCmd {
-		info, exists := r.keys[key]
+		info, exists := c.keys[key]
 		if exists {
 			cdep := info.getConflictCmds(cmd)
 			dep = append(dep, cdep...)
 		} else {
 			info = newLightKeyInfo()
-			r.keys[key] = info
+			c.keys[key] = info
 		}
-		info.add(cmd, cmdId)
+		info.add(cmd, cmdID)
 
-		l, exists := r.hlog[key]
+		l, exists := c.hlog[key]
 		if !exists {
 			l = NewHashLog()
-			l.BeginBallot(r.ballot)
-			r.hlog[key] = l
+			l.BeginBallot(c.ballot)
+			c.hlog[key] = l
 		}
 		if update == nil && deferHash {
-			l.AppendDeferred(cmdId)
+			l.AppendDeferred(cmdID)
 		} else if update == nil {
-			hashes = append(hashes, l.Append(cmd, cmdId))
+			hashes = append(hashes, l.Append(cmd, cmdID))
 		} else {
-			l.AppendAndUpdate(cmdId, update.seqnum, update.hash[i])
+			l.AppendAndUpdate(cmdID, update.seqnum, update.hash[i])
 		}
 	}
 	if update != nil || deferHash {
@@ -464,88 +562,81 @@ func (r *Replica) getDepAndHashesWithUpdate(cmd state.Command, cmdId defs.Reques
 	return dep, hashes
 }
 
-func (r *Replica) recordLeaderHash(cmdId defs.RequestID, s int, hs []SHash) {
-	p, exists := r.proposes[cmdId]
+func (c *core) recordLeaderHash(cmdID defs.RequestID, s int, hs []SHash) {
+	p, exists := c.proposes[cmdID]
 	if !exists {
-		r.pendingHashUpds[cmdId] = &UpdateEntry{
+		c.pendingHashUpds[cmdID] = &UpdateEntry{
 			hash:   hs,
 			seqnum: s,
 		}
 		return
 	}
-	r.updateLogs(p.Command, cmdId, s, hs)
+	c.updateLogs(p.Command, cmdID, s, hs)
 }
 
-func (r *Replica) updateLogs(cmd state.Command, cmdId defs.RequestID, s int, hs []SHash) {
+func (c *core) updateLogs(cmd state.Command, cmdID defs.RequestID, s int, hs []SHash) {
 	keys := keysOf(cmd)
 
 	if len(keys) != len(hs) {
-		r.Fatal("the number of hashes does not match number of objects", " cmd=", cmdId,
-			" ballot=", r.ballot, " seqnum=", s, " objects=", len(keys), " hashes=", len(hs))
+		c.Fatal("the number of hashes does not match number of objects", " cmd=", cmdID,
+			" ballot=", c.ballot, " seqnum=", s, " objects=", len(keys), " hashes=", len(hs))
 	}
 
 	for i, key := range keys {
-		l, exists := r.hlog[key]
+		l, exists := c.hlog[key]
 		if !exists {
 			l = NewHashLog()
-			l.BeginBallot(r.ballot)
-			r.hlog[key] = l
+			l.BeginBallot(c.ballot)
+			c.hlog[key] = l
 		}
-		l.Update(cmdId, s, hs[i])
+		l.Update(cmdID, s, hs[i])
 	}
 }
 
 // Drain only already-ready proposals, preserving FIFO and bounding the delay
 // before other message classes can run. Never wait to assemble a batch.
-func (r *Replica) handleProposalBatch(first *defs.GPropose) {
-	additional := len(r.ProposeChan)
-	if additional > 255 {
-		additional = 255
-	}
-	r.proposalBatches++
-	r.proposalBatchCommands += uint64(additional + 1)
-	if additional+1 > r.proposalBatchMax {
-		r.proposalBatchMax = additional + 1
-	}
-	r.handleQueuedProposal(first)
-	for i := 0; i < additional; i++ {
-		r.handleQueuedProposal(<-r.ProposeChan)
+func (c *core) beginProposalBatch(count int) {
+	additional := count - 1
+	c.proposalBatches++
+	c.proposalBatchCommands += uint64(additional + 1)
+	if additional+1 > c.proposalBatchMax {
+		c.proposalBatchMax = additional + 1
 	}
 }
 
-func (r *Replica) handleQueuedProposal(propose *defs.GPropose) {
-	cmdId := propose.RequestID()
-	if _, seen := r.proposedInBallot[cmdId]; seen {
+func (c *core) submit(propose *proposal) {
+	cmdID := propose.RequestID()
+	if _, seen := c.proposedInBallot[cmdID]; seen {
 		return
 	}
-	r.proposedInBallot[cmdId] = struct{}{}
-	r.proposes[cmdId] = propose
-	if _, recovered := r.recoveryCmds[cmdId]; recovered {
+	c.proposedInBallot[cmdID] = struct{}{}
+	c.proposes[cmdID] = propose
+	if _, recovered := c.recoveryCmds[cmdID]; recovered {
 		// Sync already installed this command's dependencies. Do not append
 		// a hash proposal before handlePropose takes the recovery branch.
-		r.getCmdDescSeq(cmdId, propose, nil, nil, r.leader() == r.Id)
+		c.getCmdDescSeq(cmdID, propose, nil, nil, c.leader() == c.ID)
 		return
 	}
-	upd, deferred := r.pendingHashUpds[cmdId]
+	upd, deferred := c.pendingHashUpds[cmdID]
 	var dep Dep
 	var hs []SHash
-	deferFast := !deferred && r.shouldDeferFast(propose.Command)
-	if deferred && r.leader() != r.Id && r.SQ.Contains(int(r.Id)) {
+	deferFast := !deferred && c.shouldDeferFast(propose.Command)
+	if deferred && c.leader() != c.ID && c.SQ.Contains(int(c.ID)) {
 		// The already-enqueued leader transition will send SlowAck and make
 		// handlePropose return before any local FastAck can consume this hash.
-		dep, hs = r.getDepAndHashesWithUpdate(propose.Command, cmdId, upd, false)
-		delete(r.pendingHashUpds, cmdId)
-		r.deferredHashElisions++
+		dep, hs = c.getDepAndHashesWithUpdate(propose.Command, cmdID, upd, false)
+		delete(c.pendingHashUpds, cmdID)
+		c.deferredHashElisions++
 	} else if deferFast {
-		dep, hs = r.getDepAndHashesWithUpdate(propose.Command, cmdId, nil, true)
-		r.hashBacklogDeferrals++
+		dep, hs = c.getDepAndHashesWithUpdate(propose.Command, cmdID, nil, true)
+		c.hashBacklogDeferrals++
 	} else {
-		dep, hs = r.getDepAndHashes(propose.Command, cmdId)
+		dep, hs = c.getDepAndHashes(propose.Command, cmdID)
 	}
-	if deferred && r.leader() != r.Id && !r.SQ.Contains(int(r.Id)) {
+	if deferred && c.leader() != c.ID && !c.SQ.Contains(int(c.ID)) {
 		// TODO: when pipelining this can break ordering, disabling fast paths.
-		delete(r.pendingHashUpds, cmdId)
-		r.recordLeaderHash(cmdId, upd.seqnum, upd.hash)
+		delete(c.pendingHashUpds, cmdID)
+		c.recordLeaderHash(cmdID, upd.seqnum, upd.hash)
 	}
 	// FIXME: leader can receive fastAck before Propose,
 	//        in this case desc is not seq
@@ -553,22 +644,120 @@ func (r *Replica) handleQueuedProposal(propose *defs.GPropose) {
 	if deferFast {
 		message = &deferredProposal{propose: propose}
 	}
-	desc := r.getCmdDescSeq(cmdId, message, dep, hs, r.leader() == r.Id)
+	desc := c.getCmdDescSeq(cmdID, message, dep, hs, c.leader() == c.ID)
 	if desc == nil {
-		r.Fatal("Got proposal for the delivered command", cmdId)
+		c.Fatal("Got proposal for the delivered command", cmdID)
 	}
 }
 
-func (r *Replica) shouldDeferFast(cmd state.Command) bool {
+func (c *core) shouldDeferFast(cmd state.Command) bool {
 	// Optional speculative reads may need the local proxy's execution/reply.
 	// Keep their existing path rather than suppressing that local fast vote.
-	if r.fastRead || r.leader() == r.Id || !r.SQ.Contains(int(r.Id)) {
+	if c.fastRead || c.leader() == c.ID || !c.SQ.Contains(int(c.ID)) {
 		return false
 	}
 	for _, key := range keysOf(cmd) {
-		if l := r.hlog[key]; l != nil && len(l.nodes) >= 1024 {
+		if l := c.hlog[key]; l != nil && len(l.nodes) >= 1024 {
 			return true
 		}
 	}
 	return false
+}
+
+func (c *core) receive(event any, _ time.Time) error {
+	switch m := event.(type) {
+	case *MFastAck:
+		if m == nil {
+			return protocol.UnsupportedEvent("swiftpaxos", event)
+		}
+		fastAck := m
+		c.receiveFastAck(fastAck)
+
+	case *MLightSlowAck:
+		if m == nil {
+			return protocol.UnsupportedEvent("swiftpaxos", event)
+		}
+		lightSlowAck := m
+		c.getCmdDesc(lightSlowAck.CmdId, lightSlowAck, nil)
+
+	case *MAcks:
+		if m == nil {
+			return protocol.UnsupportedEvent("swiftpaxos", event)
+		}
+		acks := m
+		for _, f := range acks.FastAcks {
+			c.receiveFastAck(copyFastAck(&f))
+		}
+		for _, s := range acks.LightSlowAcks {
+			ls := s
+			c.getCmdDesc(s.CmdId, &ls, nil)
+		}
+
+	case *MOptAcks:
+		if m == nil {
+			return protocol.UnsupportedEvent("swiftpaxos", event)
+		}
+		optAcks := m
+		for _, ack := range optAcks.Acks {
+			if optAcks.Ballot != c.ballot {
+				continue
+			}
+			if IsNilDepOfCmdID(ack.CmdId, ack.Dep) && ack.Seqnum != recoveryAckSeqnum {
+				// The batcher's sentinel represents a SlowAck, not hash evidence.
+				ls := &MLightSlowAck{Replica: optAcks.Replica, Ballot: optAcks.Ballot, CmdId: ack.CmdId}
+				c.getCmdDesc(ls.CmdId, ls, nil)
+				continue
+			}
+			fastAck := newFastAck()
+			fastAck.Replica = optAcks.Replica
+			fastAck.Ballot = optAcks.Ballot
+			fastAck.CmdId = ack.CmdId
+			fastAck.Checksum = ack.Checksum
+			fastAck.Seqnum = ack.Seqnum
+			if !IsNilDepOfCmdID(ack.CmdId, ack.Dep) {
+				fastAck.Dep = ack.Dep
+			} else {
+				fastAck.Dep = nil
+			}
+			c.receiveFastAck(fastAck)
+		}
+
+	case *MNewLeader:
+		if m == nil {
+			return protocol.UnsupportedEvent("swiftpaxos", event)
+		}
+		newLeader := m
+		c.handleNewLeader(newLeader)
+
+	case *MSync:
+		if m == nil {
+			return protocol.UnsupportedEvent("swiftpaxos", event)
+		}
+		sync := m
+		c.handleSync(sync)
+
+	case *MNewLeaderAckN:
+		if m == nil {
+			return protocol.UnsupportedEvent("swiftpaxos", event)
+		}
+		c.handleNewLeaderAckN(m)
+	case recoveryEvent:
+		c.beginRecovery(int32(m))
+	case leaderCall:
+		m.done <- c.handleLeaderCall()
+	case defs.RequestID:
+		c.getCmdDesc(m, "deliver", nil)
+	default:
+		return protocol.UnsupportedEvent("swiftpaxos", event)
+	}
+	return nil
+}
+
+func (c *core) tick(t protocol.Tick) error {
+	if t.Kind != protocol.Maintenance {
+		return protocol.UnsupportedTimer("swiftpaxos", t.Kind)
+	}
+	// This implementation starts recovery from control events, not a periodic
+	// protocol timer. Do not invent a heartbeat or election deadline here.
+	return nil
 }

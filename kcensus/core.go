@@ -85,6 +85,7 @@ type Stats struct {
 	InputMessages, InputSamples, InputSampleNanos                         [resultQuery + 1]uint64
 }
 
+// core owns protocol state, ordering, recovery decisions and completion semantics.
 type core struct {
 	id, n, m, f         int
 	plan                Plan
@@ -115,8 +116,8 @@ type core struct {
 	probeSequence       uint64
 	probes              [8]heartbeatProbe
 	failure, retry      time.Duration
-	execute             func(Record) state.Value
-	complete            func(defs.RequestID, state.Value)
+	execute             func(state.Command) state.Value
+	reply               func(defs.RequestID, state.Value) bool
 	stats               Stats
 	localWrites         map[defs.RequestID]writeArrival
 	pendingKeys         []state.Key
@@ -257,9 +258,7 @@ func (c *core) submit(r Record) error {
 	}
 	c.remember(r)
 	if v, ok := c.results[r.ID]; ok {
-		if c.complete != nil {
-			c.complete(r.ID, v)
-		}
+		c.complete(r.ID, v)
 		return nil
 	}
 	if r.Command.Op == state.GET {
@@ -428,11 +427,11 @@ func (c *core) learn(k state.Key, i uint64, v *Value) {
 	c.apply(k)
 }
 
-func (c *core) step(m message) {
-	c.stepMessage(m, false)
+func (c *core) receive(m message) {
+	c.receiveMessage(m, false)
 }
 
-func (c *core) stepMessage(m message, replayed bool) {
+func (c *core) receiveMessage(m message, replayed bool) {
 	if m.From < 0 || m.From >= c.m {
 		return
 	}

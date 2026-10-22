@@ -6,7 +6,6 @@ import (
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/replicaset"
-	"github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
@@ -86,8 +85,6 @@ type message struct {
 	Values                             []*Value
 	Request                            *Record
 	Result                             state.Value
-	// Local transport context, never serialized.
-	ClientConnection *rpc.ClientConnection
 }
 
 // Original voter identity survives relaying. Ballot zero denotes an unfrozen

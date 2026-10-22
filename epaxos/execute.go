@@ -14,8 +14,9 @@ const (
 	BLACK
 )
 
-type Exec struct {
-	r *Replica
+type executionScheduler struct {
+	core  *core
+	stack []*Instance
 }
 
 type SCComponent struct {
@@ -23,11 +24,11 @@ type SCComponent struct {
 	color int8
 }
 
-func (e *Exec) executeCommand(replica int32, instance int32) bool {
-	if e.r.InstanceSpace[replica][instance] == nil {
+func (s *executionScheduler) executeCommand(replica int32, instance int32) bool {
+	if s.core.InstanceSpace[replica][instance] == nil {
 		return false
 	}
-	inst := e.r.InstanceSpace[replica][instance]
+	inst := s.core.InstanceSpace[replica][instance]
 	if inst.Status == EXECUTED {
 		return true
 	}
@@ -35,62 +36,60 @@ func (e *Exec) executeCommand(replica int32, instance int32) bool {
 		return false
 	}
 
-	if !e.findSCC(inst) {
+	if !s.findSCC(inst) {
 		return false
 	}
 
 	return true
 }
 
-var stack []*Instance = make([]*Instance, 0, 100)
-
-func (e *Exec) findSCC(root *Instance) bool {
+func (s *executionScheduler) findSCC(root *Instance) bool {
 	index := 1
 	// find SCCs using Tarjan's algorithm
-	stack = stack[0:0]
-	ret := e.strongconnect(root, &index)
+	s.stack = s.stack[0:0]
+	ret := s.strongconnect(root, &index)
 	// reset all indexes in the stack
-	for j := 0; j < len(stack); j++ {
-		stack[j].Index = 0
-		stack[j].onStack = false
+	for j := 0; j < len(s.stack); j++ {
+		s.stack[j].Index = 0
+		s.stack[j].onStack = false
 	}
 	return ret
 }
 
-func (e *Exec) strongconnect(v *Instance, index *int) bool {
+func (s *executionScheduler) strongconnect(v *Instance, index *int) bool {
 	v.Index = *index
 	v.Lowlink = *index
 	*index = *index + 1
 
-	l := len(stack)
-	if l == cap(stack) {
+	l := len(s.stack)
+	if l == cap(s.stack) {
 		newSlice := make([]*Instance, l, 2*l)
-		copy(newSlice, stack)
-		stack = newSlice
+		copy(newSlice, s.stack)
+		s.stack = newSlice
 	}
-	stack = stack[0 : l+1]
-	stack[l] = v
+	s.stack = s.stack[0 : l+1]
+	s.stack[l] = v
 	v.onStack = true
 
 	if v.Cmds == nil {
-		e.r.blockedOn(v.id.replica, v.id.instance, time.Now())
+		s.core.blockedOn(v.id.replica, v.id.instance, time.Now())
 		return false
 	}
 
-	for q := int32(0); q < int32(e.r.N); q++ {
+	for q := int32(0); q < int32(s.core.N); q++ {
 		inst := v.Deps[q]
 		// Every newly proposed/recovered row instance explicitly depends on
 		// its predecessor. Following the endpoint therefore reaches the full
 		// dependency prefix without rescanning it at every DFS vertex.
-		for i := inst; i > e.r.ExecedUpTo[q]; i = -1 {
-			if e.r.InstanceSpace[q][i] == nil || e.r.InstanceSpace[q][i].Cmds == nil {
-				e.r.blockedOn(q, i, time.Now())
+		for i := inst; i > s.core.ExecutedUpTo[q]; i = -1 {
+			if s.core.InstanceSpace[q][i] == nil || s.core.InstanceSpace[q][i].Cmds == nil {
+				s.core.blockedOn(q, i, time.Now())
 				return false
 			}
 
-			if e.r.transconf {
+			if s.core.transconf {
 				for _, alpha := range v.Cmds {
-					for _, beta := range e.r.InstanceSpace[q][i].Cmds {
+					for _, beta := range s.core.InstanceSpace[q][i].Cmds {
 						if !state.Conflict(&alpha, &beta) {
 							continue
 						}
@@ -98,19 +97,19 @@ func (e *Exec) strongconnect(v *Instance, index *int) bool {
 				}
 			}
 
-			if e.r.InstanceSpace[q][i].Status == EXECUTED {
+			if s.core.InstanceSpace[q][i].Status == EXECUTED {
 				continue
 			}
 
-			for e.r.InstanceSpace[q][i].Status != COMMITTED {
-				e.r.blockedOn(q, i, time.Now())
+			for s.core.InstanceSpace[q][i].Status != COMMITTED {
+				s.core.blockedOn(q, i, time.Now())
 				return false
 			}
 
-			w := e.r.InstanceSpace[q][i]
+			w := s.core.InstanceSpace[q][i]
 
 			if w.Index == 0 {
-				if !e.strongconnect(w, index) {
+				if !s.strongconnect(w, index) {
 					return false
 				}
 				if w.Lowlink < v.Lowlink {
@@ -126,32 +125,32 @@ func (e *Exec) strongconnect(v *Instance, index *int) bool {
 
 	if v.Lowlink == v.Index {
 		//found SCC
-		list := stack[l:]
+		list := s.stack[l:]
 
 		//execute commands in the increasing order of the Seq field
 		sort.Sort(nodeArray(list))
 		for _, w := range list {
 			for idx := 0; idx < len(w.Cmds); idx++ {
-				shouldRespond := e.r.Dreply && w.lb != nil && w.lb.clientProposals != nil
+				shouldRespond := s.core.replyAfterExecution() && w.lb != nil && w.lb.clientProposals != nil
 				if w.Cmds[idx].Op == state.NONE {
 					// nothing to do
 				} else if shouldRespond {
-					val := w.Cmds[idx].Execute(e.r.State)
-					_ = e.r.ReplyResult(w.lb.clientProposals[idx], val, -1)
-					e.r.M.Lock()
-					e.r.Stats.M["clientReplies"]++
-					e.r.M.Unlock()
+					val := s.core.execute(w.Cmds[idx])
+					_ = s.core.replyResult(w.lb.clientProposals[idx], val, -1)
+					s.core.M.Lock()
+					s.core.Stats.M["clientReplies"]++
+					s.core.M.Unlock()
 				} else if w.Cmds[idx].Op == state.PUT {
-					w.Cmds[idx].Execute(e.r.State)
+					s.core.execute(w.Cmds[idx])
 				}
 			}
 			w.Status = EXECUTED
 			w.onStack = false
-			e.r.M.Lock()
-			e.r.Stats.M["executedCommands"] += len(w.Cmds)
-			e.r.M.Unlock()
+			s.core.M.Lock()
+			s.core.Stats.M["executedCommands"] += len(w.Cmds)
+			s.core.M.Unlock()
 		}
-		stack = stack[0:l]
+		s.stack = s.stack[0:l]
 	}
 
 	return true
@@ -171,24 +170,24 @@ func (na nodeArray) Swap(i, j int) {
 	na[i], na[j] = na[j], na[i]
 }
 
-func (r *Replica) executeReady(now time.Time) {
-	for q := int32(0); q < int32(r.N); q++ {
+func (c *core) apply(now time.Time) {
+	for q := int32(0); q < int32(c.N); q++ {
 		for budget := 0; budget < 128; budget++ {
-			i := r.ExecedUpTo[q] + 1
-			if i > r.crtInstance[q] {
+			i := c.ExecutedUpTo[q] + 1
+			if i > c.crtInstance[q] {
 				break
 			}
-			inst := r.InstanceSpace[q][i]
+			inst := c.InstanceSpace[q][i]
 			if inst != nil && inst.Status == EXECUTED {
-				r.ExecedUpTo[q]++
-				delete(r.blocked, recoveryKey(q, i))
+				c.ExecutedUpTo[q]++
+				delete(c.blocked, recoveryKey(q, i))
 				continue
 			}
 			if inst == nil || inst.Status < COMMITTED || inst.Cmds == nil {
-				r.blockedOn(q, i, now)
+				c.blockedOn(q, i, now)
 				break
 			}
-			if !r.exec.executeCommand(q, i) {
+			if !c.scheduler.executeCommand(q, i) {
 				break
 			}
 		}

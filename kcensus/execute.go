@@ -22,7 +22,7 @@ func (c *core) apply(k state.Key) {
 			}
 			var v state.Value
 			if c.id < c.n && c.execute != nil {
-				v = c.execute(r)
+				v = c.execute(r.Command)
 			}
 			v = append(state.Value(nil), v...)
 			c.ordered[r.ID] = true
@@ -34,7 +34,7 @@ func (c *core) apply(k state.Key) {
 			}
 			delete(s.queued, r.ID)
 			delete(s.shared, r.ID)
-			if c.id < c.n && c.complete != nil {
+			if c.id < c.n {
 				c.complete(r.ID, v)
 			}
 		}
@@ -63,7 +63,7 @@ func (c *core) finishRead(id defs.RequestID, q *pendingRead) {
 	}
 	var v state.Value
 	if c.execute != nil {
-		v = c.execute(q.record)
+		v = c.execute(q.record.Command)
 	}
 	v = append(state.Value(nil), v...)
 	c.results[id] = v
@@ -73,9 +73,45 @@ func (c *core) finishRead(id defs.RequestID, q *pendingRead) {
 		delete(c.readsByKey, q.record.Command.K)
 	}
 	c.stats.ReadWaitNanos += uint64(c.now - q.started)
-	if c.complete != nil {
-		c.complete(id, v)
+	c.complete(id, v)
+}
+
+// Local proposals take precedence over delegated executed-result replies.
+func (c *core) complete(id defs.RequestID, v state.Value) {
+	if c.reply == nil || c.reply(id, v) {
+		return
 	}
+	if int(id.Client) >= c.n && int(id.Client) < c.m {
+		record, ok := c.known[id]
+		delegate := c.plan.Leaders[int(id.Client)]
+		recoveryReply := c.peerFailed(delegate) && c.coordinator() == c.id
+		if ok && (record.Command.Op == state.GET || delegate == c.id || recoveryReply) {
+			if recoveryReply && record.Command.Op == state.PUT {
+				c.stats.RecoveryResultReplies++
+			}
+			c.send(int(id.Client), message{Kind: executedResult, Key: record.Command.K, ID: id, Result: v})
+		}
+	}
+}
+
+func (c *core) acceptsResult(m message, r Record) bool {
+	return m.From >= 0 && m.From < c.n && r.Command.K == m.Key
+}
+
+// Called after client completion is claimed, before notifying the workload.
+func (c *core) recordResult(m message, r Record) {
+	if r.Command.Op != state.PUT {
+		return
+	}
+	c.recordWriteCompletion(m.ID, c.executed(m.Key))
+	// A voter has executed this exact input. Stop offering it while local
+	// commit/payload catch-up continues; this does not advance a slot prefix.
+	c.ordered[m.ID] = true
+	delete(c.repairHandoffs, payloadObject{m.Key, c.commandUIDs[m.ID]})
+	c.results[m.ID] = append(state.Value(nil), m.Result...)
+	s := c.shard(m.Key)
+	delete(s.queued, m.ID)
+	delete(s.shared, m.ID)
 }
 
 func (c *core) executed(k state.Key) uint64 {

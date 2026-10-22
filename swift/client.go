@@ -35,11 +35,11 @@ type Client struct {
 	slowPaths   int
 	alreadySlow map[defs.RequestID]struct{}
 
-	cs              CommunicationSupply
+	channels        transportChannels
 	completionStats clientCompletionStats
 }
 
-func NewClient(b *client.BufferClient, repNum int) *Client {
+func NewClient(b *client.BufferClient, n int) *Client {
 	c := &Client{
 		StandardClient: client.StandardClient{BufferClient: b},
 
@@ -47,8 +47,8 @@ func NewClient(b *client.BufferClient, repNum int) *Client {
 		ready:  make(chan struct{}, 1),
 		ballot: -1,
 
-		SQ: NewMajorityOf(repNum),
-		FQ: NewThreeQuartersOf(repNum),
+		SQ: NewMajorityOf(n),
+		FQ: NewThreeQuartersOf(n),
 
 		slowPathH:  make(map[defs.RequestID]*MsgSet),
 		fastPathH:  make(map[defs.RequestID]*MsgSet),
@@ -62,7 +62,7 @@ func NewClient(b *client.BufferClient, repNum int) *Client {
 
 	if c.fixedMajority {
 		// TODO: it has to be the correct majority
-		c.FQ = NewMajorityOf(repNum)
+		c.FQ = NewMajorityOf(n)
 	}
 
 	c.Println("SQ:", c.SQ)
@@ -73,10 +73,10 @@ func NewClient(b *client.BufferClient, repNum int) *Client {
 	return c
 }
 
-func (c *Client) initMsgSets(cmdId defs.RequestID) {
-	m, exists := c.slowPathH[cmdId]
+func (c *Client) initMsgSets(cmdID defs.RequestID) {
+	m, exists := c.slowPathH[cmdID]
 	initSlow := !exists || m == nil
-	m, exists = c.fastPathH[cmdId]
+	m, exists = c.fastPathH[cmdID]
 	initFast := !exists || m == nil
 
 	if !initSlow && !initFast {
@@ -105,29 +105,29 @@ func (c *Client) initMsgSets(cmdId defs.RequestID) {
 	}
 
 	if initSlow {
-		c.slowPathH[cmdId] = c.slowPathH[cmdId].ReinitMsgSet(c.SQ, accept, func(interface{}) {}, c.completionHandler(false))
+		c.slowPathH[cmdID] = c.slowPathH[cmdID].ReinitMsgSet(c.SQ, accept, func(interface{}) {}, c.completionHandler(false))
 	}
 	if initFast {
-		c.fastPathH[cmdId] = c.fastPathH[cmdId].ReinitMsgSet(c.FQ, accept, func(interface{}) {}, c.completionHandler(true))
+		c.fastPathH[cmdID] = c.fastPathH[cmdID].ReinitMsgSet(c.FQ, accept, func(interface{}) {}, c.completionHandler(true))
 	}
 }
 
 func (c *Client) handleMsgs() {
 	for {
 		select {
-		case m := <-c.cs.replyChan:
+		case m := <-c.channels.replyChan:
 			reply := m.(*MReply)
 			c.handleReply(reply)
 
-		case m := <-c.cs.acceptChan:
+		case m := <-c.channels.acceptChan:
 			accept := m.(*MAccept)
 			c.handleAccept(accept)
 
-		case m := <-c.cs.fastAckChan:
+		case m := <-c.channels.fastAckChan:
 			fastAck := m.(*MFastAck)
 			c.handleFastAck(fastAck, false)
 
-		case m := <-c.cs.fastAckClientChan:
+		case m := <-c.channels.fastAckClientChan:
 			fastAckClient := m.(*MFastAckClient)
 			f := newFastAck()
 			f.Replica = fastAckClient.Replica
@@ -136,11 +136,11 @@ func (c *Client) handleMsgs() {
 			f.Checksum = fastAckClient.Checksum
 			c.handleFastAck(f, false)
 
-		case m := <-c.cs.lightSlowAckChan:
+		case m := <-c.channels.lightSlowAckChan:
 			lightSlowAck := m.(*MLightSlowAck)
 			c.handleLightSlowAck(lightSlowAck)
 
-		case m := <-c.cs.acksChan:
+		case m := <-c.channels.acksChan:
 			acks := m.(*MAcks)
 			for _, f := range acks.FastAcks {
 				c.handleFastAck(copyFastAck(&f), false)
@@ -150,17 +150,17 @@ func (c *Client) handleMsgs() {
 				c.handleLightSlowAck(&ls)
 			}
 
-		case m := <-c.cs.optAcksChan:
+		case m := <-c.channels.optAcksChan:
 			optAcks := m.(*MOptAcks)
 			for _, ack := range optAcks.Acks {
 				fastAck := newFastAck()
 				fastAck.Replica = optAcks.Replica
 				fastAck.Ballot = optAcks.Ballot
 				fastAck.CmdId = ack.CmdId
-				if fastAck.CmdId.Client != c.ClientId || c.ReplyCompleted(fastAck.CmdId) {
+				if fastAck.CmdId.Client != c.ClientID || c.ReplyCompleted(fastAck.CmdId) {
 					continue
 				}
-				if !IsNilDepOfCmdId(ack.CmdId, ack.Dep) {
+				if !IsNilDepOfCmdID(ack.CmdId, ack.Dep) {
 					fastAck.Checksum = ack.Checksum
 				} else {
 					if _, exists := c.alreadySlow[fastAck.CmdId]; !exists {
@@ -184,7 +184,7 @@ func (c *Client) handleMsgs() {
 }
 
 func (c *Client) handleFastAck(f *MFastAck, fromLeader bool) bool {
-	if f.CmdId.Client != c.ClientId {
+	if f.CmdId.Client != c.ClientID {
 		return false
 	}
 	if c.ballot == -1 {
@@ -213,7 +213,7 @@ func (c *Client) handleFastAck(f *MFastAck, fromLeader bool) bool {
 }
 
 func (c *Client) handleLightSlowAck(ls *MLightSlowAck) {
-	if ls.CmdId.Client != c.ClientId || c.ReplyCompleted(ls.CmdId) {
+	if ls.CmdId.Client != c.ClientID || c.ReplyCompleted(ls.CmdId) {
 		return
 	}
 
@@ -272,8 +272,8 @@ func (c *Client) handleFastAndSlowAcks(leaderMsg interface{}, msgs []interface{}
 		return
 	}
 
-	cmdId := leaderMsg.(*MFastAck).CmdId
-	if !c.CompleteReply(cmdId, c.val, nil, nil) {
+	cmdID := leaderMsg.(*MFastAck).CmdId
+	if !c.CompleteReply(cmdID, c.val, nil, nil) {
 		return
 	}
 
@@ -281,7 +281,7 @@ func (c *Client) handleFastAndSlowAcks(leaderMsg interface{}, msgs []interface{}
 }
 
 func (c *Client) handleReply(r *MReply) {
-	if r.CmdId.Client != c.ClientId || c.ReplyCompleted(r.CmdId) {
+	if r.CmdId.Client != c.ClientID || c.ReplyCompleted(r.CmdId) {
 		return
 	}
 	f := newFastAck()
@@ -302,7 +302,7 @@ func (c *Client) handleReply(r *MReply) {
 }
 
 func (c *Client) handleAccept(a *MAccept) {
-	if a.CmdId.Client != c.ClientId || c.ReplyCompleted(a.CmdId) {
+	if a.CmdId.Client != c.ClientID || c.ReplyCompleted(a.CmdId) {
 		return
 	}
 
@@ -314,8 +314,8 @@ func (c *Client) handleAccept(a *MAccept) {
 var _ client.Adapter = (*Client)(nil)
 
 func (c *Client) WaitReplies(_ int) {
-	t := fastrpc.NewTableId(defs.RPC_TABLE)
-	initCs(&c.cs, t)
+	t := fastrpc.NewTableID(defs.RPC_TABLE)
+	registerRPCs(&c.channels, t)
 	c.RegisterRPCTable(t)
 
 	go c.handleMsgs()

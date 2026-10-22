@@ -40,8 +40,8 @@ type Master struct {
 	config          *config.Config
 }
 
-func New(N, port int, config *config.Config, logger *dlog.Logger) *Master {
-	membership, err := config.Membership()
+func New(N, port int, conf *config.Config, logger *dlog.Logger) *Master {
+	membership, err := conf.Membership()
 	if err != nil {
 		panic(err)
 	}
@@ -62,66 +62,66 @@ func New(N, port int, config *config.Config, logger *dlog.Logger) *Master {
 		membership: membership,
 		finishInit: false,
 		nextLeader: -1,
-		config:     config,
+		config:     conf,
 	}
-	if len(config.ReplicaAliases) != N {
+	if len(conf.ReplicaAliases) != N {
 		panic(fmt.Sprintf("configured replica order has %d entries, expected %d",
-			len(config.ReplicaAliases), N))
+			len(conf.ReplicaAliases), N))
 	}
 	master.initCond = sync.NewCond(master.lock)
 	return master
 }
 
-func (master *Master) Run() {
-	master.Printf("master starting on port %d", master.port)
-	master.Printf("waiting for %d replicas", master.N)
+func (m *Master) Run() {
+	m.Printf("master starting on port %d", m.port)
+	m.Printf("waiting for %d replicas", m.N)
 
-	rpc.Register(master)
+	rpc.Register(m)
 	rpc.HandleHTTP()
-	l, err := net.Listen("tcp", fmt.Sprintf(":%d", master.port))
+	l, err := net.Listen("tcp", fmt.Sprintf(":%d", m.port))
 	if err != nil {
-		master.Fatal("master listen error:", err)
+		m.Fatal("master listen error:", err)
 	}
-	go master.run()
+	go m.run()
 	http.Serve(l, nil)
 }
 
-func (master *Master) run() {
+func (m *Master) run() {
 	for {
-		master.lock.Lock()
-		if master.registeredCount == master.N {
-			master.lock.Unlock()
+		m.lock.Lock()
+		if m.registeredCount == m.N {
+			m.lock.Unlock()
 			break
 		}
-		master.lock.Unlock()
+		m.lock.Unlock()
 		time.Sleep(time.Second)
 	}
 	time.Sleep(2 * time.Second)
 
-	for i := 0; i < master.N; {
+	for i := 0; i < m.N; {
 		var err error
-		addr := fmt.Sprintf("%s:%d", master.addrList[i], master.portList[i]+1000)
-		master.nodes[i], err = rpc.DialHTTP("tcp", addr)
+		addr := fmt.Sprintf("%s:%d", m.addrList[i], m.portList[i]+1000)
+		m.nodes[i], err = rpc.DialHTTP("tcp", addr)
 		if err != nil {
-			master.Printf("error connecting to replica %d (%v), retrying...", i, addr)
+			m.Printf("error connecting to replica %d (%v), retrying...", i, addr)
 			time.Sleep(time.Second)
 		} else {
 			btlReply := defs.NewBeTheLeaderReply()
-			if master.leader[i] {
-				err = master.nodes[i].Call("Replica.BeTheLeader", &defs.BeTheLeaderArgs{}, btlReply)
+			if m.leader[i] {
+				err = m.nodes[i].Call("Replica.BeTheLeader", &defs.BeTheLeaderArgs{}, btlReply)
 				if err != nil {
-					master.Fatal("Not today Zurg!")
+					m.Fatal("Not today Zurg!")
 				}
 				defs.UpdateBeTheLeaderReply(btlReply)
 				leaderI := i
 				if btlReply.Leader != -1 {
 					leaderI = int(btlReply.Leader)
-					master.leader[i] = false
-					master.leader[leaderI] = true
+					m.leader[i] = false
+					m.leader[leaderI] = true
 				}
-				master.nextLeader = int(btlReply.NextLeader)
+				m.nextLeader = int(btlReply.NextLeader)
 				if leaderI == i {
-					master.Printf("replica %d is the new leader", leaderI)
+					m.Printf("replica %d is the new leader", leaderI)
 				} else if leaderI < i {
 					i = leaderI - 1
 				}
@@ -134,29 +134,29 @@ func (master *Master) run() {
 	pingNode := func(i int, node *rpc.Client) {
 		err := node.Call("Replica.Ping", &defs.PingArgs{}, &defs.PingReply{})
 		if err != nil {
-			master.alive[i] = false
-			if master.leader[i] {
+			m.alive[i] = false
+			if m.leader[i] {
 				new_leader = true
-				master.leader[i] = false
+				m.leader[i] = false
 			}
 		} else {
-			master.alive[i] = true
+			m.alive[i] = true
 		}
 	}
-	master.lock.Lock()
-	for i, node := range master.nodes {
+	m.lock.Lock()
+	for i, node := range m.nodes {
 		pingNode(i, node)
 	}
 	// initialization is finished
 	// (i.e., `alive` has been computed)
-	master.finishInit = true
-	master.initCond.Broadcast()
-	master.lock.Unlock()
+	m.finishInit = true
+	m.initCond.Broadcast()
+	m.lock.Unlock()
 
 	beTheLeader := func(i int) error {
-		if master.alive[i] {
+		if m.alive[i] {
 			btlReply := defs.NewBeTheLeaderReply()
-			err := master.nodes[i].Call("Replica.BeTheLeader", &defs.BeTheLeaderArgs{}, btlReply)
+			err := m.nodes[i].Call("Replica.BeTheLeader", &defs.BeTheLeaderArgs{}, btlReply)
 			if err == nil {
 				defs.UpdateBeTheLeaderReply(btlReply)
 				leaderI := i
@@ -164,9 +164,9 @@ func (master *Master) run() {
 					// TODO: need to set leader[old_leader] to false?
 					leaderI = int(btlReply.Leader)
 				}
-				master.leader[leaderI] = true
-				master.nextLeader = int(btlReply.NextLeader)
-				master.Printf("replica %d is the new leader", leaderI)
+				m.leader[leaderI] = true
+				m.nextLeader = int(btlReply.NextLeader)
+				m.Printf("replica %d is the new leader", leaderI)
 				return nil
 			}
 			return err
@@ -177,19 +177,19 @@ func (master *Master) run() {
 	for {
 		time.Sleep(3 * time.Second)
 		new_leader = false
-		for i, node := range master.nodes {
+		for i, node := range m.nodes {
 			pingNode(i, node)
 		}
 
 		if !new_leader {
 			continue
 		}
-		if master.nextLeader != -1 {
-			if beTheLeader(master.nextLeader) == nil {
+		if m.nextLeader != -1 {
+			if beTheLeader(m.nextLeader) == nil {
 				continue
 			}
 		}
-		for i := range master.nodes {
+		for i := range m.nodes {
 			if beTheLeader(i) == nil {
 				break
 			}
@@ -197,23 +197,23 @@ func (master *Master) run() {
 	}
 }
 
-func (master *Master) Register(args *defs.RegisterArgs, reply *defs.RegisterReply) error {
-	master.lock.Lock()
-	defer master.lock.Unlock()
+func (m *Master) Register(args *defs.RegisterArgs, reply *defs.RegisterReply) error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
 
 	addrPort := net.JoinHostPort(args.Addr, strconv.Itoa(args.Port))
-	index, err := master.registrationIndex(args.Alias, addrPort)
+	index, err := m.registrationIndex(args.Alias, addrPort)
 	if err != nil {
 		return err
 	}
 
-	if !master.registered[index] {
-		master.nodeList[index] = addrPort
-		master.addrList[index] = args.Addr
-		master.portList[index] = args.Port
-		master.leader[index] = false
-		master.registered[index] = true
-		master.registeredCount++
+	if !m.registered[index] {
+		m.nodeList[index] = addrPort
+		m.addrList[index] = args.Addr
+		m.portList[index] = args.Port
+		m.leader[index] = false
+		m.registered[index] = true
+		m.registeredCount++
 
 		addr := args.Addr
 		if addr == "" {
@@ -221,39 +221,39 @@ func (master *Master) Register(args *defs.RegisterArgs, reply *defs.RegisterRepl
 		}
 		out, err := exec.Command("ping", addr, "-c 2", "-q").Output()
 		if err == nil {
-			master.latencies[index], _ =
+			m.latencies[index], _ =
 				strconv.ParseFloat(strings.Split(string(out), "/")[4], 64)
-			master.Printf("node %v [%v] -> %v", index,
-				master.nodeList[index], master.latencies[index])
+			m.Printf("node %v [%v] -> %v", index,
+				m.nodeList[index], m.latencies[index])
 		} else {
-			master.Fatal("cannot connect to " + addr)
+			m.Fatal("cannot connect to " + addr)
 		}
 	}
 
-	if master.registeredCount == master.N {
+	if m.registeredCount == m.N {
 		reply.Ready = true
 		reply.ReplicaId = index
-		reply.NodeList = master.nodeList
+		reply.NodeList = m.nodeList
 		reply.IsLeader = false
 
 		minLatency := math.MaxFloat64
 		leader := -1
 
-		if master.config.Leader != nil {
-			if addrPort == *master.config.Leader {
+		if m.config.Leader != nil {
+			if addrPort == *m.config.Leader {
 				leader = index
 			}
 		} else {
-			for i := 0; i < len(master.leader); i++ {
-				if master.latencies[i] < minLatency {
-					minLatency = master.latencies[i]
+			for i := 0; i < len(m.leader); i++ {
+				if m.latencies[i] < minLatency {
+					minLatency = m.latencies[i]
 					leader = i
 				}
 			}
 		}
 
 		if leader == index {
-			master.leader[index] = true
+			m.leader[index] = true
 			reply.IsLeader = true
 		}
 
@@ -264,24 +264,24 @@ func (master *Master) Register(args *defs.RegisterArgs, reply *defs.RegisterRepl
 	return nil
 }
 
-func (master *Master) registrationIndex(alias, addrPort string) (int, error) {
-	index, err := master.membership.RegistrationID(alias, addrPort)
+func (m *Master) registrationIndex(alias, addrPort string) (int, error) {
+	index, err := m.membership.RegistrationID(alias, addrPort)
 	if err != nil {
 		return 0, err
 	}
-	if master.registered[index] && master.nodeList[index] != addrPort {
+	if m.registered[index] && m.nodeList[index] != addrPort {
 		return 0, fmt.Errorf("replica %q changed endpoint from %q to %q",
-			alias, master.nodeList[index], addrPort)
+			alias, m.nodeList[index], addrPort)
 	}
 	return index, nil
 }
 
-func (master *Master) GetLeader(args *defs.GetLeaderArgs, reply *defs.GetLeaderReply) error {
-	master.lock.Lock()
-	defer master.lock.Unlock()
+func (m *Master) GetLeader(args *defs.GetLeaderArgs, reply *defs.GetLeaderReply) error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
 	reply.LeaderId = -1 // gob must transmit an explicit nonzero no-leader sentinel.
 
-	for i, l := range master.leader {
+	for i, l := range m.leader {
 		if l {
 			*reply = defs.GetLeaderReply{
 				LeaderId: i,
@@ -292,14 +292,14 @@ func (master *Master) GetLeader(args *defs.GetLeaderArgs, reply *defs.GetLeaderR
 	return nil
 }
 
-func (master *Master) GetReplicaList(args *defs.GetReplicaListArgs, reply *defs.GetReplicaListReply) error {
-	master.lock.Lock()
+func (m *Master) GetReplicaList(args *defs.GetReplicaListArgs, reply *defs.GetReplicaListReply) error {
+	m.lock.Lock()
 
-	for !master.finishInit {
-		master.initCond.Wait()
+	for !m.finishInit {
+		m.initCond.Wait()
 	}
 
-	if master.registeredCount == master.N {
+	if m.registeredCount == m.N {
 		reply.Ready = true
 	} else {
 		reply.Ready = false
@@ -307,12 +307,12 @@ func (master *Master) GetReplicaList(args *defs.GetReplicaListArgs, reply *defs.
 
 	reply.ReplicaList = make([]string, 0)
 	reply.AliveList = make([]bool, 0)
-	for i, node := range master.nodeList {
+	for i, node := range m.nodeList {
 		reply.ReplicaList = append(reply.ReplicaList, node)
-		reply.AliveList = append(reply.AliveList, master.alive[i])
+		reply.AliveList = append(reply.AliveList, m.alive[i])
 	}
 
-	master.Printf("nodes list %v", reply.ReplicaList)
-	master.lock.Unlock()
+	m.Printf("nodes list %v", reply.ReplicaList)
+	m.lock.Unlock()
 	return nil
 }

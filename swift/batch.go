@@ -6,21 +6,21 @@ import (
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 )
 
-type Batcher struct {
-	fastAcks      chan BatcherOp
-	lightSlowAcks chan BatcherOp
+type messageBatcher struct {
+	fastAcks      chan batchOperation
+	lightSlowAcks chan batchOperation
 }
 
-type BatcherOp struct {
+type batchOperation struct {
 	cid          int32
 	msg          fastrpc.Serializable
 	sendToClient bool
 }
 
-func NewBatcher(r *Replica, size int) *Batcher {
-	b := &Batcher{
-		fastAcks:      make(chan BatcherOp, size),
-		lightSlowAcks: make(chan BatcherOp, size),
+func newMessageBatcher(r *Replica, size int) *messageBatcher {
+	b := &messageBatcher{
+		fastAcks:      make(chan batchOperation, size),
+		lightSlowAcks: make(chan batchOperation, size),
 	}
 
 	go func() {
@@ -39,7 +39,7 @@ func NewBatcher(r *Replica, size int) *Batcher {
 
 				ballot := fastAck.Ballot
 				optAcks := &MOptAcks{
-					Replica: r.Id,
+					Replica: r.ID,
 					Ballot:  fastAck.Ballot,
 					Acks: []Ack{{
 						CmdId:    fastAck.CmdId,
@@ -94,15 +94,15 @@ func NewBatcher(r *Replica, size int) *Batcher {
 					acks.LightSlowAcks[i] = *s
 
 					if ballot == s.Ballot {
-						iCmdId, exists := is[s.CmdId]
+						iCmdID, exists := is[s.CmdId]
 						if exists {
-							optAcks.Acks[iCmdId].Dep = NilDepOfCmdId(s.CmdId)
-							optAcks.Acks[iCmdId].Checksum = []SHash{}
+							optAcks.Acks[iCmdID].Dep = NilDepOfCmdID(s.CmdId)
+							optAcks.Acks[iCmdID].Checksum = []SHash{}
 						} else {
 							is[s.CmdId] = len(optAcks.Acks)
 							optAcks.Acks = append(optAcks.Acks, Ack{
 								CmdId:    s.CmdId,
-								Dep:      NilDepOfCmdId(s.CmdId),
+								Dep:      NilDepOfCmdID(s.CmdId),
 								Checksum: []SHash{},
 							})
 						}
@@ -121,11 +121,11 @@ func NewBatcher(r *Replica, size int) *Batcher {
 
 				for _, f := range fastAckClientMsgs {
 					cf := f
-					r.SendClientMsg(cf.CmdId.Client, r.cs.fastAckClientRPC, &cf)
+					r.SendClientMsg(cf.CmdId.Client, r.channels.fastAckClientRPC, &cf)
 				}
 				for _, s := range slowAckClientMsgs {
-					cs := s
-					r.SendClientMsg(cs.CmdId.Client, r.cs.lightSlowAckRPC, &cs)
+					channels := s
+					r.SendClientMsg(channels.CmdId.Client, r.channels.lightSlowAckRPC, &channels)
 				}
 
 				var (
@@ -134,10 +134,10 @@ func NewBatcher(r *Replica, size int) *Batcher {
 				)
 				if ballot != -1 {
 					m = optAcks
-					rpc = r.cs.optAcksRPC
+					rpc = r.channels.optAcksRPC
 				} else {
 					m = acks
-					rpc = r.cs.acksRPC
+					rpc = r.channels.acksRPC
 				}
 				r.SendToAll(m, rpc)
 
@@ -154,11 +154,11 @@ func NewBatcher(r *Replica, size int) *Batcher {
 
 				ballot := slowAck.Ballot
 				optAcks := &MOptAcks{
-					Replica: r.Id,
+					Replica: r.ID,
 					Ballot:  slowAck.Ballot,
 					Acks: []Ack{{
 						CmdId:    slowAck.CmdId,
-						Dep:      NilDepOfCmdId(slowAck.CmdId),
+						Dep:      NilDepOfCmdID(slowAck.CmdId),
 						Checksum: []SHash{},
 					}},
 				}
@@ -180,7 +180,7 @@ func NewBatcher(r *Replica, size int) *Batcher {
 						is[s.CmdId] = len(optAcks.Acks)
 						optAcks.Acks = append(optAcks.Acks, Ack{
 							CmdId:    s.CmdId,
-							Dep:      NilDepOfCmdId(s.CmdId),
+							Dep:      NilDepOfCmdID(s.CmdId),
 							Checksum: []SHash{},
 						})
 					} else {
@@ -226,11 +226,11 @@ func NewBatcher(r *Replica, size int) *Batcher {
 
 				for _, f := range fastAckClientMsgs {
 					cf := f
-					r.SendClientMsg(cf.CmdId.Client, r.cs.fastAckClientRPC, &cf)
+					r.SendClientMsg(cf.CmdId.Client, r.channels.fastAckClientRPC, &cf)
 				}
 				for _, s := range slowAckClientMsgs {
-					cs := s
-					r.SendClientMsg(cs.CmdId.Client, r.cs.lightSlowAckRPC, &cs)
+					channels := s
+					r.SendClientMsg(channels.CmdId.Client, r.channels.lightSlowAckRPC, &channels)
 				}
 
 				var (
@@ -239,10 +239,10 @@ func NewBatcher(r *Replica, size int) *Batcher {
 				)
 				if ballot != -1 {
 					m = optAcks
-					rpc = r.cs.optAcksRPC
+					rpc = r.channels.optAcksRPC
 				} else {
 					m = acks
-					rpc = r.cs.acksRPC
+					rpc = r.channels.acksRPC
 				}
 				r.SendToAll(m, rpc)
 			}
@@ -252,30 +252,30 @@ func NewBatcher(r *Replica, size int) *Batcher {
 	return b
 }
 
-func (b *Batcher) SendFastAck(f *MFastAck) {
-	b.fastAcks <- BatcherOp{
+func (b *messageBatcher) SendFastAck(f *MFastAck) {
+	b.fastAcks <- batchOperation{
 		msg:          f,
 		sendToClient: false,
 	}
 }
 
-func (b *Batcher) SendLightSlowAck(s *MLightSlowAck) {
-	b.lightSlowAcks <- BatcherOp{
+func (b *messageBatcher) SendLightSlowAck(s *MLightSlowAck) {
+	b.lightSlowAcks <- batchOperation{
 		msg:          s,
 		sendToClient: false,
 	}
 }
 
-func (b *Batcher) SendFastAckClient(f *MFastAck, cid int32) {
-	b.fastAcks <- BatcherOp{
+func (b *messageBatcher) SendFastAckClient(f *MFastAck, cid int32) {
+	b.fastAcks <- batchOperation{
 		msg:          f,
 		cid:          cid,
 		sendToClient: true,
 	}
 }
 
-func (b *Batcher) SendLightSlowAckClient(s *MLightSlowAck, cid int32) {
-	b.lightSlowAcks <- BatcherOp{
+func (b *messageBatcher) SendLightSlowAckClient(s *MLightSlowAck, cid int32) {
+	b.lightSlowAcks <- batchOperation{
 		msg:          s,
 		cid:          cid,
 		sendToClient: true,

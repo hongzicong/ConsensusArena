@@ -17,10 +17,10 @@ type completion struct {
 
 type Client struct {
 	client.StandardClient
-	N       int
-	cs      CommunicationSupply
-	ballot  int32
-	pending map[defs.RequestID]*completion
+	N        int
+	channels transportChannels
+	ballot   int32
+	pending  map[defs.RequestID]*completion
 }
 
 func NewClient(b *client.BufferClient, n int) *Client {
@@ -31,7 +31,7 @@ func NewClient(b *client.BufferClient, n int) *Client {
 }
 
 func (c *Client) evidence(id defs.RequestID, ballot, replica int32) *completion {
-	if id.Client != c.ClientId || replica < 0 || int(replica) >= c.N || ballot < c.ballot {
+	if id.Client != c.ClientID || replica < 0 || int(replica) >= c.N || ballot < c.ballot {
 		return nil
 	}
 	if c.ReplyCompleted(id) {
@@ -92,11 +92,11 @@ func (c *Client) handleSyncReply(r *MSyncReply) {
 func (c *Client) handleMsgs() {
 	for {
 		select {
-		case m := <-c.cs.replyChan:
+		case m := <-c.channels.replyChan:
 			c.handleReply(m.(*MReply))
-		case m := <-c.cs.recordAckChan:
+		case m := <-c.channels.recordAckChan:
 			c.handleRecordAck(m.(*MRecordAck))
-		case m := <-c.cs.syncReplyChan:
+		case m := <-c.channels.syncReplyChan:
 			c.handleSyncReply(m.(*MSyncReply))
 		}
 	}
@@ -105,8 +105,8 @@ func (c *Client) handleMsgs() {
 var _ client.Adapter = (*Client)(nil)
 
 func (c *Client) WaitReplies(_ int) {
-	table := fastrpc.NewTableId(defs.RPC_TABLE)
-	initCs(&c.cs, table)
+	table := fastrpc.NewTableID(defs.RPC_TABLE)
+	registerRPCs(&c.channels, table)
 	c.RegisterRPCTable(table)
 	go c.handleMsgs()
 }

@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -32,7 +31,7 @@ type Replica struct {
 	M     sync.Mutex
 	N     int
 	F     int
-	Id    int32
+	ID    int32
 	Alias string
 
 	PeerAddrList        []string
@@ -52,52 +51,47 @@ type Replica struct {
 
 	State       *state.State
 	RPC         *fastrpc.Table
-	StableStore *os.File
 	Stats       *defs.Stats
 	Shutdown    bool
 	Listener    net.Listener
 	ProposeChan chan *defs.GPropose
-	BeaconChan  chan *defs.GBeacon
 
-	Thrifty bool
-	Exec    bool
-	LRead   bool
-	Dreply  bool
-	Beacon  bool
-	Durable bool
+	ExecuteEnabled      bool
+	ReplyAfterExecution bool
 
-	Ewma      []float64
 	Latencies []int64
+	// ObserveRTT optionally observes probe replies. Set before connecting to peers.
+	ObserveRTT func(int, time.Duration)
 }
 
-func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, config *config.Config, l *dlog.Logger) *Replica {
+func New(alias string, replicaID, f int, addrs []string, executeEnabled bool, conf *config.Config, logger *dlog.Logger) *Replica {
 	n := len(addrs)
 	if n > replicaset.MaxSize {
 		panic("replica membership exceeds Set capacity of 64")
 	}
-	membership, err := config.Membership()
+	membership, err := conf.Membership()
 	if err != nil {
 		panic(err)
 	}
-	if err := membership.CheckReplica(alias, id, n); err != nil {
+	if err := membership.CheckReplica(alias, replicaID, n); err != nil {
 		panic(err)
 	}
 	stateMachine := state.InitState()
-	if config.Preload {
+	if conf.Preload {
 		started := time.Now()
-		digest, err := stateMachine.Preload(config.KeyCount, config.CommandSize, uint64(config.PreloadSeed))
+		digest, err := stateMachine.Preload(conf.KeyCount, conf.CommandSize, uint64(conf.PreloadSeed))
 		if err != nil {
 			panic(fmt.Sprintf("preload state: %v", err))
 		}
-		l.Printf("PRELOAD_COMPLETE records=%d value_size=%d seed=%d digest=%s duration=%s",
-			config.KeyCount, config.CommandSize, config.PreloadSeed, digest, time.Since(started))
+		logger.Printf("PRELOAD_COMPLETE records=%d value_size=%d seed=%d digest=%s duration=%s",
+			conf.KeyCount, conf.CommandSize, conf.PreloadSeed, digest, time.Since(started))
 	}
 	r := &Replica{
-		Logger: l,
+		Logger: logger,
 
 		N:     n,
 		F:     f,
-		Id:    int32(id),
+		ID:    int32(replicaID),
 		Alias: alias,
 
 		PeerAddrList:        addrs,
@@ -106,34 +100,26 @@ func New(alias string, id, f int, addrs []string, thrifty, exec, lread bool, con
 		PeerWriters:         make([]*bufio.Writer, n),
 		ClientWriters:       make(map[int32]*bufio.Writer),
 		ClientReplyCapacity: -1,
-		Config:              config,
+		Config:              conf,
 		membership:          membership,
 		Alive:               make([]bool, n),
 		PreferredPeerOrder:  make([]int32, n),
 
 		State:       stateMachine,
-		RPC:         fastrpc.NewTableId(defs.RPC_TABLE),
-		StableStore: nil,
+		RPC:         fastrpc.NewTableID(defs.RPC_TABLE),
 		Stats:       &defs.Stats{M: make(map[string]int)},
 		Shutdown:    false,
 		Listener:    nil,
 		ProposeChan: make(chan *defs.GPropose, defs.CHAN_BUFFER_SIZE),
-		BeaconChan:  make(chan *defs.GBeacon, defs.CHAN_BUFFER_SIZE),
 
-		Thrifty: thrifty,
-		Exec:    exec,
-		LRead:   lread,
-		Dreply:  true,
-		Beacon:  false,
-		Durable: false,
+		ExecuteEnabled:      executeEnabled,
+		ReplyAfterExecution: true,
 
-		Ewma:      make([]float64, n),
 		Latencies: make([]int64, n),
 	}
 
 	for i := 0; i < r.N; i++ {
-		r.PreferredPeerOrder[i] = int32((int(r.Id) + 1 + i) % r.N)
-		r.Ewma[i] = 0.0
+		r.PreferredPeerOrder[i] = int32((int(r.ID) + 1 + i) % r.N)
 		r.Latencies[i] = 0
 	}
 
@@ -146,22 +132,6 @@ func (r *Replica) Ping(args *defs.PingArgs, reply *defs.PingReply) error {
 
 func (r *Replica) BeTheLeader(args *defs.BeTheLeaderArgs, reply *defs.BeTheLeaderReply) error {
 	return nil
-}
-
-func (r *Replica) FastQuorumSize() int {
-	return r.F + (r.F+1)/2
-}
-
-func (r *Replica) SlowQuorumSize() int {
-	return (r.N + 1) / 2
-}
-
-func (r *Replica) WriteQuorumSize() int {
-	return r.F + 1
-}
-
-func (r *Replica) ReadQuorumSize() int {
-	return r.N - r.F
 }
 
 func (r *Replica) ConnectToPeers() {
@@ -188,7 +158,7 @@ func (r *Replica) connectToPeers(concurrent bool) {
 		r.Printf("OUT Connected to %d", i)
 	}
 	var connecting sync.WaitGroup
-	for i := 0; i < int(r.Id); i++ {
+	for i := 0; i < int(r.ID); i++ {
 		if concurrent {
 			connecting.Add(1)
 			go func(peer int) { defer connecting.Done(); connect(peer) }(i)
@@ -198,12 +168,12 @@ func (r *Replica) connectToPeers(concurrent bool) {
 	}
 	connecting.Wait()
 	<-done
-	r.Printf("Replica %d: done connecting to peers", r.Id)
+	r.Printf("Replica %d: done connecting to peers", r.ID)
 	r.Printf("Node list %v", r.PeerAddrList)
 
 	r.initPeerSenders()
 	for rid, reader := range r.PeerReaders {
-		if int32(rid) == r.Id {
+		if int32(rid) == r.ID {
 			continue
 		}
 		go r.replicaListener(rid, reader)
@@ -215,14 +185,14 @@ func (r *Replica) ConnectToPeersNoListeners() {
 
 	go r.waitForPeerConnections(done)
 
-	for i := 0; i < int(r.Id); i++ {
+	for i := 0; i < int(r.ID); i++ {
 		r.Peers[i] = r.connectToPeer(i)
 		r.Alive[i] = true
 		r.PeerReaders[i] = bufio.NewReader(r.Peers[i])
 		r.PeerWriters[i] = bufio.NewWriter(r.Peers[i])
 	}
 	<-done
-	r.Printf("Replica id: %d. Done connecting to peers\n", r.Id)
+	r.Printf("Replica id: %d. Done connecting to peers\n", r.ID)
 	r.initPeerSenders()
 }
 
@@ -230,7 +200,7 @@ const peerHandshakeAck = byte(0xca)
 
 func (r *Replica) connectToPeer(peerID int) net.Conn {
 	var identity [4]byte
-	binary.LittleEndian.PutUint32(identity[:], uint32(r.Id))
+	binary.LittleEndian.PutUint32(identity[:], uint32(r.ID))
 	dialAddress := defs.DialAddress(r.PeerAddrList[peerID])
 
 	for {
@@ -274,8 +244,8 @@ func (r *Replica) SendClientMsg(id int32, code uint8, msg fastrpc.Serializable) 
 func (r *Replica) ReplyProposeTS(reply *defs.ProposeReplyTS, w *bufio.Writer, lock *sync.Mutex) {
 	_ = r.ReplySender(w, lock, -1).Enqueue(Encode(0, reply, false))
 }
-func (r *Replica) SendBeacon(peerId int32) {
-	_ = r.Messages().Send(int(peerId), defs.GENERIC_SMR_BEACON, &defs.Beacon{Timestamp: time.Now().UnixNano()})
+func (r *Replica) SendBeacon(peerID int32) {
+	_ = r.Messages().Send(int(peerID), defs.GENERIC_SMR_BEACON, &defs.Beacon{Timestamp: time.Now().UnixNano()})
 }
 func (r *Replica) ReplyBeacon(beacon *defs.GBeacon) {
 	_ = r.Messages().Send(int(beacon.Rid), defs.GENERIC_SMR_BEACON_REPLY, &defs.BeaconReply{Timestamp: beacon.Timestamp})
@@ -285,7 +255,7 @@ func (r *Replica) UpdatePreferredPeerOrder(quorum []int32) {
 	aux := make([]int32, r.N)
 	i := 0
 	for _, p := range quorum {
-		if p == r.Id {
+		if p == r.ID {
 			continue
 		}
 		aux[i] = p
@@ -316,7 +286,7 @@ func (r *Replica) ComputeClosestPeers() []float64 {
 
 	for j := 0; j < npings; j++ {
 		for i := int32(0); i < int32(r.N); i++ {
-			if i == r.Id {
+			if i == r.ID {
 				continue
 			}
 			r.M.Lock()
@@ -364,13 +334,13 @@ func (r *Replica) waitForPeerConnections(done chan bool) {
 	var b [4]byte
 	bs := b[:4]
 
-	port := strings.Split(r.PeerAddrList[r.Id], ":")[1]
+	port := strings.Split(r.PeerAddrList[r.ID], ":")[1]
 	l, err := net.Listen("tcp", "0.0.0.0:"+port)
 	if err != nil {
-		r.Fatal(r.PeerAddrList[r.Id], err)
+		r.Fatal(r.PeerAddrList[r.ID], err)
 	}
 	r.Listener = l
-	expected := int32(r.N) - r.Id - 1
+	expected := int32(r.N) - r.ID - 1
 	for accepted := int32(0); accepted < expected; {
 		conn, err := r.Listener.Accept()
 		if err != nil {
@@ -383,7 +353,7 @@ func (r *Replica) waitForPeerConnections(done chan bool) {
 			continue
 		}
 		id := int32(binary.LittleEndian.Uint32(bs))
-		if id <= r.Id || id >= int32(r.N) || r.Peers[id] != nil {
+		if id <= r.ID || id >= int32(r.N) || r.Peers[id] != nil {
 			r.Printf("Invalid or duplicate peer identity %d", id)
 			_ = conn.Close()
 			continue

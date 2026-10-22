@@ -35,7 +35,7 @@ func (c *BufferClient) CompletedReplies() int {
 // callback or channel send runs under the completion lock. stop may be nil.
 // False means a foreign/duplicate result or cancellation of notification.
 func (c *BufferClient) CompleteReply(id defs.RequestID, value state.Value, beforeNotify func(), stop <-chan struct{}) bool {
-	if id.Client != c.ClientId {
+	if id.Client != c.ClientID {
 		return false
 	}
 	observed := time.Now()
@@ -56,5 +56,5 @@ func (c *BufferClient) CompleteReply(id defs.RequestID, value state.Value, befor
 }
 
 func (c *BufferClient) RegisterReply(val state.Value, seqnum int32) {
-	c.CompleteReply(defs.RequestID{Client: c.ClientId, Sequence: seqnum}, val, nil, nil)
+	c.CompleteReply(defs.RequestID{Client: c.ClientID, Sequence: seqnum}, val, nil, nil)
 }

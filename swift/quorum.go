@@ -132,12 +132,12 @@ func subsets(ids []int32, repNum, quorumSize, i int, q Quorum,
 	qs QuorumSet, treat func(int32, int32, Quorum)) {
 
 	if quorumSize == 0 {
-		for repId := int32(0); repId < int32(repNum); repId++ {
-			length := int32(len(qs[repId]))
-			exists := q.Contains(int(repId))
+		for repID := int32(0); repID < int32(repNum); repID++ {
+			length := int32(len(qs[repID]))
+			exists := q.Contains(int(repID))
 			if exists {
-				qs[repId][length] = q
-				treat(repId, length, q)
+				qs[repID][length] = q
+				treat(repID, length, q)
 			}
 		}
 	}

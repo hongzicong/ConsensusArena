@@ -19,11 +19,11 @@ import (
 
 // PlanDeployment prepares ingress and the input to the native per-process
 // delegate/budget synthesis below. There is no global leader or fixed C2 set.
-func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
-	if c.KCensusTopology == "" {
-		c.KCensusTopology = c.Topology
-	} else if !filepath.IsAbs(c.KCensusTopology) {
-		c.KCensusTopology = filepath.Join(t.ConfigDir, c.KCensusTopology)
+func PlanDeployment(conf *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
+	if conf.KCensusTopology == "" {
+		conf.KCensusTopology = conf.Topology
+	} else if !filepath.IsAbs(conf.KCensusTopology) {
+		conf.KCensusTopology = filepath.Join(t.ConfigDir, conf.KCensusTopology)
 	}
 	return config.DeploymentPlan{Model: "native-process-synthesis", ClientRoutes: t.NearestRoutes()}, nil
 }

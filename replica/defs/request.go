@@ -14,8 +14,8 @@ type RequestID struct {
 	Sequence int32
 }
 
-func (p Propose) RequestID() RequestID {
-	return RequestID{Client: p.ClientId, Sequence: p.CommandId}
+func (m Propose) RequestID() RequestID {
+	return RequestID{Client: m.ClientId, Sequence: m.CommandId}
 }
 
 func (id RequestID) String() string {

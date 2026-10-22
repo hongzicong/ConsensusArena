@@ -14,16 +14,16 @@ import (
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 )
 
-func runReplica(c *config.Config, logger *dlog.Logger) {
-	maddr := fmt.Sprintf("%s:%d", c.MasterAddr, c.MasterPort)
-	addr, port := replicaEndpoint(c.ReplicaAddrs[c.Alias], c.Port)
+func runReplica(conf *config.Config, logger *dlog.Logger) {
+	maddr := fmt.Sprintf("%s:%d", conf.MasterAddr, conf.MasterPort)
+	addr, port := replicaEndpoint(conf.ReplicaAddrs[conf.Alias], conf.Port)
 	log.Printf("Server starting on %s:%d", addr, port)
-	replicaId, nodeList, isLeader := registerWithMaster(c.Alias, addr, maddr, port)
-	f := (len(c.ReplicaAddrs) - 1) / 2
+	replicaID, nodeList, isLeader := registerWithMaster(conf.Alias, addr, maddr, port)
+	f := (len(conf.ReplicaAddrs) - 1) / 2
 	log.Printf("Tolerating %d max. failures", f)
 
-	if p, ok := lookupProtocol(c.Protocol); ok {
-		rep := p.newReplica(replicaStart{config: c, logger: logger, id: replicaId, addrs: nodeList, leader: isLeader, failures: f})
+	if p, ok := lookupProtocol(conf.Protocol); ok {
+		rep := p.newReplica(replicaStart{config: conf, logger: logger, id: replicaID, addrs: nodeList, leader: isLeader, failures: f})
 		rpc.Register(rep)
 	}
 

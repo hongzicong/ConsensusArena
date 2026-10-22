@@ -2,9 +2,12 @@ package replica
 
 import (
 	"bufio"
+	"fmt"
+	"github.com/hongzicong/ConsensusArena/protocol"
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
@@ -183,7 +186,7 @@ func (r *Replica) ReplySender(w *bufio.Writer, lock *sync.Mutex, capacity int) *
 func (r *Replica) initPeerSenders() {
 	r.PeerSenders = make([]*Sender, r.N)
 	for id := range r.PeerSenders {
-		if int32(id) != r.Id {
+		if int32(id) != r.ID {
 			o := r.PeerSendOptions
 			if r.PeerSendOptionsFor != nil {
 				o = r.PeerSendOptionsFor(id)
@@ -226,7 +229,7 @@ type Transport struct {
 }
 
 func (t *Transport) Send(id int32, code uint8, msg fastrpc.Serializable) {
-	if id == t.Base.Id {
+	if id == t.Base.ID {
 		t.Local(msg)
 		return
 	}
@@ -278,7 +281,7 @@ func (r *Replica) peerAlive(id int32) bool {
 // Messages provides the common sender with no protocol failure filtering.
 // Callers may supply their own eligibility and local-delivery policies.
 func (r *Replica) Messages() MessageSender {
-	return MessageSender{ID: int(r.Id), N: r.N, Enqueue: func(id int, f Frame) error {
+	return MessageSender{ID: int(r.ID), N: r.N, Enqueue: func(id int, f Frame) error {
 		return r.PeerSender(id).Enqueue(f)
 	}}
 }
@@ -291,4 +294,77 @@ func (r *Replica) SendToAll(msg fastrpc.Serializable, code uint8, plan ...SendPl
 	s := r.Messages()
 	s.Eligible = func(id int) bool { return r.peerAlive(int32(id)) }
 	return s.SendToAll(msg, code, plan...)
+}
+
+// Protocol callbacks are serialized by Run. Sending to self invokes Handle
+// synchronously on the same goroutine, preserving reentrant local transitions.
+// Tick supplies connectivity observations; the protocol decides how to recover.
+type EventLoopMachine interface {
+	protocol.Machine
+	Leader() int32
+	Status() string
+}
+
+type EventLoop struct {
+	Transport
+	Machine EventLoopMachine
+	Inbox   chan fastrpc.Serializable
+	Control chan chan int32
+}
+
+func (r *EventLoop) Run() {
+	r.Base.PeerSendOptions = SenderOptions{Capacity: 4096}
+	r.Base.ConnectToPeers()
+	defer r.Base.CloseSenders()
+	r.Base.ComputeClosestPeers()
+	go r.Base.WaitForClientConnections()
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+	progress := time.NewTicker(5 * time.Second)
+	defer progress.Stop()
+	for {
+		select {
+		case reply := <-r.Control:
+			reply <- r.Machine.Leader()
+		case g := <-r.Base.ProposeChan:
+			protocol.Must(r.Machine.Propose(g, time.Time{}))
+		case msg := <-r.Inbox:
+			protocol.Must(r.Machine.Handle(msg, time.Time{}))
+		case now := <-ticker.C:
+			r.Base.M.Lock()
+			alive := append([]bool(nil), r.Base.Alive...)
+			r.Base.M.Unlock()
+			alive[r.Base.ID] = true
+			protocol.Must(r.Machine.Tick(protocol.Tick{Now: now, Alive: alive}))
+		case <-progress.C:
+			r.Base.Printf("%s replies=%d send_drops=%d", r.Machine.Status(), r.Replies, r.SendDrops)
+		}
+	}
+}
+
+// LeaderHint observes the protocol leader; it never installs one.
+func (r *EventLoop) LeaderHint(reply *defs.BeTheLeaderReply) error {
+	ch := make(chan int32, 1)
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case r.Control <- ch:
+	case <-timer.C:
+		return fmt.Errorf("replica initializing")
+	}
+	select {
+	case id := <-ch:
+		reply.Leader = id
+		if id == 0 {
+			reply.Leader = -2
+		}
+		reply.NextLeader = -1
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("replica event loop unavailable")
+	}
+}
+
+func (r *EventLoop) Register(message fastrpc.Serializable) uint8 {
+	return r.Base.RPC.Register(message, r.Inbox)
 }

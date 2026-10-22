@@ -75,25 +75,25 @@ func (l *HashLog) BeginBallot(ballot int32) int {
 	return count
 }
 
-func (l *HashLog) Append(_ state.Command, cmdId defs.RequestID) SHash {
-	if upd, exists := l.pendingUpd[cmdId]; exists {
-		delete(l.pendingUpd, cmdId)
-		l.update(cmdId, upd.seqnum, upd.hash[0], false)
+func (l *HashLog) Append(_ state.Command, cmdID defs.RequestID) SHash {
+	if upd, exists := l.pendingUpd[cmdID]; exists {
+		delete(l.pendingUpd, cmdID)
+		l.update(cmdID, upd.seqnum, upd.hash[0], false)
 		return upd.hash[0]
 	}
-	if node, exists := l.nodes[cmdId]; exists {
+	if node, exists := l.nodes[cmdID]; exists {
 		return node.proposalHash
 	}
 	l.pathHash()
 
 	node := &HashNode{
-		id: cmdId,
+		id: cmdID,
 	}
-	l.nodes[cmdId] = node
+	l.nodes[cmdID] = node
 
 	if l.pendingHead == nil {
 		l.pendingHead = node
-		l.hash = SHash{hash(l.syncedHash.H, cmdId)}
+		l.hash = SHash{hash(l.syncedHash.H, cmdID)}
 		node.proposalHash = l.hash
 		return l.hash
 	}
@@ -106,28 +106,28 @@ func (l *HashLog) Append(_ state.Command, cmdId defs.RequestID) SHash {
 		node.previous = l.pendingTail
 		l.pendingTail = node
 	}
-	l.hash = SHash{hash(l.hash.H, cmdId)}
+	l.hash = SHash{hash(l.hash.H, cmdID)}
 	node.proposalHash = l.hash
 	return l.hash
 }
 
-func (l *HashLog) Update(cmdId defs.RequestID, s int, h SHash) {
-	l.update(cmdId, s, h, true)
+func (l *HashLog) Update(cmdID defs.RequestID, s int, h SHash) {
+	l.update(cmdID, s, h, true)
 }
 
 // AppendDeferred retains the exact local order without making a fast proposal.
 // Replica ballot deduplication prevents later ordinary reinitialization of id.
-func (l *HashLog) AppendDeferred(cmdId defs.RequestID) {
-	if upd, exists := l.pendingUpd[cmdId]; exists {
-		delete(l.pendingUpd, cmdId)
-		l.update(cmdId, upd.seqnum, upd.hash[0], false)
+func (l *HashLog) AppendDeferred(cmdID defs.RequestID) {
+	if upd, exists := l.pendingUpd[cmdID]; exists {
+		delete(l.pendingUpd, cmdID)
+		l.update(cmdID, upd.seqnum, upd.hash[0], false)
 		return
 	}
-	if _, exists := l.nodes[cmdId]; exists {
+	if _, exists := l.nodes[cmdID]; exists {
 		return
 	}
-	node := &HashNode{id: cmdId}
-	l.nodes[cmdId] = node
+	node := &HashNode{id: cmdID}
+	l.nodes[cmdID] = node
 	if l.pendingHead == nil {
 		l.pendingHead = node
 	} else if l.pendingTail == nil {
@@ -145,16 +145,16 @@ func (l *HashLog) AppendDeferred(cmdId defs.RequestID) {
 // AppendAndUpdate has the same future path as Append followed immediately by
 // Update, without computing the unused proposal digest. Callers must already
 // have genuine leader evidence and must not emit a local fast vote for this id.
-func (l *HashLog) AppendAndUpdate(cmdId defs.RequestID, s int, h SHash) {
-	if upd, exists := l.pendingUpd[cmdId]; exists {
-		delete(l.pendingUpd, cmdId)
-		l.update(cmdId, upd.seqnum, upd.hash[0], false)
+func (l *HashLog) AppendAndUpdate(cmdID defs.RequestID, s int, h SHash) {
+	if upd, exists := l.pendingUpd[cmdID]; exists {
+		delete(l.pendingUpd, cmdID)
+		l.update(cmdID, upd.seqnum, upd.hash[0], false)
 		// Append consumed its earlier update without adding a node; the
 		// subsequent Update therefore retains the new deferred entry.
-		l.update(cmdId, s, h, true)
+		l.update(cmdID, s, h, true)
 		return
 	}
-	l.update(cmdId, s, h, false)
+	l.update(cmdID, s, h, false)
 }
 
 func (l *HashLog) String() string {
@@ -163,10 +163,10 @@ func (l *HashLog) String() string {
 	return s + fmt.Sprintf("hash: %v", l.hash)
 }
 
-func (l *HashLog) update(cmdId defs.RequestID, s int, h SHash, save bool) {
-	n, exists := l.nodes[cmdId]
+func (l *HashLog) update(cmdID defs.RequestID, s int, h SHash, save bool) {
+	n, exists := l.nodes[cmdID]
 	if !exists && save {
-		l.pendingUpd[cmdId] = &UpdateEntry{
+		l.pendingUpd[cmdID] = &UpdateEntry{
 			hash:   []SHash{h},
 			seqnum: s,
 		}
@@ -189,7 +189,7 @@ func (l *HashLog) update(cmdId defs.RequestID, s int, h SHash, save bool) {
 		}
 		n.previous = nil
 		n.next = nil
-		delete(l.nodes, cmdId)
+		delete(l.nodes, cmdID)
 	}
 	// TODO: do not update if !exist and s > l.synced but l.syncedHash == h
 	if s <= l.synced && !exists {
@@ -216,18 +216,18 @@ func (l *HashLog) pathHash() SHash {
 	return l.hash
 }
 
-func hash(initial [32]byte, cmdId defs.RequestID) [32]byte {
+func hash(initial [32]byte, cmdID defs.RequestID) [32]byte {
 	bs := make([]byte, 40)
 	for i, b := range initial {
 		bs[i] = b
 	}
 
-	tmp32 := cmdId.Client
+	tmp32 := cmdID.Client
 	bs[32] = byte(tmp32)
 	bs[33] = byte(tmp32 >> 8)
 	bs[34] = byte(tmp32 >> 16)
 	bs[35] = byte(tmp32 >> 24)
-	tmp32 = cmdId.Sequence
+	tmp32 = cmdID.Sequence
 	bs[36] = byte(tmp32)
 	bs[37] = byte(tmp32 >> 8)
 	bs[38] = byte(tmp32 >> 16)

@@ -3,6 +3,7 @@ package epaxos
 // Protocol messages, identifiers, constants, and value helpers.
 import (
 	"bytes"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/state"
@@ -159,4 +160,10 @@ func sameCommands(a, b []state.Command) bool {
 		}
 	}
 	return true
+}
+
+// proposal carries protocol input. context is an opaque runtime token.
+type proposal struct {
+	*defs.Propose
+	context any
 }

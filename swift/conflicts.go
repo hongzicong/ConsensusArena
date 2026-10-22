@@ -39,20 +39,20 @@ func newLightKeyInfo() *lightKeyInfo {
 	}
 }
 
-func (ki *lightKeyInfo) add(cmd state.Command, cmdId defs.RequestID) {
-	ki.lastCmd = []defs.RequestID{cmdId}
+func (ki *lightKeyInfo) add(cmd state.Command, cmdID defs.RequestID) {
+	ki.lastCmd = []defs.RequestID{cmdID}
 
 	if cmd.Op == state.PUT {
-		ki.lastWrite = []defs.RequestID{cmdId}
+		ki.lastWrite = []defs.RequestID{cmdID}
 	}
 }
 
-func (ki *lightKeyInfo) remove(_ state.Command, cmdId defs.RequestID) {
-	if len(ki.lastCmd) > 0 && ki.lastCmd[0] == cmdId {
+func (ki *lightKeyInfo) remove(_ state.Command, cmdID defs.RequestID) {
+	if len(ki.lastCmd) > 0 && ki.lastCmd[0] == cmdID {
 		ki.lastCmd = []defs.RequestID{}
 	}
 
-	if len(ki.lastWrite) > 0 && ki.lastWrite[0] == cmdId {
+	if len(ki.lastWrite) > 0 && ki.lastWrite[0] == cmdID {
 		ki.lastWrite = []defs.RequestID{}
 	}
 }

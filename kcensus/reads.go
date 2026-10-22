@@ -83,7 +83,7 @@ func (c *core) releaseFuture(k state.Key) {
 		}
 	}
 	for _, m := range ready {
-		c.stepMessage(m, true)
+		c.receiveMessage(m, true)
 	}
 }
 

@@ -10,82 +10,82 @@ import (
 // explicit across both MAcks and MOptAcks without changing the wire layout.
 const recoveryAckSeqnum = -1
 
-func newRecoveryFastAck(replica, ballot int32, cmdId defs.RequestID, dep Dep) *MFastAck {
+func newRecoveryFastAck(replica, ballot int32, cmdID defs.RequestID, dep Dep) *MFastAck {
 	msg := newFastAck()
-	msg.Replica, msg.Ballot, msg.CmdId = replica, ballot, cmdId
+	msg.Replica, msg.Ballot, msg.CmdId = replica, ballot, cmdID
 	msg.Dep = dep
 	if msg.Dep == nil {
-		msg.Dep = NilDepOfCmdId(cmdId)
+		msg.Dep = NilDepOfCmdID(cmdID)
 	}
 	msg.Checksum = nil
 	msg.Seqnum = recoveryAckSeqnum
 	return msg
 }
 
-func (r *Replica) installRecoveryHashBoundary(phases map[defs.RequestID]int) {
-	log.Printf("swift_recovery_hash_boundary ballot=%d installed_commands=%d discarded_pending_updates=%d", r.ballot, len(phases), len(r.pendingHashUpds))
-	log.Printf("swift_proposal_batches batches=%d commands=%d max=%d", r.proposalBatches, r.proposalBatchCommands, r.proposalBatchMax)
-	log.Printf("swift_deferred_hash_elisions commands=%d", r.deferredHashElisions)
-	log.Printf("swift_hash_backlog_deferrals commands=%d", r.hashBacklogDeferrals)
-	r.recoveryCmds = phases
-	r.proposedInBallot = make(map[defs.RequestID]struct{})
+func (c *core) installRecoveryHashBoundary(phases map[defs.RequestID]int) {
+	log.Printf("swift_recovery_hash_boundary ballot=%d installed_commands=%d discarded_pending_updates=%d", c.ballot, len(phases), len(c.pendingHashUpds))
+	log.Printf("swift_proposal_batches batches=%d commands=%d max=%d", c.proposalBatches, c.proposalBatchCommands, c.proposalBatchMax)
+	log.Printf("swift_deferred_hash_elisions commands=%d", c.deferredHashElisions)
+	log.Printf("swift_hash_backlog_deferrals commands=%d", c.hashBacklogDeferrals)
+	c.recoveryCmds = phases
+	c.proposedInBallot = make(map[defs.RequestID]struct{})
 	// These entries were received in the previous ballot. Their leader/sequence
 	// context must not be applied when a delayed proposal arrives after Sync.
-	r.pendingHashUpds = make(map[defs.RequestID]*UpdateEntry)
+	c.pendingHashUpds = make(map[defs.RequestID]*UpdateEntry)
 	removed := 0
-	for _, log := range r.hlog {
-		removed += log.BeginBallot(r.ballot)
+	for _, log := range c.hlog {
+		removed += log.BeginBallot(c.ballot)
 	}
-	log.Printf("swift_hash_epoch ballot=%d keys=%d sealed_pending_nodes=%d", r.ballot, len(r.hlog), removed)
+	log.Printf("swift_hash_epoch ballot=%d keys=%d sealed_pending_nodes=%d", c.ballot, len(c.hlog), removed)
 }
 
-func (r *Replica) recordLeaderAck(msg *MFastAck) {
-	if msg.Ballot != r.ballot || msg.Replica != r.leader() || r.Id == r.leader() {
+func (c *core) recordLeaderAck(msg *MFastAck) {
+	if msg.Ballot != c.ballot || msg.Replica != c.leader() || c.ID == c.leader() {
 		return
 	}
 	if msg.Seqnum == recoveryAckSeqnum {
-		_, installed := r.recoveryCmds[msg.CmdId]
+		_, installed := c.recoveryCmds[msg.CmdId]
 		if !installed || len(msg.Checksum) != 0 {
-			r.Fatal("invalid recovery hash acknowledgement", msg.CmdId, msg.Ballot)
+			c.Fatal("invalid recovery hash acknowledgement", msg.CmdId, msg.Ballot)
 			return
 		}
 		// Keep dependency/quorum processing, but do not manufacture hash evidence.
 		return
 	}
 	if msg.Seqnum < 0 {
-		r.Fatal("invalid leader hash sequence", msg.CmdId, msg.Seqnum)
+		c.Fatal("invalid leader hash sequence", msg.CmdId, msg.Seqnum)
 		return
 	}
-	r.recordLeaderHash(msg.CmdId, msg.Seqnum, msg.Checksum)
+	c.recordLeaderHash(msg.CmdId, msg.Seqnum, msg.Checksum)
 }
 
-func (r *Replica) receiveFastAck(msg *MFastAck) {
-	if r.status != NORMAL || msg.Ballot != r.ballot {
+func (c *core) receiveFastAck(msg *MFastAck) {
+	if c.status != NORMAL || msg.Ballot != c.ballot {
 		return
 	}
-	r.recordLeaderAck(msg)
-	r.getCmdDescSeq(msg.CmdId, msg, nil, nil, r.leader() == r.Id)
+	c.recordLeaderAck(msg)
+	c.getCmdDescSeq(msg.CmdId, msg, nil, nil, c.leader() == c.ID)
 }
 
 // Send the same recovery acknowledgements whether the proposal was present at
 // Sync or arrives later. Return local processing so Sync can defer it until all
 // recovered descriptors have been installed, as in the original recovery path.
-func (r *Replica) sendRecoveryAck(cmdId defs.RequestID, dep Dep, propose *defs.GPropose, desc *commandDesc) func() {
-	if !r.SQ.Contains(int(r.Id)) {
+func (c *core) sendRecoveryAck(cmdID defs.RequestID, dep Dep, propose *proposal, desc *commandDesc) func() {
+	if !c.SQ.Contains(int(c.ID)) {
 		return func() {}
 	}
-	if r.Id == r.leader() {
-		ack := newRecoveryFastAck(r.Id, r.ballot, cmdId, dep)
-		r.batcher.SendFastAck(copyFastAck(ack))
-		r.SendClientMsg(propose.ClientId, r.cs.replyRPC, &MReply{Replica: r.Id, Ballot: r.ballot, CmdId: cmdId})
+	if c.ID == c.leader() {
+		ack := newRecoveryFastAck(c.ID, c.ballot, cmdID, dep)
+		c.batcher.SendFastAck(copyFastAck(ack))
+		c.sendClient(propose.ClientId, c.codes.replyRPC, &MReply{Replica: c.ID, Ballot: c.ballot, CmdId: cmdID})
 		if desc != nil {
-			return func() { r.handleFastAck(ack, desc) }
+			return func() { c.handleFastAck(ack, desc) }
 		}
 	} else {
-		ack := &MLightSlowAck{Replica: r.Id, Ballot: r.ballot, CmdId: cmdId}
-		r.batcher.SendLightSlowAckClient(ack, propose.ClientId)
+		ack := &MLightSlowAck{Replica: c.ID, Ballot: c.ballot, CmdId: cmdID}
+		c.batcher.SendLightSlowAckClient(ack, propose.ClientId)
 		if desc != nil {
-			return func() { r.handleLightSlowAck(ack, desc) }
+			return func() { c.handleLightSlowAck(ack, desc) }
 		}
 	}
 	return func() {}

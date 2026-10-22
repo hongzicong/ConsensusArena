@@ -43,93 +43,93 @@ func entryBytes(v entry) int {
 	return n
 }
 
-func (e *engine) admit(r request, now time.Time) {
-	if !e.batching {
-		e.proposeBatch([]request{r}, now)
+func (c *core) admit(r request, now time.Time) {
+	if !c.batching {
+		c.proposeBatch([]request{r}, now)
 		return
 	}
-	if e.batchIDs[r.id()] {
+	if c.batchIDs[r.id()] {
 		return
 	}
-	if len(e.batch) > 0 && e.batchBytes+requestBytes(r) > maxBatchBytes {
-		e.flushBatch(now)
+	if len(c.batch) > 0 && c.batchBytes+requestBytes(r) > maxBatchBytes {
+		c.flushBatch(now)
 	}
-	e.batch = append(e.batch, r)
-	e.batchIDs[r.id()] = true
-	e.batchBytes += requestBytes(r)
-	if len(e.batch) >= maxBatchCommands || e.batchBytes >= maxBatchBytes {
-		e.flushBatch(now)
+	c.batch = append(c.batch, r)
+	c.batchIDs[r.id()] = true
+	c.batchBytes += requestBytes(r)
+	if len(c.batch) >= maxBatchCommands || c.batchBytes >= maxBatchBytes {
+		c.flushBatch(now)
 	}
 }
 
-func (e *engine) flushBatch(now time.Time) {
-	if len(e.batch) == 0 {
+func (c *core) flushBatch(now time.Time) {
+	if len(c.batch) == 0 {
 		return
 	}
-	rs := e.batch
-	e.batch, e.batchBytes = nil, 0
-	e.batchIDs = map[defs.RequestID]bool{}
-	if !e.active() || e.current.Leader != e.id || !e.prepared {
+	rs := c.batch
+	c.batch, c.batchBytes = nil, 0
+	c.batchIDs = map[defs.RequestID]bool{}
+	if !c.active() || c.current.Leader != c.id || !c.prepared {
 		for _, r := range rs {
-			e.enqueue(r)
+			c.enqueue(r)
 		}
 		return
 	}
-	e.proposeBatch(rs, now)
+	c.proposeBatch(rs, now)
 }
 
-func (e *engine) proposeBatch(rs []request, now time.Time) {
-	e.next++
-	v := entry{Slot: e.next, Ballot: e.current.Ballot, ReadFresh: true}
+func (c *core) proposeBatch(rs []request, now time.Time) {
+	c.next++
+	v := entry{Slot: c.next, Ballot: c.current.Ballot, ReadFresh: true}
 	if len(rs) == 1 {
 		v.Request = rs[0]
 	} else {
 		v.Batch = rs
 	}
 	for _, r := range rs {
-		e.inflight[r.id()] = v.Slot
+		c.inflight[r.id()] = v.Slot
 		if r.Proposal.Command.Op == state.PUT {
-			e.stats.Writes++
+			c.stats.Writes++
 		} else {
-			e.stats.FallbackReads++
+			c.stats.FallbackReads++
 		}
 	}
-	e.stats.Batches++
-	e.stats.BatchCommands += uint64(len(rs))
-	if uint64(len(rs)) > e.stats.MaxBatchCommands {
-		e.stats.MaxBatchCommands = uint64(len(rs))
+	c.stats.Batches++
+	c.stats.BatchCommands += uint64(len(rs))
+	if uint64(len(rs)) > c.stats.MaxBatchCommands {
+		c.stats.MaxBatchCommands = uint64(len(rs))
 	}
-	e.acceptEntry(v)
-	e.votes[v.Slot] = replicaset.Set(0).With(e.id)
-	e.broadcast(message{Kind: accept, Entry: v})
-	e.tryCommit(v.Slot, now)
+	c.acceptEntry(v)
+	c.votes[v.Slot] = replicaset.Set(0).With(c.id)
+	c.broadcast(message{Kind: accept, Entry: v})
+	c.tryCommit(v.Slot, now)
 }
 
 // A cancellation only retires read delivery state, never an accepted log value.
-func (e *engine) cancelRead(id defs.RequestID) {
-	e.dropHeld(id)
-	if r, ok := e.queued[id]; ok && r.Proposal.Command.Op == state.GET {
-		delete(e.queued, id)
+func (c *core) cancelRead(id defs.RequestID) {
+	c.dropHeld(id)
+	if r, ok := c.queued[id]; ok && r.Proposal.Command.Op == state.GET {
+		delete(c.queued, id)
 	}
-	if e.batchIDs[id] {
-		for i, r := range e.batch {
+	if c.batchIDs[id] {
+		for i, r := range c.batch {
 			if r.id() == id && r.Proposal.Command.Op == state.GET {
-				e.batch = append(e.batch[:i], e.batch[i+1:]...)
-				e.batchBytes -= requestBytes(r)
-				delete(e.batchIDs, id)
+				c.batch = append(c.batch[:i], c.batch[i+1:]...)
+				c.batchBytes -= requestBytes(r)
+				delete(c.batchIDs, id)
 				break
 			}
 		}
 	}
 }
 
-func (e *engine) dropHeld(id defs.RequestID) {
-	if h, ok := e.held[id]; ok {
-		delete(e.held, id)
-		e.holdCounts[h.Slot]--
-		if e.holdCounts[h.Slot] == 0 {
-			delete(e.holdCounts, h.Slot)
-			delete(e.holdWaiters, h.Slot)
+func (c *core) dropHeld(id defs.RequestID) {
+	if h, ok := c.held[id]; ok {
+		delete(c.held, id)
+		c.holdCounts[h.Slot]--
+		if c.holdCounts[h.Slot] == 0 {
+			delete(c.holdCounts, h.Slot)
+			delete(c.holdWaiters, h.Slot)
 		}
 	}
 }

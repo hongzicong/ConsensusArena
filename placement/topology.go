@@ -33,8 +33,8 @@ type Topology struct {
 
 // Load uses latency.conf beside the deployment file unless topology is explicit.
 // Without a matrix, local deployments use a documented uniform 1ms one-way model.
-func Load(c *config.Config, configPath string) (*Topology, error) {
-	n := len(c.ReplicaAliases)
+func Load(conf *config.Config, configPath string) (*Topology, error) {
+	n := len(conf.ReplicaAliases)
 	if n < 3 || n%2 == 0 || n > replicaset.MaxSize {
 		return nil, fmt.Errorf("planning requires odd membership of 3..63 replicas")
 	}
@@ -45,7 +45,7 @@ func Load(c *config.Config, configPath string) (*Topology, error) {
 	if t.Objective != "slow-first" && t.Objective != "fast-first" {
 		return nil, fmt.Errorf("unknown plan objective %q", t.Objective)
 	}
-	membership, err := c.Membership()
+	membership, err := conf.Membership()
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func Load(c *config.Config, configPath string) (*Topology, error) {
 	for i := range t.Weights {
 		t.Weights[i] /= total
 	}
-	path := c.Topology
+	path := conf.Topology
 	if path == "" {
 		path = filepath.Join(filepath.Dir(configPath), "latency.conf")
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -105,7 +105,7 @@ func Load(c *config.Config, configPath string) (*Topology, error) {
 	} else if !filepath.IsAbs(path) {
 		path = filepath.Join(filepath.Dir(configPath), path)
 	}
-	c.Topology = path
+	conf.Topology = path
 	m := len(endpoints)
 	d := make([][]float64, m)
 	for i := range d {
@@ -276,8 +276,8 @@ func Subsets(n, k int, visit func([]int)) {
 
 // Apply changes only startup inputs. The plan JSON is diagnostic output and is
 // never loaded by replicas; they compute the same plan from the same raw inputs.
-func Apply(c *config.Config, t *Topology, p config.DeploymentPlan) error {
-	p.Protocol = strings.ToLower(c.Protocol)
+func Apply(conf *config.Config, t *Topology, p config.DeploymentPlan) error {
+	p.Protocol = strings.ToLower(conf.Protocol)
 	n := len(t.Replicas)
 	if p.Leader != nil && (p.Leader.Rank < 0 || p.Leader.Rank >= n || t.Replicas[p.Leader.Rank] != *p.Leader) {
 		return fmt.Errorf("invalid planned leader")
@@ -307,16 +307,16 @@ func Apply(c *config.Config, t *Topology, p config.DeploymentPlan) error {
 				return fmt.Errorf("invalid route for %s", a)
 			}
 		}
-		c.SetRoutes(p.ClientRoutes, local)
+		conf.SetRoutes(p.ClientRoutes, local)
 	}
-	c.Leader = nil
+	conf.Leader = nil
 	if p.Leader != nil {
 		addr := p.Leader.Endpoint
 		if _, _, err := net.SplitHostPort(addr); err != nil {
 			addr = net.JoinHostPort(addr, "7070")
 		}
-		c.Leader = &addr
+		conf.Leader = &addr
 	}
-	c.Plan = p
+	conf.Plan = p
 	return nil
 }

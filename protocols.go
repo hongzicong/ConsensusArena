@@ -33,10 +33,11 @@ type replicaStart struct {
 // runs before the common client is constructed; installation runs before Connect.
 // Deployment preparation runs after selecting the protocol and before startup.
 type protocolSpec struct {
-	planDeployment  func(*config.Config, *placement.Topology) (config.DeploymentPlan, error)
-	configureClient func(*config.Config)
-	installClient   func(*client.BufferClient, *config.Config, int)
-	newReplica      func(replicaStart) protocolapi.Machine
+	heatSampleOptions client.HeatSampleOptions
+	planDeployment    func(*config.Config, *placement.Topology) (config.DeploymentPlan, error)
+	configureClient   func(*config.Config)
+	installClient     func(*client.BufferClient, *config.Config, int)
+	newReplica        func(replicaStart) protocolapi.Machine
 }
 
 func lookupProtocol(name string) (protocolSpec, bool) {
@@ -59,7 +60,8 @@ var protocols = map[string]protocolSpec{
 		},
 	},
 	"bodega": {
-		planDeployment: bodega.PlanDeployment,
+		heatSampleOptions: client.HeatSampleOptions{PreserveClientOrigins: true},
+		planDeployment:    bodega.PlanDeployment,
 		configureClient: func(c *config.Config) {
 			c.Leaderless = true
 			c.Fast = false
@@ -80,9 +82,8 @@ var protocols = map[string]protocolSpec{
 		},
 		newReplica: func(s replicaStart) protocolapi.Machine {
 			log.Println("Starting SwiftPaxos replica...")
-			swift.MaxDescRoutines = 100
 			return swift.New(s.config.Alias, s.id, s.addrs, !s.config.Noop,
-				s.config.Optread, true, 1, s.failures, s.config, s.logger, nil)
+				s.config.OptimizedReads, true, 1, s.failures, s.config, s.logger, nil)
 		},
 	},
 	"curp": {

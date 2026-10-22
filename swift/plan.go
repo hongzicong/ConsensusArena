@@ -8,13 +8,13 @@ import (
 
 // PlanDeployment selects the initial C2 leader/fixed majority. Recovery can move
 // to other ballots and quorums through the existing quorum system.
-func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
+func PlanDeployment(conf *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
 	// Preserve explicit proxy routes, preferring a newly available co-located
 	// replica. This placement rule previously lived in prepare-topology.sh.
 	routes := t.NearestRoutes()
 	for i, a := range t.Clients {
-		if c.Proxy != nil {
-			if route := c.Proxy.ProxyOf(c.ClientAddrs[a]); route != config.REMOTE {
+		if conf.Proxy != nil {
+			if route := conf.Proxy.ProxyOf(conf.ClientAddrs[a]); route != config.REMOTE {
 				routes[a] = route
 			}
 		}

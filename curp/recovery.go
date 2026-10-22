@@ -11,7 +11,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
-func (c *Core) Begin(now time.Time) {
+func (c *core) Begin(now time.Time) {
 	c.Ballot = (c.Ballot/int64(c.N)+1)*int64(c.N) + int64(c.ID)
 	c.Leader = c.ID
 	c.Active = false
@@ -22,24 +22,24 @@ func (c *Core) Begin(now time.Time) {
 	c.votes = map[int64]replicaset.Set{}
 	c.lastSend = now
 	p := &Packet{Kind: packetPrepare, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1}
-	c.SendToAll(p)
-	c.Handle(p)
+	c.broadcast(p)
+	c.receive(p)
 }
 
-func (c *Core) activate() {
+func (c *core) activate() {
 	c.Active = true
-	c.SendToAll(&Packet{Kind: packetReady, From: c.ID, Ballot: c.Ballot, High: c.Executed, Floor: 1})
+	c.broadcast(&Packet{Kind: packetReady, From: c.ID, Ballot: c.Ballot, High: c.Executed, Floor: 1})
 	c.schedulePending()
 }
 
-func (c *Core) schedulePending() {
+func (c *core) schedulePending() {
 	c.resume = make([]Request, 0, len(c.Pending))
 	for _, r := range c.Pending {
 		c.resume = append(c.resume, r)
 	}
 }
 
-func (c *Core) promise(p *Packet) {
+func (c *core) promise(p *Packet) {
 
 	var snapshot []Packet
 	values := []Record{}
@@ -91,11 +91,11 @@ func (c *Core) promise(p *Packet) {
 	}
 
 	for i := range snapshot {
-		c.Send(p.From, &snapshot[i])
+		c.send(p.From, &snapshot[i])
 	}
 }
 
-func (c *Core) promiseReply(p *Packet) {
+func (c *core) promiseReply(p *Packet) {
 	if !c.Preparing || c.Leader != c.ID || p.Pages <= 0 || p.Page < 0 || p.Page >= p.Pages {
 		return
 	}
@@ -192,7 +192,7 @@ func (c *Core) promiseReply(p *Packet) {
 	}
 }
 
-func (c *Core) requestFetch(now time.Time) {
+func (c *core) requestFetch(now time.Time) {
 	if c.ID == c.Leader {
 		return
 	}
@@ -204,10 +204,10 @@ func (c *Core) requestFetch(now time.Time) {
 	}
 	c.lastFetch = now
 	c.FetchRequests++
-	c.Send(c.Leader, &Packet{Kind: packetFetch, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1})
+	c.send(c.Leader, &Packet{Kind: packetFetch, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1})
 }
 
-func (c *Core) sendSuffix(to int32, start int64, fetch bool) {
+func (c *core) sendSuffix(to int32, start int64, fetch bool) {
 	end := c.High
 	if limit := start + 2048 - 1; end > limit {
 		end = limit
@@ -225,7 +225,7 @@ func (c *Core) sendSuffix(to int32, start int64, fetch bool) {
 			continue
 		}
 		if fetch && to != c.ID {
-			c.Send(to, &Packet{Kind: packetAccept, From: c.ID, Ballot: c.Ballot, Records: recs})
+			c.send(to, &Packet{Kind: packetAccept, From: c.ID, Ballot: c.Ballot, Records: recs})
 			decided := []Record{}
 			for _, r := range recs {
 				if r.Committed {
@@ -233,14 +233,14 @@ func (c *Core) sendSuffix(to int32, start int64, fetch bool) {
 				}
 			}
 			if len(decided) > 0 {
-				c.Send(to, &Packet{Kind: packetCommit, From: c.ID, Ballot: c.Ballot, Records: decided})
+				c.send(to, &Packet{Kind: packetCommit, From: c.ID, Ballot: c.Ballot, Records: decided})
 			}
 		} else {
 			for i := range recs {
 				recs[i].Committed = false
 			}
 			p := &Packet{Kind: packetAccept, From: c.ID, Ballot: c.Ballot, Records: recs}
-			c.SendToAll(p)
+			c.broadcast(p)
 			c.accept(p)
 		}
 	}

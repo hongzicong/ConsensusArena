@@ -5,6 +5,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/state"
 	"io"
 	"time"
 )
@@ -19,7 +20,7 @@ func (r *Replica) drain() {
 	sender.Local = func(m interface{ Marshal(io.Writer) }) {
 		protocol.Must(r.Handle(m.(*wireMessage).message, time.Time{}))
 	}
-	protocol.Drain(&r.engine.out, func(e envelope) bool {
+	protocol.Drain(&r.core.out, func(e envelope) bool {
 		m := &wireMessage{e.Message}
 		if e.To == -1 {
 			sender.SendToAll(m, r.code, replica.SendPlan{IncludeSelf: true})
@@ -37,5 +38,11 @@ func (r *Replica) flushReplies() {
 		if r.ReplyProposal(job.proposal, &job.reply, 8192) == nil {
 			delete(r.pendingReplies, id)
 		}
+	}
+}
+
+func (r *Replica) queueReply(id defs.RequestID, result state.Value) {
+	if p := r.proposals[id]; p != nil {
+		r.pendingReplies[id] = replyJob{p, defs.ProposeReplyTS{OK: defs.TRUE, CommandId: id.Sequence, Value: result, Timestamp: p.Timestamp}}
 	}
 }

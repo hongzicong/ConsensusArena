@@ -10,7 +10,6 @@ import (
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
-	"github.com/hongzicong/ConsensusArena/state"
 )
 
 // Framework messages are handled inline; registered protocol messages retain
@@ -48,8 +47,9 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 			r.M.Lock()
 			r.Latencies[rid] += time.Now().UnixNano() - reply.Timestamp
 			r.M.Unlock()
-			now := time.Now().UnixNano()
-			r.Ewma[rid] = 0.99*r.Ewma[rid] + 0.01*float64(now-reply.Timestamp)
+			if r.ObserveRTT != nil {
+				r.ObserveRTT(rid, time.Duration(time.Now().UnixNano()-reply.Timestamp))
+			}
 		default:
 			return r.RPC.Decode(code, wire)
 		}
@@ -69,7 +69,7 @@ func (r *Replica) clientListener(conn net.Conn) {
 	writer := bufio.NewWriter(conn)
 
 	r.M.Lock()
-	r.Println("Client up", conn.RemoteAddr(), "(", r.LRead, ")")
+	r.Println("Client up", conn.RemoteAddr())
 	r.M.Unlock()
 
 	addr, identityErr := defs.ReadClientIdentity(reader)
@@ -118,13 +118,8 @@ func (r *Replica) clientListener(conn net.Conn) {
 			r.M.Unlock()
 			// Bind the reply sender before the proposal can produce protocol output.
 			r.ReplySender(writer, mutex, r.ClientReplyCapacity)
-			op := propose.Command.Op
-			if r.LRead && (op == state.GET || op == state.SCAN) {
-				r.ReplyProposeTS(&defs.ProposeReplyTS{OK: defs.TRUE, CommandId: propose.CommandId, Value: propose.Command.Execute(r.State), Timestamp: propose.Timestamp}, writer, mutex)
-			} else {
-				gpropose := &defs.GPropose{Propose: propose, Reply: writer, Mutex: mutex, Proxy: isProxy, Addr: addr}
-				fastrpc.Deliver(r.ProposeChan, gpropose, nil)
-			}
+			gpropose := &defs.GPropose{Propose: propose, Reply: writer, Mutex: mutex, Proxy: isProxy, Addr: addr}
+			fastrpc.Deliver(r.ProposeChan, gpropose, nil)
 		case defs.READ:
 			// Retain the existing decode-only behavior for these framework messages.
 			if err := new(defs.Read).Unmarshal(wire); err != nil {

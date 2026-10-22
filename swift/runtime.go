@@ -2,6 +2,7 @@ package swift
 
 // Event scheduling, protocol integration, and control/status handling.
 import (
+	"sync"
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/protocol"
@@ -9,22 +10,18 @@ import (
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 )
 
-// TODO: do something more elegant
+type leaderCall struct{ done chan leaderDecision }
+
 func (r *Replica) BeTheLeader(_ *defs.BeTheLeaderArgs, reply *defs.BeTheLeaderReply) error {
-	if !r.delivered.IsEmpty() {
-		b := r.qs.BallotAt(1)
-		r.recover <- b
-		reply.Leader = r.Id
-	} else {
-		reply.Leader = r.leader()
+	done := make(chan leaderDecision, 1)
+	r.control <- leaderCall{done}
+	decision := <-done
+	if decision.recover {
+		// Keep recovery asynchronous and retain the existing queue admission:
+		// the RPC returns after enqueueing, not after recovery completes.
+		r.recover <- decision.ballot
 	}
-	reply.NextLeader = Leader(r.qs.BallotAt(1), r.N)
-	if reply.Leader == 0 {
-		reply.Leader = -2
-	}
-	if reply.NextLeader == 0 {
-		reply.NextLeader = -2
-	}
+	*reply = decision.reply
 	return nil
 }
 
@@ -36,8 +33,8 @@ func (r *Replica) run() {
 	latencies := r.ComputeClosestPeers()
 	for _, l := range latencies {
 		d := time.Duration(l*1000*1000) * time.Nanosecond
-		if d > r.cs.maxLatency {
-			r.cs.maxLatency = d
+		if d > r.channels.maxLatency {
+			r.channels.maxLatency = d
 		}
 	}
 
@@ -45,31 +42,34 @@ func (r *Replica) run() {
 
 	for !r.Shutdown {
 		select {
+		case call := <-r.control:
+			protocol.Must(r.Handle(call, time.Time{}))
+
 		case newBallot := <-r.recover:
 			protocol.Must(r.Handle(recoveryEvent(newBallot), time.Time{}))
 
-		case cmdId := <-r.deliverChan:
-			protocol.Must(r.Handle(cmdId, time.Time{}))
+		case cmdID := <-r.delivery:
+			protocol.Must(r.Handle(cmdID, time.Time{}))
 
 		case propose := <-r.ProposeChan:
 			protocol.Must(r.Propose(propose, time.Time{}))
 
-		case m := <-r.cs.fastAckChan:
+		case m := <-r.channels.fastAckChan:
 			protocol.Must(r.Handle(m, time.Time{}))
 
-		case m := <-r.cs.lightSlowAckChan:
+		case m := <-r.channels.lightSlowAckChan:
 			protocol.Must(r.Handle(m, time.Time{}))
 
-		case m := <-r.cs.acksChan:
+		case m := <-r.channels.acksChan:
 			protocol.Must(r.Handle(m, time.Time{}))
 
-		case m := <-r.cs.optAcksChan:
+		case m := <-r.channels.optAcksChan:
 			protocol.Must(r.Handle(m, time.Time{}))
 
-		case m := <-r.cs.newLeaderChan:
+		case m := <-r.channels.newLeaderChan:
 			protocol.Must(r.Handle(m, time.Time{}))
 
-		case m := <-r.cs.syncChan:
+		case m := <-r.channels.syncChan:
 			protocol.Must(r.Handle(m, time.Time{}))
 
 		}
@@ -84,102 +84,109 @@ func (r *Replica) Propose(p *defs.GPropose, _ time.Time) error {
 	if err := protocol.ValidateProposal(p); err != nil {
 		return err
 	}
-	r.handleProposalBatch(p)
-	return nil
-}
-
-func (r *Replica) Handle(event any, _ time.Time) error {
-	switch m := event.(type) {
-	case *MFastAck:
-		if m == nil {
-			return protocol.UnsupportedEvent("swiftpaxos", event)
-		}
-		fastAck := m
-		r.receiveFastAck(fastAck)
-
-	case *MLightSlowAck:
-		if m == nil {
-			return protocol.UnsupportedEvent("swiftpaxos", event)
-		}
-		lightSlowAck := m
-		r.getCmdDesc(lightSlowAck.CmdId, lightSlowAck, nil)
-
-	case *MAcks:
-		if m == nil {
-			return protocol.UnsupportedEvent("swiftpaxos", event)
-		}
-		acks := m
-		for _, f := range acks.FastAcks {
-			r.receiveFastAck(copyFastAck(&f))
-		}
-		for _, s := range acks.LightSlowAcks {
-			ls := s
-			r.getCmdDesc(s.CmdId, &ls, nil)
-		}
-
-	case *MOptAcks:
-		if m == nil {
-			return protocol.UnsupportedEvent("swiftpaxos", event)
-		}
-		optAcks := m
-		for _, ack := range optAcks.Acks {
-			if optAcks.Ballot != r.ballot {
-				continue
-			}
-			if IsNilDepOfCmdId(ack.CmdId, ack.Dep) && ack.Seqnum != recoveryAckSeqnum {
-				// The batcher's sentinel represents a SlowAck, not hash evidence.
-				ls := &MLightSlowAck{Replica: optAcks.Replica, Ballot: optAcks.Ballot, CmdId: ack.CmdId}
-				r.getCmdDesc(ls.CmdId, ls, nil)
-				continue
-			}
-			fastAck := newFastAck()
-			fastAck.Replica = optAcks.Replica
-			fastAck.Ballot = optAcks.Ballot
-			fastAck.CmdId = ack.CmdId
-			fastAck.Checksum = ack.Checksum
-			fastAck.Seqnum = ack.Seqnum
-			if !IsNilDepOfCmdId(ack.CmdId, ack.Dep) {
-				fastAck.Dep = ack.Dep
-			} else {
-				fastAck.Dep = nil
-			}
-			r.receiveFastAck(fastAck)
-		}
-
-	case *MNewLeader:
-		if m == nil {
-			return protocol.UnsupportedEvent("swiftpaxos", event)
-		}
-		newLeader := m
-		r.handleNewLeader(newLeader)
-
-	case *MSync:
-		if m == nil {
-			return protocol.UnsupportedEvent("swiftpaxos", event)
-		}
-		sync := m
-		r.handleSync(sync)
-
-	case *MNewLeaderAckN:
-		if m == nil {
-			return protocol.UnsupportedEvent("swiftpaxos", event)
-		}
-		r.handleNewLeaderAckN(m)
-	case recoveryEvent:
-		r.beginRecovery(int32(m))
-	case defs.RequestID:
-		r.getCmdDesc(m, "deliver", nil)
-	default:
-		return protocol.UnsupportedEvent("swiftpaxos", event)
+	additional := len(r.ProposeChan)
+	if additional > 255 {
+		additional = 255
+	}
+	r.core.beginProposalBatch(additional + 1)
+	r.core.submit(r.admitProposal(p))
+	for i := 0; i < additional; i++ {
+		r.core.submit(r.admitProposal(<-r.ProposeChan))
 	}
 	return nil
 }
+func (r *Replica) Handle(event any, now time.Time) error { return r.core.receive(event, now) }
+func (r *Replica) Tick(t protocol.Tick) error            { return r.core.tick(t) }
 
-func (r *Replica) Tick(t protocol.Tick) error {
-	if t.Kind != protocol.Maintenance {
-		return protocol.UnsupportedTimer("swiftpaxos", t.Kind)
+func (r *Replica) allocDesc() *commandDesc {
+	if r.descriptorPoolLevel > 0 {
+		return r.descriptorPool.Get().(*commandDesc)
 	}
-	// This implementation starts recovery from control events, not a periodic
-	// protocol timer. Do not invent a heartbeat or election deadline here.
-	return nil
+	return &commandDesc{}
+}
+
+func (r *Replica) freeDesc(desc *commandDesc) {
+	if r.descriptorPoolLevel > 0 {
+		r.descriptorPool.Put(desc)
+	}
+}
+
+func (r *Replica) runDescriptor(desc *commandDesc, cmdID defs.RequestID) {
+	defer func() {
+		for len(desc.stopChan) != 0 {
+			(<-desc.stopChan).Done()
+		}
+	}()
+
+	for desc.active {
+		select {
+		case wg := <-desc.stopChan:
+			desc.active = false
+			wg.Done()
+			return
+		case msg := <-desc.msgs:
+			if r.core.handleMsg(msg, desc, cmdID) {
+				r.descriptorCount--
+				return
+			}
+		}
+	}
+}
+
+func (r *Replica) awaitRecovery() {
+	// stop processing normal channels:
+	for r.core.status == RECOVERING {
+		select {
+		case call := <-r.control:
+			protocol.Must(r.Handle(call, time.Time{}))
+
+		case m := <-r.channels.newLeaderChan:
+			protocol.Must(r.Handle(m, time.Time{}))
+
+		case m := <-r.channels.newLeaderAckNChan:
+			protocol.Must(r.Handle(m, time.Time{}))
+
+		case m := <-r.channels.syncChan:
+			protocol.Must(r.Handle(m, time.Time{}))
+		}
+	}
+}
+
+func (r *Replica) stopDescriptors() {
+	var wg sync.WaitGroup
+	r.core.descriptors.IterCb(func(_ string, v interface{}) {
+		desc := v.(*commandDesc)
+		if desc.active && !desc.seq {
+			wg.Add(1)
+			desc.stopChan <- &wg
+		}
+	})
+	wg.Wait()
+
+	// TODO: maybe add to history even if stopped this way ?
+}
+
+func (r *Replica) awaitReply(desc *commandDesc, cmdID defs.RequestID) {
+	// wait for the slot number and ignore any other message
+	for {
+		switch slot := (<-desc.msgs).(type) {
+		case int:
+			r.core.handleMsg(slot, desc, cmdID)
+			return
+		}
+	}
+}
+
+func (r *Replica) admitProposal(p *defs.GPropose) *proposal {
+	return &proposal{Propose: p.Propose, Proxy: p.Proxy, Addr: p.Addr, context: p}
+}
+func (r *Replica) requeueProposal(p *proposal) {
+	go func() { r.ProposeChan <- p.context.(*defs.GPropose) }()
+}
+func (r *Replica) scheduleDelivery(id defs.RequestID) {
+	go func() { r.delivery <- id }()
+}
+func (r *Replica) startDescriptor(desc *commandDesc, id defs.RequestID) {
+	go r.runDescriptor(desc, id)
+	r.descriptorCount++
 }

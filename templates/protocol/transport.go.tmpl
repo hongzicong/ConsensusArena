@@ -4,16 +4,43 @@ package __PACKAGE__
 // Late connections can use replica.PendingSender; tagged client streams can
 // use rpc.ReadStream with protocol-owned decoding and identity validation.
 import (
- "fmt"
- "github.com/hongzicong/ConsensusArena/replica"
- "github.com/hongzicong/ConsensusArena/replica/defs"
+	"fmt"
+
+	"github.com/hongzicong/ConsensusArena/replica"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 )
-func (r *Replica) send(out outbound) error {
- if out.To < 0 || out.To >= r.N { return fmt.Errorf("invalid recipient %d", out.To) }
- if out.To == int(r.Id) { return ErrNotImplemented } // Define local delivery ordering.
- // Enqueue returns ErrSendFull or ErrSendClosed; the protocol owns retry policy.
- return r.peers[out.To].Enqueue(replica.Encode(r.code, &out.Message, true))
+
+// dispatch delivers core-authorized outputs without deciding commit or completion.
+func (r *Replica) dispatch(out effects) error {
+	for _, send := range out.Sends {
+		// TODO: choose and test the design's self-delivery ordering explicitly.
+		if err := r.send(send); err != nil {
+			return err
+		}
+	}
+	for _, reply := range out.Replies {
+		if p := r.proposals[reply.ID]; p != nil {
+			if err := r.reply(p, defs.ProposeReplyTS{OK: defs.TRUE, CommandId: reply.ID.Sequence, Value: reply.Value, Timestamp: p.Timestamp}); err != nil {
+				return err
+			}
+			delete(r.proposals, reply.ID)
+		}
+	}
+	return nil
 }
+
+func (r *Replica) send(out outbound) error {
+	if out.To < 0 || out.To >= r.N {
+		return fmt.Errorf("invalid recipient %d", out.To)
+	}
+	// TODO: define local delivery ordering before enabling the protocol.
+	if out.To == int(r.ID) {
+		return ErrNotImplemented
+	}
+	// Enqueue returns ErrSendFull or ErrSendClosed; the protocol owns retry policy.
+	return r.peers[out.To].Enqueue(replica.Encode(r.code, &out.Message, true))
+}
+
 func (r *Replica) reply(p *defs.GPropose, reply defs.ProposeReplyTS) error {
- return r.ReplyProposal(p, &reply, 8192)
+	return r.ReplyProposal(p, &reply, 8192)
 }

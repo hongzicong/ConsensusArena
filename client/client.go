@@ -33,9 +33,9 @@ type Client struct {
 	MonitorRPCFailures bool
 	*dlog.Logger
 
-	ClientId  int32
-	LeaderId  int
-	ClosestId int // also co-located
+	ClientID  int32
+	LeaderID  int
+	ClosestID int // also co-located
 
 	Ping []float64
 
@@ -57,19 +57,19 @@ type Client struct {
 	replicas   []string
 }
 
-func NewClient(server, maddr string, mport int, fast, leaderless, verbose bool) *Client {
-	return NewClientLog(server, maddr, mport, fast, leaderless, verbose, nil)
+func NewClient(server, masterAddr string, masterPort int, fast, leaderless, verbose bool) *Client {
+	return NewClientLog(server, masterAddr, masterPort, fast, leaderless, verbose, nil)
 }
 
-func NewClientLog(server, maddr string, mport int, fast, leaderless, verbose bool, logger *dlog.Logger) *Client {
+func NewClientLog(server, masterAddr string, masterPort int, fast, leaderless, verbose bool, logger *dlog.Logger) *Client {
 	if logger == nil {
 		logger = dlog.New("", verbose)
 	}
 
 	return &Client{
-		ClientId:  int32(uuid.New().ID()),
-		LeaderId:  -1,
-		ClosestId: -1,
+		ClientID:  int32(uuid.New().ID()),
+		LeaderID:  -1,
+		ClosestID: -1,
 
 		Fast:       fast,
 		Verbose:    verbose,
@@ -78,8 +78,8 @@ func NewClientLog(server, maddr string, mport int, fast, leaderless, verbose boo
 		Logger: logger,
 
 		server:     server,
-		masterPort: mport,
-		masterAddr: maddr,
+		masterPort: masterPort,
+		masterAddr: masterAddr,
 
 		seqnum: -1,
 	}
@@ -106,7 +106,7 @@ func (c *Client) Connect() error {
 		return err
 	}
 	c.Println("replicas", c.replicas)
-	c.Println("closest (alive)", c.ClosestId)
+	c.Println("closest (alive)", c.ClosestID)
 
 	N := len(c.replicas)
 	c.servers = make([]net.Conn, N)
@@ -121,8 +121,8 @@ func (c *Client) Connect() error {
 			return err
 		}
 		masterReply := gl.(*defs.GetLeaderReply)
-		c.LeaderId = masterReply.LeaderId
-		c.Println("leader id", c.LeaderId)
+		c.LeaderID = masterReply.LeaderId
+		c.Println("leader id", c.LeaderID)
 	}
 
 	connect := []int{}
@@ -187,8 +187,8 @@ func (c *Client) Reconnect() error {
 			return err
 		}
 		masterReply := gl.(*defs.GetLeaderReply)
-		c.LeaderId = masterReply.LeaderId
-		c.Println("leader id", c.LeaderId)
+		c.LeaderID = masterReply.LeaderId
+		c.Println("leader id", c.LeaderID)
 	}
 
 	return nil
@@ -212,9 +212,9 @@ func (c *Client) SendDefaultProposal(cmd defs.Propose) {
 		c.sendFaultProposal(cmd)
 		return
 	}
-	d := c.LeaderId
+	d := c.LeaderID
 	if c.Leaderless {
-		d = c.ClosestId
+		d = c.ClosestID
 	}
 
 	if !c.Fast {
@@ -242,7 +242,7 @@ func (c *Client) SendWrite(key int64, value []byte) int32 {
 	c.seqnum++
 	p := defs.Propose{
 		CommandId: c.seqnum,
-		ClientId:  c.ClientId,
+		ClientId:  c.ClientID,
 		Command: state.Command{
 			Op: state.PUT,
 			K:  state.Key(key),
@@ -259,7 +259,7 @@ func (c *Client) SendRead(key int64) int32 {
 	c.seqnum++
 	p := defs.Propose{
 		CommandId: c.seqnum,
-		ClientId:  c.ClientId,
+		ClientId:  c.ClientID,
 		Command: state.Command{
 			Op: state.GET,
 			K:  state.Key(key),
@@ -276,7 +276,7 @@ func (c *Client) SendScan(key, count int64) int32 {
 	c.seqnum++
 	p := defs.Propose{
 		CommandId: c.seqnum,
-		ClientId:  c.ClientId,
+		ClientId:  c.ClientID,
 		Command: state.Command{
 			Op: state.SCAN,
 			K:  state.Key(key),
@@ -369,7 +369,7 @@ func (c *Client) findClosest(alive []bool) error {
 		}
 
 		if c.replicas[i] == c.server || (!hasPort(c.server) && addr == c.server) {
-			c.ClosestId = i
+			c.ClosestID = i
 		}
 		if c.SkipPing {
 			continue // The adapter measures peer distances after connecting.
@@ -386,12 +386,12 @@ func (c *Client) findClosest(alive []bool) error {
 		}
 	}
 
-	if c.ClosestId == -1 && !c.SkipPing {
+	if c.ClosestID == -1 && !c.SkipPing {
 		min := math.MaxFloat64
 		for i, l := range c.Ping {
 			if l < min {
 				min = l
-				c.ClosestId = i
+				c.ClosestID = i
 			}
 		}
 	}

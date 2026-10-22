@@ -42,7 +42,7 @@ func (c *Client) RetryPolicy() string {
 }
 
 type bodegaRouting struct {
-	roster                                 atomic.Pointer[defs.BodegaRosterReply]
+	roster                                 atomic.Pointer[BodegaRosterReply]
 	dead                                   []atomic.Bool
 	rtt                                    []atomic.Int64 // control RPC round-trip through DialAddress; zero means unknown
 	readDestinations                       []atomic.Uint64
@@ -72,8 +72,8 @@ func (c *Client) bodegaPeerAlive(id int) bool {
 }
 
 func (c *Client) nearestBodegaPeer() int {
-	if c.bodegaPeerAlive(c.ClosestId) {
-		return c.ClosestId
+	if c.bodegaPeerAlive(c.ClosestID) {
+		return c.ClosestID
 	}
 	best := -1
 	for id := 0; id < c.PeerCount(); id++ {
@@ -86,8 +86,8 @@ func (c *Client) nearestBodegaPeer() int {
 
 // Hints are monotonic and never authorize execution. The destination replica
 // still checks its installed ballot, preparation and responder-covered quorum.
-func (c *Client) learnBodegaRoster(hint defs.BodegaRosterReply) bool {
-	if !hint.Ready || hint.Ballot == 0 || !c.bodegaPeerAlive(hint.Leader) || hint.Responders>>uint(c.PeerCount()) != 0 || !defs.ValidBodegaRanges(hint.Ranges, c.PeerCount()) {
+func (c *Client) learnBodegaRoster(hint BodegaRosterReply) bool {
+	if !hint.Ready || hint.Ballot == 0 || !c.bodegaPeerAlive(hint.Leader) || hint.Responders>>uint(c.PeerCount()) != 0 || !ValidBodegaRanges(hint.Ranges, c.PeerCount()) {
 		return false
 	}
 	hint.Ranges = slices.Clone(hint.Ranges)
@@ -103,8 +103,8 @@ func (c *Client) learnBodegaRoster(hint defs.BodegaRosterReply) bool {
 	}
 }
 
-func (c *Client) queryBodegaRoster(id int) (defs.BodegaRosterReply, error) {
-	var reply defs.BodegaRosterReply
+func (c *Client) queryBodegaRoster(id int) (BodegaRosterReply, error) {
+	var reply BodegaRosterReply
 	host, portText, err := net.SplitHostPort(c.ReplicaAddress(id))
 	if err != nil {
 		return reply, err
@@ -257,7 +257,7 @@ func (c *Client) SendProposal(cmd defs.Propose) {
 	id := c.nearestBodegaPeer()
 	if cmd.Command.Op == state.GET {
 		if hint := c.bodega.roster.Load(); hint != nil {
-			mask := defs.BodegaRespondersFor(hint.Responders, hint.Ranges, hint.Leader, int64(cmd.Command.K))
+			mask := BodegaRespondersFor(hint.Responders, hint.Ranges, hint.Leader, int64(cmd.Command.K))
 			id = c.nearestBodegaResponder(mask)
 		}
 		c.bodega.reads.Add(1)
@@ -266,7 +266,7 @@ func (c *Client) SendProposal(cmd defs.Propose) {
 		c.bodega.writes.Add(1)
 	} else {
 		// During discovery after a disconnect, the survivor preserves the
-		// request identity and uses the existing engine's forwarding queue.
+		// request identity and uses the existing core's forwarding queue.
 		c.bodega.forwarded.Add(1)
 	}
 	if id < 0 {
@@ -286,7 +286,7 @@ func (c *Client) writeBodegaProposal(cmd defs.Propose, id int, hedge bool) {
 	if !c.bodegaPeerAlive(id) {
 		return
 	}
-	if cmd.Command.Op != defs.BodegaCancelRead {
+	if cmd.Command.Op != BodegaCancelRead {
 		c.bodega.mu.Lock()
 		_, pending := c.bodega.pending[cmd.CommandId]
 		c.bodega.mu.Unlock()
@@ -308,8 +308,8 @@ func (c *Client) writeBodegaProposal(cmd defs.Propose, id int, hedge bool) {
 }
 
 func (c *Client) nearestBodegaResponder(mask uint64) int {
-	if c.bodegaPeerAlive(c.ClosestId) && mask&(uint64(1)<<uint(c.ClosestId)) != 0 {
-		return c.ClosestId
+	if c.bodegaPeerAlive(c.ClosestID) && mask&(uint64(1)<<uint(c.ClosestID)) != 0 {
+		return c.ClosestID
 	}
 	best := -1
 	for id := 0; id < c.PeerCount(); id++ {
@@ -334,7 +334,7 @@ func (c *Client) WaitReplies(_ int) {
 				if r.OK != defs.TRUE || !c.completeBodegaRequest(r.CommandId, id) {
 					return true
 				}
-				c.CompleteReply(defs.RequestID{Client: c.ClientId, Sequence: r.CommandId}, r.Value, nil, c.bodega.stop)
+				c.CompleteReply(defs.RequestID{Client: c.ClientID, Sequence: r.CommandId}, r.Value, nil, c.bodega.stop)
 				select {
 				case <-c.bodega.stop:
 					return false
@@ -444,7 +444,7 @@ func (c *Client) completeBodegaRequest(id int32, source int) bool {
 			default:
 			}
 			cancel := defs.Propose{ClientId: p.cmd.ClientId, CommandId: id}
-			cancel.Command.Op = defs.BodegaCancelRead
+			cancel.Command.Op = BodegaCancelRead
 			b.cancels.Add(1)
 			c.writeBodegaProposal(cancel, loser, false)
 		}()

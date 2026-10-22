@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
@@ -275,10 +274,10 @@ func (m *message) Unmarshal(r io.Reader) error {
 		m.Roster.Responders = d.u64()
 		count := d.count(24)
 		if count > 0 {
-			m.Roster.Ranges = make([]defs.BodegaResponderRange, count)
+			m.Roster.Ranges = make([]BodegaResponderRange, count)
 		}
 		for i := range m.Roster.Ranges {
-			m.Roster.Ranges[i] = defs.BodegaResponderRange{Start: int64(d.u64()), End: int64(d.u64()), Responders: d.u64()}
+			m.Roster.Ranges[i] = BodegaResponderRange{Start: int64(d.u64()), End: int64(d.u64()), Responders: d.u64()}
 		}
 		m.Prefix = d.u64()
 		m.CommitPrefix = d.u64()

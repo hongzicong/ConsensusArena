@@ -4,48 +4,52 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
-	"strings"
 
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/heatprofile"
 )
 
+// HeatSampleOptions controls which observations the sampler retains.
+// The zero value produces a global-only sample.
+type HeatSampleOptions struct {
+	PreserveClientOrigins bool
+}
+
 // SampleHeat generates a separate offered-request stream without networking,
 // protocol adapters or consumption of the formal clients' RNG state.
-func SampleHeat(cfg *config.Config, requests int, seed int64) (heatprofile.File, error) {
-	if cfg.UniqueKeys {
+func SampleHeat(conf *config.Config, requests int, seed int64, options HeatSampleOptions) (heatprofile.File, error) {
+	if conf.UniqueKeys {
 		return heatprofile.File{}, fmt.Errorf("offline heat sampling currently requires reusable keys")
 	}
-	if requests <= 0 || seed < 0 || seed == int64(cfg.WorkloadSeed) || cfg.Clones < 0 {
+	if requests <= 0 || seed < 0 || seed == int64(conf.WorkloadSeed) || conf.Clones < 0 {
 		return heatprofile.File{}, fmt.Errorf("positive request count and an independent non-negative sample seed are required")
 	}
-	aliases := make([]string, 0, len(cfg.ClientAddrs))
-	for alias := range cfg.ClientAddrs {
+	aliases := make([]string, 0, len(conf.ClientAddrs))
+	for alias := range conf.ClientAddrs {
 		aliases = append(aliases, alias)
 	}
 	sort.Strings(aliases)
 	if len(aliases) == 0 {
 		return heatprofile.File{}, fmt.Errorf("no configured clients for offline sampling")
 	}
-	cdf := sharedZipfCDF(cfg.KeyCount, cfg.ZipfSkew)
+	cdf := sharedZipfCDF(conf.KeyCount, conf.ZipfSkew)
 	var mapping []int
-	if cfg.ShuffleKeys {
-		mapping = sharedKeyMapping(cfg.KeyCount, int64(cfg.KeyMappingSeed))
+	if conf.ShuffleKeys {
+		mapping = sharedKeyMapping(conf.KeyCount, int64(conf.KeyMappingSeed))
 	}
-	counts := make([]heatprofile.KeyCount, cfg.KeyCount)
-	// Only Bodega needs origin-preserving deployment inputs. Keep the existing
-	// global schema and exact aggregate sample for other protocol planners.
-	regional := strings.EqualFold(cfg.Protocol, "bodega")
+	counts := make([]heatprofile.KeyCount, conf.KeyCount)
+	// Retaining client origins leaves the aggregate sample unchanged.
+	regional := options.PreserveClientOrigins
 	var clients []heatprofile.ClientCounts
-	participants := len(aliases) * (cfg.Clones + 1)
+	participants := len(aliases) * (conf.Clones + 1)
 	for i, alias := range aliases {
 		observed := heatprofile.ClientCounts{Client: alias}
 		var local map[int]heatprofile.KeyCount
 		if regional {
 			local = make(map[int]heatprofile.KeyCount)
 		}
-		for clone := 0; clone <= cfg.Clones; clone++ {
-			ordinal := i*(cfg.Clones+1) + clone
+		for clone := 0; clone <= conf.Clones; clone++ {
+			ordinal := i*(conf.Clones+1) + clone
 			n := requests / participants
 			if ordinal < requests%participants {
 				n++
@@ -61,9 +65,9 @@ func SampleHeat(cfg *config.Config, requests int, seed int64) (heatprofile.File,
 					key = mapping[rank]
 				}
 				counts[key].Key = key
-				write := cfg.Writes >= 100
-				if cfg.Writes > 0 && cfg.Writes < 100 {
-					write = rng.Intn(100) < cfg.Writes
+				write := conf.Writes >= 100
+				if conf.Writes > 0 && conf.Writes < 100 {
+					write = rng.Intn(100) < conf.Writes
 				}
 				if write {
 					counts[key].Writes++
@@ -90,7 +94,7 @@ func SampleHeat(cfg *config.Config, requests int, seed int64) (heatprofile.File,
 			clients = append(clients, observed)
 		}
 	}
-	file := heatprofile.File{Schema: 1, Source: "independent-offline-offered-requests", KeyCount: cfg.KeyCount, Requests: uint64(requests), SampleSeed: seed}
+	file := heatprofile.File{Schema: 1, Source: "independent-offline-offered-requests", KeyCount: conf.KeyCount, Requests: uint64(requests), SampleSeed: seed}
 	for _, row := range counts {
 		if row.Reads+row.Writes > 0 {
 			file.Keys = append(file.Keys, row)

@@ -86,7 +86,7 @@ func (c *Client) RetryStats() map[string]uint64 {
 }
 
 // Retain the original request until completion, including failed/unsent writes.
-// Replaying its identity lets Core return Values or finish its existing slot.
+// Replaying its identity lets core return Values or finish its existing slot.
 func (c *Client) SendProposal(p defs.Propose) {
 	p.Command.V = append([]byte(nil), p.Command.V...)
 	c.mu.Lock()
@@ -142,7 +142,7 @@ func (c *Client) send(sequence int32, retry bool) {
 	}
 	c.mu.Unlock()
 
-	id := c.LeaderId
+	id := c.LeaderID
 	valid := func(id int) bool {
 		return id >= 0 && id < c.PeerCount() && !c.PeerFailed(id) && c.Connection(id) != nil
 	}
@@ -150,7 +150,7 @@ func (c *Client) send(sequence int32, retry bool) {
 		c.lookup = time.Now()
 		if leader, err := c.LookupLeader(); err == nil && valid(leader) {
 			id = leader
-			c.LeaderId = id
+			c.LeaderID = id
 		}
 	}
 	if !valid(id) {

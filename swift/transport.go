@@ -10,20 +10,20 @@ type replyArgs struct {
 	dep     Dep
 	hs      []SHash
 	val     state.Value
-	cmdId   defs.RequestID
+	cmdID   defs.RequestID
 	finish  chan interface{}
-	propose *defs.GPropose
+	propose *proposal
 }
 
-type replyChan struct {
+type replyWorker struct {
 	rep  *defs.ProposeReplyTS
 	ok   chan struct{}
 	exit chan struct{}
 	args chan *replyArgs
 }
 
-func NewReplyChan(r *Replica) *replyChan {
-	rc := &replyChan{
+func newReplyWorker(r *Replica) *replyWorker {
+	rc := &replyWorker{
 		rep: &defs.ProposeReplyTS{
 			OK: defs.TRUE,
 		},
@@ -39,7 +39,7 @@ func NewReplyChan(r *Replica) *replyChan {
 				rc.ok <- struct{}{}
 				return
 			case args := <-rc.args:
-				r.completeReply(args)
+				r.core.completeReply(args)
 			}
 		}
 	}()
@@ -47,12 +47,12 @@ func NewReplyChan(r *Replica) *replyChan {
 	return rc
 }
 
-func (r *replyChan) stop() {
+func (r *replyWorker) stop() {
 	r.exit <- struct{}{}
 	<-r.ok
 }
 
-func (r *replyChan) reply(desc *commandDesc, cmdId defs.RequestID, val state.Value) {
+func (r *replyWorker) reply(desc *commandDesc, cmdID defs.RequestID, val state.Value) {
 	dep := make([]defs.RequestID, len(desc.dep))
 	copy(dep, desc.dep)
 
@@ -63,7 +63,7 @@ func (r *replyChan) reply(desc *commandDesc, cmdId defs.RequestID, val state.Val
 		dep:     dep,
 		hs:      hs,
 		val:     val,
-		cmdId:   cmdId,
+		cmdID:   cmdID,
 		finish:  desc.msgs,
 		propose: desc.propose,
 	}

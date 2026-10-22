@@ -49,25 +49,25 @@ type byteReader interface {
 	ReadByte() (c byte, err error)
 }
 
-func (t *MCommit) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *MCommit) BinarySize() (nbytes int, sizeKnown bool) {
 	return 16, true
 }
 
-func (t *MCommit) Marshal(wire io.Writer) {
+func (m *MCommit) Marshal(wire io.Writer) {
 	var b [16]byte
 	var bs []byte
 	bs = b[:16]
-	tmp32 := t.Replica
+	tmp32 := m.Replica
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.Ballot
+	tmp32 = m.Ballot
 	bs[4] = byte(tmp32)
 	bs[5] = byte(tmp32 >> 8)
 	bs[6] = byte(tmp32 >> 16)
 	bs[7] = byte(tmp32 >> 24)
-	tmp64 := t.CmdSlot
+	tmp64 := m.CmdSlot
 	bs[8] = byte(tmp64)
 	bs[9] = byte(tmp64 >> 8)
 	bs[10] = byte(tmp64 >> 16)
@@ -79,61 +79,61 @@ func (t *MCommit) Marshal(wire io.Writer) {
 	wire.Write(bs)
 }
 
-func (t *MCommit) Unmarshal(wire io.Reader) error {
+func (m *MCommit) Unmarshal(wire io.Reader) error {
 	var b [16]byte
 	var bs []byte
 	bs = b[:16]
 	if _, err := io.ReadAtLeast(wire, bs, 16); err != nil {
 		return err
 	}
-	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
-	t.CmdSlot = int((uint64(bs[8]) | (uint64(bs[9]) << 8) | (uint64(bs[10]) << 16) | (uint64(bs[11]) << 24) | (uint64(bs[12]) << 32) | (uint64(bs[13]) << 40) | (uint64(bs[14]) << 48) | (uint64(bs[15]) << 56)))
+	m.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	m.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	m.CmdSlot = int((uint64(bs[8]) | (uint64(bs[9]) << 8) | (uint64(bs[10]) << 16) | (uint64(bs[11]) << 24) | (uint64(bs[12]) << 32) | (uint64(bs[13]) << 40) | (uint64(bs[14]) << 48) | (uint64(bs[15]) << 56)))
 	return nil
 }
 
-func (t *MSyncReply) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *MSyncReply) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, false
 }
 
-func (t *MSyncReply) Marshal(wire io.Writer) {
+func (m *MSyncReply) Marshal(wire io.Writer) {
 	var b [16]byte
 	var bs []byte
 	bs = b[:16]
-	tmp32 := t.Replica
+	tmp32 := m.Replica
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.Ballot
+	tmp32 = m.Ballot
 	bs[4] = byte(tmp32)
 	bs[5] = byte(tmp32 >> 8)
 	bs[6] = byte(tmp32 >> 16)
 	bs[7] = byte(tmp32 >> 24)
-	tmp32 = t.CmdId.Client
+	tmp32 = m.CmdId.Client
 	bs[8] = byte(tmp32)
 	bs[9] = byte(tmp32 >> 8)
 	bs[10] = byte(tmp32 >> 16)
 	bs[11] = byte(tmp32 >> 24)
-	tmp32 = t.CmdId.Sequence
+	tmp32 = m.CmdId.Sequence
 	bs[12] = byte(tmp32)
 	bs[13] = byte(tmp32 >> 8)
 	bs[14] = byte(tmp32 >> 16)
 	bs[15] = byte(tmp32 >> 24)
 	wire.Write(bs)
 	bs = b[:]
-	alen1 := int64(len(t.Rep))
+	alen1 := int64(len(m.Rep))
 	if wlen := binary.PutVarint(bs, alen1); wlen >= 0 {
 		wire.Write(b[0:wlen])
 	}
 	for i := int64(0); i < alen1; i++ {
 		bs = b[:1]
-		bs[0] = byte(t.Rep[i])
+		bs[0] = byte(m.Rep[i])
 		wire.Write(bs)
 	}
 }
 
-func (t *MSyncReply) Unmarshal(rr io.Reader) error {
+func (m *MSyncReply) Unmarshal(rr io.Reader) error {
 	var wire byteReader
 	var ok bool
 	if wire, ok = rr.(byteReader); !ok {
@@ -145,57 +145,57 @@ func (t *MSyncReply) Unmarshal(rr io.Reader) error {
 	if _, err := io.ReadAtLeast(wire, bs, 16); err != nil {
 		return err
 	}
-	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
-	t.CmdId.Client = int32((uint32(bs[8]) | (uint32(bs[9]) << 8) | (uint32(bs[10]) << 16) | (uint32(bs[11]) << 24)))
-	t.CmdId.Sequence = int32((uint32(bs[12]) | (uint32(bs[13]) << 8) | (uint32(bs[14]) << 16) | (uint32(bs[15]) << 24)))
+	m.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	m.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	m.CmdId.Client = int32((uint32(bs[8]) | (uint32(bs[9]) << 8) | (uint32(bs[10]) << 16) | (uint32(bs[11]) << 24)))
+	m.CmdId.Sequence = int32((uint32(bs[12]) | (uint32(bs[13]) << 8) | (uint32(bs[14]) << 16) | (uint32(bs[15]) << 24)))
 	alen1, err := binary.ReadVarint(wire)
 	if err != nil {
 		return err
 	}
-	t.Rep = make([]byte, alen1)
+	m.Rep = make([]byte, alen1)
 	for i := int64(0); i < alen1; i++ {
 		bs = b[:1]
 		if _, err := io.ReadAtLeast(wire, bs, 1); err != nil {
 			return err
 		}
-		t.Rep[i] = byte(bs[0])
+		m.Rep[i] = byte(bs[0])
 	}
 	return nil
 }
 
-func (t *MAccept) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *MAccept) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, false
 }
 
-func (t *MAccept) Marshal(wire io.Writer) {
+func (m *MAccept) Marshal(wire io.Writer) {
 	var b [16]byte
 	var bs []byte
 	bs = b[:8]
-	tmp32 := t.Replica
+	tmp32 := m.Replica
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.Ballot
+	tmp32 = m.Ballot
 	bs[4] = byte(tmp32)
 	bs[5] = byte(tmp32 >> 8)
 	bs[6] = byte(tmp32 >> 16)
 	bs[7] = byte(tmp32 >> 24)
 	wire.Write(bs)
-	t.Cmd.Marshal(wire)
+	m.Cmd.Marshal(wire)
 	bs = b[:16]
-	tmp32 = t.CmdId.Client
+	tmp32 = m.CmdId.Client
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.CmdId.Sequence
+	tmp32 = m.CmdId.Sequence
 	bs[4] = byte(tmp32)
 	bs[5] = byte(tmp32 >> 8)
 	bs[6] = byte(tmp32 >> 16)
 	bs[7] = byte(tmp32 >> 24)
-	tmp64 := t.CmdSlot
+	tmp64 := m.CmdSlot
 	bs[8] = byte(tmp64)
 	bs[9] = byte(tmp64 >> 8)
 	bs[10] = byte(tmp64 >> 16)
@@ -207,71 +207,73 @@ func (t *MAccept) Marshal(wire io.Writer) {
 	wire.Write(bs)
 }
 
-func (t *MAccept) Unmarshal(wire io.Reader) error {
+func (m *MAccept) Unmarshal(wire io.Reader) error {
 	var b [16]byte
 	var bs []byte
 	bs = b[:8]
 	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
 		return err
 	}
-	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
-	t.Cmd.Unmarshal(wire)
+	m.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	m.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	if err := m.Cmd.Unmarshal(wire); err != nil {
+		return err
+	}
 	bs = b[:16]
 	if _, err := io.ReadAtLeast(wire, bs, 16); err != nil {
 		return err
 	}
-	t.CmdId.Client = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.CmdId.Sequence = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
-	t.CmdSlot = int((uint64(bs[8]) | (uint64(bs[9]) << 8) | (uint64(bs[10]) << 16) | (uint64(bs[11]) << 24) | (uint64(bs[12]) << 32) | (uint64(bs[13]) << 40) | (uint64(bs[14]) << 48) | (uint64(bs[15]) << 56)))
+	m.CmdId.Client = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	m.CmdId.Sequence = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	m.CmdSlot = int((uint64(bs[8]) | (uint64(bs[9]) << 8) | (uint64(bs[10]) << 16) | (uint64(bs[11]) << 24) | (uint64(bs[12]) << 32) | (uint64(bs[13]) << 40) | (uint64(bs[14]) << 48) | (uint64(bs[15]) << 56)))
 	return nil
 }
 
-func (t *MReply) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *MReply) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, false
 }
 
-func (t *MReply) Marshal(wire io.Writer) {
+func (m *MReply) Marshal(wire io.Writer) {
 	var b [16]byte
 	var bs []byte
 	bs = b[:16]
-	tmp32 := t.Replica
+	tmp32 := m.Replica
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.Ballot
+	tmp32 = m.Ballot
 	bs[4] = byte(tmp32)
 	bs[5] = byte(tmp32 >> 8)
 	bs[6] = byte(tmp32 >> 16)
 	bs[7] = byte(tmp32 >> 24)
-	tmp32 = t.CmdId.Client
+	tmp32 = m.CmdId.Client
 	bs[8] = byte(tmp32)
 	bs[9] = byte(tmp32 >> 8)
 	bs[10] = byte(tmp32 >> 16)
 	bs[11] = byte(tmp32 >> 24)
-	tmp32 = t.CmdId.Sequence
+	tmp32 = m.CmdId.Sequence
 	bs[12] = byte(tmp32)
 	bs[13] = byte(tmp32 >> 8)
 	bs[14] = byte(tmp32 >> 16)
 	bs[15] = byte(tmp32 >> 24)
 	wire.Write(bs)
 	bs = b[:]
-	alen1 := int64(len(t.Rep))
+	alen1 := int64(len(m.Rep))
 	if wlen := binary.PutVarint(bs, alen1); wlen >= 0 {
 		wire.Write(b[0:wlen])
 	}
 	for i := int64(0); i < alen1; i++ {
 		bs = b[:1]
-		bs[0] = byte(t.Rep[i])
+		bs[0] = byte(m.Rep[i])
 		wire.Write(bs)
 	}
 	bs = b[:1]
-	bs[0] = byte(t.Ok)
+	bs[0] = byte(m.Ok)
 	wire.Write(bs)
 }
 
-func (t *MReply) Unmarshal(rr io.Reader) error {
+func (m *MReply) Unmarshal(rr io.Reader) error {
 	var wire byteReader
 	var ok bool
 	if wire, ok = rr.(byteReader); !ok {
@@ -283,10 +285,10 @@ func (t *MReply) Unmarshal(rr io.Reader) error {
 	if _, err := io.ReadAtLeast(wire, bs, 16); err != nil {
 		return err
 	}
-	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
-	t.CmdId.Client = int32((uint32(bs[8]) | (uint32(bs[9]) << 8) | (uint32(bs[10]) << 16) | (uint32(bs[11]) << 24)))
-	t.CmdId.Sequence = int32((uint32(bs[12]) | (uint32(bs[13]) << 8) | (uint32(bs[14]) << 16) | (uint32(bs[15]) << 24)))
+	m.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	m.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	m.CmdId.Client = int32((uint32(bs[8]) | (uint32(bs[9]) << 8) | (uint32(bs[10]) << 16) | (uint32(bs[11]) << 24)))
+	m.CmdId.Sequence = int32((uint32(bs[12]) | (uint32(bs[13]) << 8) | (uint32(bs[14]) << 16) | (uint32(bs[15]) << 24)))
 	alen1, err := binary.ReadVarint(wire)
 	if err != nil {
 		return err
@@ -294,41 +296,41 @@ func (t *MReply) Unmarshal(rr io.Reader) error {
 	if alen1 < 0 {
 		return fmt.Errorf("invalid MReply payload length %d", alen1)
 	}
-	t.Rep = make([]byte, alen1)
+	m.Rep = make([]byte, alen1)
 	for i := int64(0); i < alen1; i++ {
 		bs = b[:1]
 		if _, err := io.ReadAtLeast(wire, bs, 1); err != nil {
 			return err
 		}
-		t.Rep[i] = byte(bs[0])
+		m.Rep[i] = byte(bs[0])
 	}
 	bs = b[:1]
 	if _, err := io.ReadFull(wire, bs); err != nil {
 		return err
 	}
-	t.Ok = uint8(bs[0])
+	m.Ok = uint8(bs[0])
 	return nil
 }
 
-func (t *MAcceptAck) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *MAcceptAck) BinarySize() (nbytes int, sizeKnown bool) {
 	return 16, true
 }
 
-func (t *MAcceptAck) Marshal(wire io.Writer) {
+func (m *MAcceptAck) Marshal(wire io.Writer) {
 	var b [16]byte
 	var bs []byte
 	bs = b[:16]
-	tmp32 := t.Replica
+	tmp32 := m.Replica
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.Ballot
+	tmp32 = m.Ballot
 	bs[4] = byte(tmp32)
 	bs[5] = byte(tmp32 >> 8)
 	bs[6] = byte(tmp32 >> 16)
 	bs[7] = byte(tmp32 >> 24)
-	tmp64 := t.CmdSlot
+	tmp64 := m.CmdSlot
 	bs[8] = byte(tmp64)
 	bs[9] = byte(tmp64 >> 8)
 	bs[10] = byte(tmp64 >> 16)
@@ -340,47 +342,47 @@ func (t *MAcceptAck) Marshal(wire io.Writer) {
 	wire.Write(bs)
 }
 
-func (t *MAcceptAck) Unmarshal(wire io.Reader) error {
+func (m *MAcceptAck) Unmarshal(wire io.Reader) error {
 	var b [16]byte
 	var bs []byte
 	bs = b[:16]
 	if _, err := io.ReadAtLeast(wire, bs, 16); err != nil {
 		return err
 	}
-	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
-	t.CmdSlot = int((uint64(bs[8]) | (uint64(bs[9]) << 8) | (uint64(bs[10]) << 16) | (uint64(bs[11]) << 24) | (uint64(bs[12]) << 32) | (uint64(bs[13]) << 40) | (uint64(bs[14]) << 48) | (uint64(bs[15]) << 56)))
+	m.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	m.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	m.CmdSlot = int((uint64(bs[8]) | (uint64(bs[9]) << 8) | (uint64(bs[10]) << 16) | (uint64(bs[11]) << 24) | (uint64(bs[12]) << 32) | (uint64(bs[13]) << 40) | (uint64(bs[14]) << 48) | (uint64(bs[15]) << 56)))
 	return nil
 }
 
-func (t *MAAcks) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *MAAcks) BinarySize() (nbytes int, sizeKnown bool) {
 	return 0, false
 }
 
-func (t *MAAcks) Marshal(wire io.Writer) {
+func (m *MAAcks) Marshal(wire io.Writer) {
 	var b [10]byte
 	var bs []byte
 	bs = b[:]
-	alen1 := int64(len(t.Acks))
+	alen1 := int64(len(m.Acks))
 	if wlen := binary.PutVarint(bs, alen1); wlen >= 0 {
 		wire.Write(b[0:wlen])
 	}
 	for i := int64(0); i < alen1; i++ {
 		bs = b[:4]
-		tmp32 := t.Acks[i].Replica
+		tmp32 := m.Acks[i].Replica
 		bs[0] = byte(tmp32)
 		bs[1] = byte(tmp32 >> 8)
 		bs[2] = byte(tmp32 >> 16)
 		bs[3] = byte(tmp32 >> 24)
 		wire.Write(bs)
-		tmp32 = t.Acks[i].Ballot
+		tmp32 = m.Acks[i].Ballot
 		bs[0] = byte(tmp32)
 		bs[1] = byte(tmp32 >> 8)
 		bs[2] = byte(tmp32 >> 16)
 		bs[3] = byte(tmp32 >> 24)
 		wire.Write(bs)
 		bs = b[:8]
-		tmp64 := t.Acks[i].CmdSlot
+		tmp64 := m.Acks[i].CmdSlot
 		bs[0] = byte(tmp64)
 		bs[1] = byte(tmp64 >> 8)
 		bs[2] = byte(tmp64 >> 16)
@@ -392,16 +394,16 @@ func (t *MAAcks) Marshal(wire io.Writer) {
 		wire.Write(bs)
 	}
 	bs = b[:]
-	alen2 := int64(len(t.Accepts))
+	alen2 := int64(len(m.Accepts))
 	if wlen := binary.PutVarint(bs, alen2); wlen >= 0 {
 		wire.Write(b[0:wlen])
 	}
 	for i := int64(0); i < alen2; i++ {
-		t.Accepts[i].Marshal(wire)
+		m.Accepts[i].Marshal(wire)
 	}
 }
 
-func (t *MAAcks) Unmarshal(rr io.Reader) error {
+func (m *MAAcks) Unmarshal(rr io.Reader) error {
 	var wire byteReader
 	var ok bool
 	if wire, ok = rr.(byteReader); !ok {
@@ -413,95 +415,97 @@ func (t *MAAcks) Unmarshal(rr io.Reader) error {
 	if err != nil {
 		return err
 	}
-	t.Acks = make([]MAcceptAck, alen1)
+	m.Acks = make([]MAcceptAck, alen1)
 	for i := int64(0); i < alen1; i++ {
 		bs = b[:4]
 		if _, err := io.ReadAtLeast(wire, bs, 4); err != nil {
 			return err
 		}
-		t.Acks[i].Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+		m.Acks[i].Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
 		if _, err := io.ReadAtLeast(wire, bs, 4); err != nil {
 			return err
 		}
-		t.Acks[i].Ballot = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+		m.Acks[i].Ballot = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
 		bs = b[:8]
 		if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
 			return err
 		}
-		t.Acks[i].CmdSlot = int((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
+		m.Acks[i].CmdSlot = int((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
 	}
 	alen2, err := binary.ReadVarint(wire)
 	if err != nil {
 		return err
 	}
-	t.Accepts = make([]MAccept, alen2)
+	m.Accepts = make([]MAccept, alen2)
 	for i := int64(0); i < alen2; i++ {
-		t.Accepts[i].Unmarshal(wire)
+		if err := m.Accepts[i].Unmarshal(wire); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (t *MRecordAck) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *MRecordAck) BinarySize() (nbytes int, sizeKnown bool) {
 	return 17, true
 }
 
-func (t *MRecordAck) Marshal(wire io.Writer) {
+func (m *MRecordAck) Marshal(wire io.Writer) {
 	var b [17]byte
 	var bs []byte
 	bs = b[:17]
-	tmp32 := t.Replica
+	tmp32 := m.Replica
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.Ballot
+	tmp32 = m.Ballot
 	bs[4] = byte(tmp32)
 	bs[5] = byte(tmp32 >> 8)
 	bs[6] = byte(tmp32 >> 16)
 	bs[7] = byte(tmp32 >> 24)
-	tmp32 = t.CmdId.Client
+	tmp32 = m.CmdId.Client
 	bs[8] = byte(tmp32)
 	bs[9] = byte(tmp32 >> 8)
 	bs[10] = byte(tmp32 >> 16)
 	bs[11] = byte(tmp32 >> 24)
-	tmp32 = t.CmdId.Sequence
+	tmp32 = m.CmdId.Sequence
 	bs[12] = byte(tmp32)
 	bs[13] = byte(tmp32 >> 8)
 	bs[14] = byte(tmp32 >> 16)
 	bs[15] = byte(tmp32 >> 24)
-	bs[16] = byte(t.Ok)
+	bs[16] = byte(m.Ok)
 	wire.Write(bs)
 }
 
-func (t *MRecordAck) Unmarshal(wire io.Reader) error {
+func (m *MRecordAck) Unmarshal(wire io.Reader) error {
 	var b [17]byte
 	var bs []byte
 	bs = b[:17]
 	if _, err := io.ReadAtLeast(wire, bs, 17); err != nil {
 		return err
 	}
-	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
-	t.CmdId.Client = int32((uint32(bs[8]) | (uint32(bs[9]) << 8) | (uint32(bs[10]) << 16) | (uint32(bs[11]) << 24)))
-	t.CmdId.Sequence = int32((uint32(bs[12]) | (uint32(bs[13]) << 8) | (uint32(bs[14]) << 16) | (uint32(bs[15]) << 24)))
-	t.Ok = uint8(bs[16])
+	m.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	m.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	m.CmdId.Client = int32((uint32(bs[8]) | (uint32(bs[9]) << 8) | (uint32(bs[10]) << 16) | (uint32(bs[11]) << 24)))
+	m.CmdId.Sequence = int32((uint32(bs[12]) | (uint32(bs[13]) << 8) | (uint32(bs[14]) << 16) | (uint32(bs[15]) << 24)))
+	m.Ok = uint8(bs[16])
 	return nil
 }
 
-func (t *MSync) BinarySize() (nbytes int, sizeKnown bool) {
+func (m *MSync) BinarySize() (nbytes int, sizeKnown bool) {
 	return 8, true
 }
 
-func (t *MSync) Marshal(wire io.Writer) {
+func (m *MSync) Marshal(wire io.Writer) {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]
-	tmp32 := t.CmdId.Client
+	tmp32 := m.CmdId.Client
 	bs[0] = byte(tmp32)
 	bs[1] = byte(tmp32 >> 8)
 	bs[2] = byte(tmp32 >> 16)
 	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.CmdId.Sequence
+	tmp32 = m.CmdId.Sequence
 	bs[4] = byte(tmp32)
 	bs[5] = byte(tmp32 >> 8)
 	bs[6] = byte(tmp32 >> 16)
@@ -509,15 +513,15 @@ func (t *MSync) Marshal(wire io.Writer) {
 	wire.Write(bs)
 }
 
-func (t *MSync) Unmarshal(wire io.Reader) error {
+func (m *MSync) Unmarshal(wire io.Reader) error {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]
 	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
 		return err
 	}
-	t.CmdId.Client = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.CmdId.Sequence = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	m.CmdId.Client = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	m.CmdId.Sequence = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
 	return nil
 }
 

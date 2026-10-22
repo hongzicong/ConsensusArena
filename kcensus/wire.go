@@ -15,11 +15,15 @@ import (
 
 const maxFrame = 16 << 20
 
-type wireMessage struct{ message }
+type wireMessage struct {
+	message
+	// Connection context is local to ingress and is never serialized.
+	connection *rpc.ClientConnection
+}
 
 func (*wireMessage) New() rpc.Serializable { return &wireMessage{} }
 func (w *wireMessage) BindClient(connection *rpc.ClientConnection) {
-	w.ClientConnection = connection
+	w.connection = connection
 }
 
 // Append scalar fields directly in little-endian order.

@@ -146,40 +146,40 @@ type MPingRep struct {
 	Ballot  int32
 }
 
-func (d Dep) Contains(cmdId defs.RequestID) bool {
+func (d Dep) Contains(cmdID defs.RequestID) bool {
 	for _, c := range d {
-		if c == cmdId {
+		if c == cmdID {
 			return true
 		}
 	}
 	return false
 }
 
-func NilDepOfCmdId(cmdId defs.RequestID) Dep {
-	return []defs.RequestID{cmdId}
+func NilDepOfCmdID(cmdID defs.RequestID) Dep {
+	return []defs.RequestID{cmdID}
 }
 
-func IsNilDepOfCmdId(cmdId defs.RequestID, dep Dep) bool {
-	return len(dep) == 1 && dep[0] == cmdId
+func IsNilDepOfCmdID(cmdID defs.RequestID, dep Dep) bool {
+	return len(dep) == 1 && dep[0] == cmdID
 }
 
-func (dep1 Dep) Equals(dep2 Dep) bool {
-	if len(dep1) != len(dep2) {
+func (d Dep) Equals(dep2 Dep) bool {
+	if len(d) != len(dep2) {
 		return false
 	}
 
 	seen1 := make(map[defs.RequestID]struct{})
 	seen2 := make(map[defs.RequestID]struct{})
-	for i := 0; i < len(dep1); i++ {
-		if dep1[i] == dep2[i] {
+	for i := 0; i < len(d); i++ {
+		if d[i] == dep2[i] {
 			continue
 		}
 
-		_, exists := seen2[dep1[i]]
+		_, exists := seen2[d[i]]
 		if exists {
-			delete(seen2, dep1[i])
+			delete(seen2, d[i])
 		} else {
-			seen1[dep1[i]] = struct{}{}
+			seen1[d[i]] = struct{}{}
 		}
 
 		_, exists = seen1[dep2[i]]
@@ -195,4 +195,12 @@ func (dep1 Dep) Equals(dep2 Dep) bool {
 
 type SHash struct {
 	H [32]byte
+}
+
+// proposal carries protocol input. context is an opaque runtime token.
+type proposal struct {
+	*defs.Propose
+	Proxy   bool
+	Addr    string
+	context any
 }

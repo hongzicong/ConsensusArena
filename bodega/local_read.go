@@ -8,69 +8,69 @@ import (
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
-func (e *engine) localReadAuthority(now time.Time) bool {
-	return (e.current.Leader != e.id || e.prepared) && e.stable(now)
+func (c *core) localReadAuthority(now time.Time) bool {
+	return (c.current.Leader != c.id || c.prepared) && c.stable(now)
 }
 
-func (e *engine) finishLocalRead(r request, value state.Value) {
-	e.stats.LocalReads++
-	if e.current.Leader == e.id {
-		e.stats.StableLeaderReads++
+func (c *core) finishLocalRead(r request, value state.Value) {
+	c.stats.LocalReads++
+	if c.current.Leader == c.id {
+		c.stats.StableLeaderReads++
 	}
-	e.finish(r, value)
+	c.finish(r, value)
 }
 
 // A majority-accepted prefix fixes earlier values, preventing an old minority
 // duplicate from later changing the first occurrence of a fresh request ID.
 // This is separate from all-responder commitment and from state-machine execution.
-func (e *engine) updateReadPrefix() {
+func (c *core) updateReadPrefix() {
 	var prefixes [63]uint64
-	copy(prefixes[:], e.acceptedProgress)
-	slices.Sort(prefixes[:e.n])
-	if p := prefixes[e.n-e.majority]; p > e.readPrefix {
-		e.readPrefix = p
+	copy(prefixes[:], c.acceptedProgress)
+	slices.Sort(prefixes[:c.n])
+	if p := prefixes[c.n-c.majority]; p > c.readPrefix {
+		c.readPrefix = p
 	}
 }
 
 // Read from a chosen slot only. Majority acceptance alone is not enough to
 // expose a write while another leased responder can still serve an older value.
-func (e *engine) readValue(s uint64, r request) (state.Value, bool) {
-	if s <= e.prefix {
-		return e.execute(r.Proposal.Command), true
+func (c *core) readValue(s uint64, r request) (state.Value, bool) {
+	if s <= c.prefix {
+		return c.execute(r.Proposal.Command), true
 	}
-	v, ok := e.log[s]
-	if !ok || !e.committed[s] || !v.ReadFresh || v.Ballot != e.current.Ballot || s > e.readPrefix {
+	v, ok := c.log[s]
+	if !ok || !c.committed[s] || !v.ReadFresh || v.Ballot != c.current.Ballot || s > c.readPrefix {
 		return nil, false
 	}
-	e.stats.OutOfOrderReads++
+	c.stats.OutOfOrderReads++
 	return v.lastWrite(r.Proposal.Command.K)
 }
 
-func (e *engine) queueFastSlot(s uint64) {
-	if len(e.holdWaiters[s]) > 0 && !e.fastQueued[s] {
-		e.fastQueued[s] = true
-		heap.Push(&e.fastSlots, s)
+func (c *core) queueFastSlot(s uint64) {
+	if len(c.holdWaiters[s]) > 0 && !c.fastQueued[s] {
+		c.fastQueued[s] = true
+		heap.Push(&c.fastSlots, s)
 	}
 }
 
 // False means lease authority expired mid-release; retain the queue for renewal.
 // A not-yet-committed slot keeps its waiters and is requeued on commit arrival.
-func (e *engine) releaseSlot(s uint64, now time.Time) bool {
-	for _, id := range e.holdWaiters[s] {
-		h, ok := e.held[id]
+func (c *core) releaseSlot(s uint64, now time.Time) bool {
+	for _, id := range c.holdWaiters[s] {
+		h, ok := c.held[id]
 		if !ok || h.Slot != s {
 			continue
 		}
-		if !e.localReadAuthority(now) || e.current.respondersFor(h.Request.Proposal.Command.K)&bit(e.id) == 0 {
+		if !c.localReadAuthority(now) || c.current.respondersFor(h.Request.Proposal.Command.K)&bit(c.id) == 0 {
 			return false
 		}
-		value, ready := e.readValue(s, h.Request)
+		value, ready := c.readValue(s, h.Request)
 		if !ready {
 			return true
 		}
-		e.finishLocalRead(h.Request, value)
+		c.finishLocalRead(h.Request, value)
 	}
-	delete(e.holdWaiters, s)
+	delete(c.holdWaiters, s)
 	return true
 }
 
@@ -88,23 +88,23 @@ func (q *readSlots) Push(x any) { *q = append(*q, x.(uint64)) }
 
 func (q *readSlots) Pop() any { old := *q; x := old[len(old)-1]; *q = old[:len(old)-1]; return x }
 
-func (e *engine) release(now time.Time) {
-	if !e.stable(now) {
+func (c *core) release(now time.Time) {
+	if !c.stable(now) {
 		return
 	}
-	for len(e.holdSlots) > 0 && e.holdSlots[0] <= e.prefix {
-		s := e.holdSlots[0]
-		if !e.releaseSlot(s, now) {
+	for len(c.holdSlots) > 0 && c.holdSlots[0] <= c.prefix {
+		s := c.holdSlots[0]
+		if !c.releaseSlot(s, now) {
 			return
 		}
-		heap.Pop(&e.holdSlots)
+		heap.Pop(&c.holdSlots)
 	}
-	for len(e.fastSlots) > 0 && e.fastSlots[0] <= e.readPrefix {
-		s := e.fastSlots[0]
-		if !e.releaseSlot(s, now) {
+	for len(c.fastSlots) > 0 && c.fastSlots[0] <= c.readPrefix {
+		s := c.fastSlots[0]
+		if !c.releaseSlot(s, now) {
 			return
 		}
-		heap.Pop(&e.fastSlots)
-		delete(e.fastQueued, s)
+		heap.Pop(&c.fastSlots)
+		delete(c.fastQueued, s)
 	}
 }

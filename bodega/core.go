@@ -16,7 +16,7 @@ import (
 type options struct {
 	Lease, Margin, Heartbeat, Failure, FailureMax time.Duration
 	Responders                                    uint64
-	Ranges                                        []defs.BodegaResponderRange
+	Ranges                                        []BodegaResponderRange
 }
 
 type grant struct {
@@ -48,8 +48,9 @@ type statistics struct {
 	RosterValidations, RosterReuses                                                 uint64
 }
 
-// engine has no goroutines. All callbacks and transitions are serialized.
-type engine struct {
+// core has no goroutines. All callbacks and transitions are serialized.
+// core owns protocol state, ordering, recovery decisions and completion semantics.
+type core struct {
 	id, n, majority               int
 	opt                           options
 	current, pending              roster
@@ -101,14 +102,14 @@ type engine struct {
 	stats                         statistics
 	trySend                       func(int, message) bool
 	tryBroadcast                  func(message) int
-	reply                         func(request, state.Value)
+	reply                         func(request, state.Value) bool
 	execute                       func(state.Command) state.Value
 	clock                         func() time.Time
 	trace                         func(string, ...interface{})
 }
 
-func newEngine(id, n int, opt options, now time.Time) *engine {
-	e := &engine{id: id, n: n, majority: n/2 + 1, opt: opt,
+func newCore(id, n int, opt options) *core {
+	c := &core{id: id, n: n, majority: n/2 + 1, opt: opt,
 		log: map[uint64]entry{}, committed: map[uint64]bool{}, votes: map[uint64]replicaset.Set{}, latest: map[state.Key]uint64{},
 		latestCommitted: map[state.Key]uint64{},
 		snapshots:       map[int]*snapshot{}, incoming: map[int]grant{}, outgoing: map[int]time.Time{}, requests: map[uint64]time.Time{},
@@ -116,199 +117,200 @@ func newEngine(id, n int, opt options, now time.Time) *engine {
 		inflight: map[defs.RequestID]uint64{}, completed: map[defs.RequestID]state.Value{}, holdWaiters: map[uint64][]defs.RequestID{}, holdCounts: map[uint64]int{},
 		acceptedProgress: make([]uint64, n), fastQueued: map[uint64]bool{}, noticeSlots: map[uint64]bool{}, batchIDs: map[defs.RequestID]bool{},
 		revoked: make([]uint64, n)}
-	for i := range e.seen {
-		e.refreshPeer(i, now)
-	}
-	return e
+	return c
 }
 
 // Sample once per timer refresh, not on each failure check. These deadlines
 // affect failure suspicion only; they never extend a roster lease.
-func (e *engine) refreshPeer(peer int, now time.Time) {
-	timeout := e.opt.Failure
-	if e.opt.FailureMax > timeout {
-		timeout += time.Duration(rand.Int63n(int64(e.opt.FailureMax-timeout) + 1))
+func (c *core) refreshPeer(peer int, now time.Time) {
+	timeout := c.opt.Failure
+	if c.opt.FailureMax > timeout {
+		timeout += time.Duration(rand.Int63n(int64(c.opt.FailureMax-timeout) + 1))
 	}
-	e.seen[peer] = now
-	e.failureAt[peer] = now.Add(timeout)
+	c.seen[peer] = now
+	c.failureAt[peer] = now.Add(timeout)
 }
 
-func (e *engine) peerHealthy(peer int, now time.Time) bool {
-	return now.Before(e.failureAt[peer])
+func (c *core) peerHealthy(peer int, now time.Time) bool {
+	return now.Before(c.failureAt[peer])
 }
 
 func bit(id int) uint64 { return uint64(1) << uint(id) }
 
-func (e *engine) active() bool { return e.current.Ballot != 0 && e.pending.Ballot == 0 }
+func (c *core) active() bool { return c.current.Ballot != 0 && c.pending.Ballot == 0 }
 
-func (e *engine) prepareMessage(m message) message {
-	m.From = e.id
-	m.Roster = e.current
-	if e.pending.Ballot > m.Roster.Ballot {
-		m.Roster = e.pending
+func (c *core) prepareMessage(m message) message {
+	m.From = c.id
+	m.Roster = c.current
+	if c.pending.Ballot > m.Roster.Ballot {
+		m.Roster = c.pending
 	}
-	if e.active() && e.id == e.current.Leader {
-		m.ReadPrefix = e.readPrefix
+	if c.active() && c.id == c.current.Leader {
+		m.ReadPrefix = c.readPrefix
 	}
 	return m
 }
 
-func (e *engine) emit(to int, m message) bool {
-	m = e.prepareMessage(m)
-	e.stats.Messages++
-	return e.trySend(to, m)
+func (c *core) emit(to int, m message) bool {
+	m = c.prepareMessage(m)
+	c.stats.Messages++
+	sent := c.trySend(to, m)
+	if !sent && m.Kind != promise {
+		c.stats.DroppedMessages++
+	}
+	return sent
 }
 
-func (e *engine) broadcast(m message) {
-	e.stats.Messages += uint64(e.n - 1)
-	m = e.prepareMessage(m)
-	drops := e.tryBroadcast(m)
+func (c *core) broadcast(m message) {
+	c.stats.Messages += uint64(c.n - 1)
+	m = c.prepareMessage(m)
+	drops := c.tryBroadcast(m)
 	if m.Kind != promise {
-		e.stats.DroppedMessages += uint64(drops)
+		c.stats.DroppedMessages += uint64(drops)
 	}
 	if m.Kind == heartbeat {
-		e.heartbeatBallot = m.Roster.Ballot
+		c.heartbeatBallot = m.Roster.Ballot
 	}
 }
 
-func (e *engine) heartbeatMessage() message {
-	m := message{Kind: heartbeat, Prefix: e.prefix}
-	if e.active() && e.current.Leader == e.id && e.prepared {
-		m.CommitPrefix = e.prefix
+func (c *core) heartbeatMessage() message {
+	m := message{Kind: heartbeat, Prefix: c.prefix}
+	if c.active() && c.current.Leader == c.id && c.prepared {
+		m.CommitPrefix = c.prefix
 	}
 	return m
 }
 
-func (e *engine) tracePeerAges(event string, now time.Time, healthy uint64) {
-	if e.trace == nil {
+func (c *core) tracePeerAges(event string, now time.Time, healthy uint64) {
+	if c.trace == nil {
 		return
 	}
-	ages := make([]int64, e.n)
-	for i, seen := range e.seen {
+	ages := make([]int64, c.n)
+	for i, seen := range c.seen {
 		ages[i] = now.Sub(seen).Milliseconds()
 	}
-	e.trace("%s replica=%d ballot=%d responders=%x healthy=%x peer_ages_ms=%v", event, e.id, e.current.Ballot, e.current.Responders, healthy, ages)
+	c.trace("%s replica=%d ballot=%d responders=%x healthy=%x peer_ages_ms=%v", event, c.id, c.current.Ballot, c.current.Responders, healthy, ages)
 }
 
-func (e *engine) stable(now time.Time) bool {
-	if e.clock != nil {
-		now = e.clock()
+func (c *core) stable(now time.Time) bool {
+	if c.clock != nil {
+		now = c.clock()
 	}
-	if !e.active() {
+	if !c.active() {
 		return false
 	}
 	count := 0
-	if e.prefix >= e.threshold {
+	if c.prefix >= c.threshold {
 		count++
 	}
-	for p, g := range e.incoming {
-		if p != e.id && now.Before(g.Until) && e.prefix >= g.Threshold {
+	for p, g := range c.incoming {
+		if p != c.id && now.Before(g.Until) && c.prefix >= g.Threshold {
 			count++
 		}
 	}
-	return count >= e.majority
+	return count >= c.majority
 }
 
-func (e *engine) tick(now time.Time) {
-	e.refreshPeer(e.id, now)
-	e.install(now)
-	hb := e.prepareMessage(e.heartbeatMessage())
+func (c *core) tick(now time.Time) {
+	c.refreshPeer(c.id, now)
+	c.install(now)
+	hb := c.prepareMessage(c.heartbeatMessage())
 	// Paper §5.2: unchanged rosters need only their ballot on the wire.
 	// Peers missing a full roster request it again; a failed peer must not
 	// force full-roster broadcasts to healthy peers indefinitely.
-	if hb.Roster.Ballot != 0 && hb.Roster.Ballot == e.heartbeatBallot {
+	if hb.Roster.Ballot != 0 && hb.Roster.Ballot == c.heartbeatBallot {
 		hb.Kind = lightHeartbeat
 	}
-	e.broadcast(hb)
-	if !e.active() {
-		e.revokeLeases(now)
+	c.broadcast(hb)
+	if !c.active() {
+		c.revokeLeases(now)
 		return
 	}
-	e.sequence++
-	e.requests[e.sequence] = now.Add(e.opt.Lease)
-	for s, until := range e.requests {
+	c.sequence++
+	c.requests[c.sequence] = now.Add(c.opt.Lease)
+	for s, until := range c.requests {
 		if !now.Before(until) {
-			delete(e.requests, s)
+			delete(c.requests, s)
 		}
 	}
-	e.broadcast(message{Kind: leaseRequest, Sequence: e.sequence})
+	c.broadcast(message{Kind: leaseRequest, Sequence: c.sequence})
 	healthy := uint64(0)
 	first := -1
-	for i := range e.seen {
-		if e.peerHealthy(i, now) {
+	for i := range c.seen {
+		if c.peerHealthy(i, now) {
 			healthy |= bit(i)
 			if first < 0 {
 				first = i
 			}
 		}
 	}
-	if bits.OnesCount64(healthy) >= e.majority {
-		if healthy&bit(e.current.Leader) == 0 && first == e.id {
-			e.proposeFilteredRoster(e.id, healthy, now)
+	if bits.OnesCount64(healthy) >= c.majority {
+		if healthy&bit(c.current.Leader) == 0 && first == c.id {
+			c.proposeFilteredRoster(c.id, healthy, now)
 			return
 		}
-		if e.current.Leader == e.id && e.current.allResponders() & ^healthy != 0 {
-			e.proposeFilteredRoster(e.id, healthy, now)
+		if c.current.Leader == c.id && c.current.allResponders() & ^healthy != 0 {
+			c.proposeFilteredRoster(c.id, healthy, now)
 			return
 		}
 	}
-	if e.current.Leader == e.id {
-		if !e.prepared {
-			e.startPrepare(now)
+	if c.current.Leader == c.id {
+		if !c.prepared {
+			c.startPrepare(now)
 		} else {
 			// Repair execution gaps independently of current-ballot acceptance.
-			for p := 0; p < e.n; p++ {
-				if p == e.id || !e.peerHealthy(p, now) {
+			for p := 0; p < c.n; p++ {
+				if p == c.id || !c.peerHealthy(p, now) {
 					continue
 				}
-				e.repairPeer(p)
+				c.repairPeer(p)
 			}
 		}
 	}
-	if e.current.Leader != e.id {
-		e.requestCommitRepair(now)
+	if c.current.Leader != c.id {
+		c.requestCommitRepair(now)
 	}
 	// Bound retry work independently of backlog size. FIFO rotation prevents
 	// loss repair from flooding the connection or starving later requests.
-	budget := len(e.retryQueue) - e.retryHead
+	budget := len(c.retryQueue) - c.retryHead
 	if budget > 256 {
 		budget = 256
 	}
 	for i := 0; i < budget; i++ {
-		id := e.retryQueue[e.retryHead]
-		e.retryHead++
-		if r, ok := e.queued[id]; ok {
-			delete(e.queued, id)
-			e.stats.RetriedRequests++
-			e.submit(r, now)
+		id := c.retryQueue[c.retryHead]
+		c.retryHead++
+		if r, ok := c.queued[id]; ok {
+			delete(c.queued, id)
+			c.stats.RetriedRequests++
+			c.submit(r, now)
 		}
 	}
-	if e.retryHead > 0 && e.retryHead >= len(e.retryQueue)/2 {
-		e.retryQueue = append([]defs.RequestID(nil), e.retryQueue[e.retryHead:]...)
-		e.retryHead = 0
+	if c.retryHead > 0 && c.retryHead >= len(c.retryQueue)/2 {
+		c.retryQueue = append([]defs.RequestID(nil), c.retryQueue[c.retryHead:]...)
+		c.retryHead = 0
 	}
-	e.release(now)
-	e.compactLog()
+	c.release(now)
+	c.compactLog()
 }
 
-func (e *engine) enqueue(r request) {
+func (c *core) enqueue(r request) {
 	id := r.id()
-	if _, ok := e.queued[id]; !ok {
-		e.retryQueue = append(e.retryQueue, id)
+	if _, ok := c.queued[id]; !ok {
+		c.retryQueue = append(c.retryQueue, id)
 	}
-	e.queued[id] = r
+	c.queued[id] = r
 }
 
-func (e *engine) receive(m message, now time.Time) {
-	if m.From < 0 || m.From >= e.n || m.From == e.id {
+func (c *core) receive(m message, now time.Time) {
+	if m.From < 0 || m.From >= c.n || m.From == c.id {
 		return
 	}
-	e.refreshPeer(m.From, now)
+	c.refreshPeer(m.From, now)
 	if m.Kind == rosterRequest {
 		// Reply with the latest complete roster, even while installation waits
 		// for old leases. A compact heartbeat alone never installs a roster.
-		if e.current.Ballot != 0 || e.pending.Ballot != 0 {
-			e.emit(m.From, e.heartbeatMessage())
+		if c.current.Ballot != 0 || c.pending.Ballot != 0 {
+			c.emit(m.From, c.heartbeatMessage())
 		}
 		return
 	}
@@ -318,13 +320,13 @@ func (e *engine) receive(m message, now time.Time) {
 	knownRoster := false
 	if m.Kind == lightHeartbeat {
 		switch {
-		case m.Roster.Ballot != 0 && m.Roster.Ballot == e.current.Ballot:
-			m.Roster = e.current
-		case m.Roster.Ballot != 0 && m.Roster.Ballot == e.pending.Ballot:
-			m.Roster = e.pending
+		case m.Roster.Ballot != 0 && m.Roster.Ballot == c.current.Ballot:
+			m.Roster = c.current
+		case m.Roster.Ballot != 0 && m.Roster.Ballot == c.pending.Ballot:
+			m.Roster = c.pending
 		default:
-			if m.Roster.Ballot > e.current.Ballot && m.Roster.Ballot > e.pending.Ballot {
-				e.emit(m.From, message{Kind: rosterRequest})
+			if m.Roster.Ballot > c.current.Ballot && m.Roster.Ballot > c.pending.Ballot {
+				c.emit(m.From, message{Kind: rosterRequest})
 			}
 			return
 		}
@@ -332,102 +334,102 @@ func (e *engine) receive(m message, now time.Time) {
 		m.Kind = heartbeat
 	}
 	// Revocation must work while either party is waiting to install a roster.
-	if e.receiveRevocation(m, now) {
+	if c.receiveRevocation(m, now) {
 		return
 	}
-	if m.Kind == commit && m.From != e.current.Leader {
+	if m.Kind == commit && m.From != c.current.Leader {
 		return
 	}
 	// Results retain their ingress identity across ballot changes.
 	if m.Kind == result {
-		if m.Request.Origin == e.id {
-			e.finish(m.Request, m.Value)
+		if m.Request.Origin == c.id {
+			c.finish(m.Request, m.Value)
 		}
 		return
 	}
 	// Only a heartbeat carries the complete configuration on the wire.
 	if m.Kind != heartbeat && m.Roster.Responders == 0 {
-		if !e.active() || m.Roster.Ballot != e.current.Ballot {
+		if !c.active() || m.Roster.Ballot != c.current.Ballot {
 			return
 		}
-		m.Roster = e.current
+		m.Roster = c.current
 		knownRoster = true
 	}
 	if knownRoster {
-		e.stats.RosterReuses++
+		c.stats.RosterReuses++
 	} else {
 		// Full external configurations must still be checked, even when their
 		// ballot matches an installed configuration. Never trust a ballot alone.
-		if !e.validRoster(m.Roster) {
+		if !c.validRoster(m.Roster) {
 			return
 		}
-		e.observeValidatedRoster(m.Roster, now)
+		c.observeValidatedRoster(m.Roster, now)
 	}
-	if !e.active() || (!knownRoster && !sameRoster(m.Roster, e.current)) {
+	if !c.active() || (!knownRoster && !sameRoster(m.Roster, c.current)) {
 		return
 	}
-	if m.From == e.current.Leader && m.ReadPrefix > e.readPrefix {
-		e.readPrefix = m.ReadPrefix
+	if m.From == c.current.Leader && m.ReadPrefix > c.readPrefix {
+		c.readPrefix = m.ReadPrefix
 	}
 	switch m.Kind {
 	case heartbeat:
-		e.progress[m.From] = maxSlot(e.progress[m.From], m.Prefix)
-		if m.From == e.current.Leader {
-			e.learnCommitNotice(m.CommitPrefix, 0, now)
+		c.progress[m.From] = maxSlot(c.progress[m.From], m.Prefix)
+		if m.From == c.current.Leader {
+			c.learnCommitNotice(m.CommitPrefix, 0, now)
 		}
 	case leaseRequest:
-		e.outgoing[m.From] = now.Add(e.opt.Lease + e.opt.Margin)
-		e.emit(m.From, message{Kind: leaseReply, Sequence: m.Sequence, Threshold: e.threshold})
+		c.outgoing[m.From] = now.Add(c.opt.Lease + c.opt.Margin)
+		c.emit(m.From, message{Kind: leaseReply, Sequence: m.Sequence, Threshold: c.threshold})
 	case leaseReply:
-		until, ok := e.requests[m.Sequence]
-		if ok && m.Roster.Ballot > e.revoked[m.From] && now.Before(until) && until.After(e.incoming[m.From].Until) {
-			e.incoming[m.From] = grant{until, m.Threshold}
+		until, ok := c.requests[m.Sequence]
+		if ok && m.Roster.Ballot > c.revoked[m.From] && now.Before(until) && until.After(c.incoming[m.From].Until) {
+			c.incoming[m.From] = grant{until, m.Threshold}
 		}
 	case prepare:
-		if m.From == e.current.Leader {
-			e.sendSnapshot(m.From, m.PrepareStart)
+		if m.From == c.current.Leader {
+			c.sendSnapshot(m.From, m.PrepareStart)
 		}
 	case promise:
-		if e.id == e.current.Leader && !e.prepared {
-			e.addSnapshot(m.From, m.PrepareStart, m.Part, m.Parts, m.Entries, now)
+		if c.id == c.current.Leader && !c.prepared {
+			c.addSnapshot(m.From, m.PrepareStart, m.Part, m.Parts, m.Entries, now)
 		}
 	case accept:
-		if m.From == e.current.Leader && m.Entry.Ballot == e.current.Ballot {
-			e.acceptEntry(m.Entry)
-			e.emit(m.From, message{Kind: accepted, Prefix: e.acceptedPrefix, Entry: entry{Slot: m.Entry.Slot, Ballot: m.Entry.Ballot}})
-			e.applyNoticedSlot(m.Entry.Slot)
-			e.learnCommitNotice(0, 0, now)
+		if m.From == c.current.Leader && m.Entry.Ballot == c.current.Ballot {
+			c.acceptEntry(m.Entry)
+			c.emit(m.From, message{Kind: accepted, Prefix: c.acceptedPrefix, Entry: entry{Slot: m.Entry.Slot, Ballot: m.Entry.Ballot}})
+			c.applyNoticedSlot(m.Entry.Slot)
+			c.learnCommitNotice(0, 0, now)
 		}
 	case accepted:
-		if e.id == e.current.Leader && e.prepared && m.Entry.Ballot == e.current.Ballot {
-			if v, ok := e.log[m.Entry.Slot]; ok && v.Ballot == m.Entry.Ballot {
-				if m.Prefix > e.acceptedProgress[m.From] {
-					e.acceptedProgress[m.From] = m.Prefix
-					e.updateReadPrefix()
+		if c.id == c.current.Leader && c.prepared && m.Entry.Ballot == c.current.Ballot {
+			if v, ok := c.log[m.Entry.Slot]; ok && v.Ballot == m.Entry.Ballot {
+				if m.Prefix > c.acceptedProgress[m.From] {
+					c.acceptedProgress[m.From] = m.Prefix
+					c.updateReadPrefix()
 				}
-				e.votes[v.Slot] = e.votes[v.Slot].With(m.From)
-				e.tryCommit(v.Slot, now)
+				c.votes[v.Slot] = c.votes[v.Slot].With(m.From)
+				c.tryCommit(v.Slot, now)
 			}
 		}
 	case commit:
-		e.stats.CommitNotices++
-		e.learnCommitNotice(m.CommitPrefix, m.CommitSlot, now)
+		c.stats.CommitNotices++
+		c.learnCommitNotice(m.CommitPrefix, m.CommitSlot, now)
 	case committedEntry:
-		if m.From == e.current.Leader {
-			e.learnCommittedEntry(m.Entry)
+		if m.From == c.current.Leader {
+			c.learnCommittedEntry(m.Entry)
 		}
 	case acceptNote:
 		// Reserved wire kind: optional pre-commit read notifications are disabled.
 	case repairRequest:
-		if e.id == e.current.Leader && e.prepared {
-			e.sendCommitRepair(m.From, m.RepairStart)
+		if c.id == c.current.Leader && c.prepared {
+			c.sendCommitRepair(m.From, m.RepairStart)
 		}
 	case forward:
-		if e.id == e.current.Leader {
-			e.submit(m.Request, now)
+		if c.id == c.current.Leader {
+			c.submit(m.Request, now)
 		}
 	}
-	e.release(now)
+	c.release(now)
 }
 
 func sameEntry(a, b entry) bool {
@@ -444,190 +446,196 @@ func sameEntry(a, b entry) bool {
 	return true
 }
 
-func (e *engine) acceptEntry(v entry) {
-	if v.Slot == 0 || v.Slot <= e.compacted {
+func (c *core) acceptEntry(v entry) {
+	if v.Slot == 0 || v.Slot <= c.compacted {
 		return
 	}
-	old, ok := e.log[v.Slot]
+	old, ok := c.log[v.Slot]
 	if ok && (old.Ballot > v.Ballot || (old.Ballot == v.Ballot && !sameEntry(old, v))) {
 		panic("bodega: conflicting accepted value")
 	}
-	if ok && e.committed[v.Slot] && !sameEntry(old, v) {
+	if ok && c.committed[v.Slot] && !sameEntry(old, v) {
 		panic("bodega: recovery changed a committed value")
 	}
-	e.log[v.Slot] = v
+	c.log[v.Slot] = v
 	for {
-		next, ok := e.log[e.acceptedPrefix+1]
-		if !ok || next.Ballot != e.current.Ballot {
+		next, ok := c.log[c.acceptedPrefix+1]
+		if !ok || next.Ballot != c.current.Ballot {
 			break
 		}
-		e.acceptedPrefix++
+		c.acceptedPrefix++
 	}
-	e.acceptedProgress[e.id] = e.acceptedPrefix
-	if v.Slot > e.high {
-		e.high = v.Slot
+	c.acceptedProgress[c.id] = c.acceptedPrefix
+	if v.Slot > c.high {
+		c.high = v.Slot
 	}
-	if v.Slot > e.next {
-		e.next = v.Slot
+	if v.Slot > c.next {
+		c.next = v.Slot
 	}
 	if ok && !sameEntry(old, v) {
-		delete(e.committed, v.Slot)
-		e.reindex()
+		delete(c.committed, v.Slot)
+		c.reindex()
 	} else {
 		for _, r := range v.requests() {
-			if r.Proposal.Command.Op == state.PUT && v.Slot > e.latest[r.Proposal.Command.K] {
-				e.latest[r.Proposal.Command.K] = v.Slot
+			if r.Proposal.Command.Op == state.PUT && v.Slot > c.latest[r.Proposal.Command.K] {
+				c.latest[r.Proposal.Command.K] = v.Slot
 			}
 		}
 	}
 }
 
-func (e *engine) reindex() {
-	e.latest = map[state.Key]uint64{}
-	e.latestCommitted = map[state.Key]uint64{}
-	for s, v := range e.log {
+func (c *core) reindex() {
+	c.latest = map[state.Key]uint64{}
+	c.latestCommitted = map[state.Key]uint64{}
+	for s, v := range c.log {
 		for _, r := range v.requests() {
 			if r.Proposal.Command.Op != state.PUT {
 				continue
 			}
 			k := r.Proposal.Command.K
-			if s > e.latest[k] {
-				e.latest[k] = s
+			if s > c.latest[k] {
+				c.latest[k] = s
 			}
-			if e.committed[s] && s > e.latestCommitted[k] {
-				e.latestCommitted[k] = s
+			if c.committed[s] && s > c.latestCommitted[k] {
+				c.latestCommitted[k] = s
 			}
 		}
 	}
 }
 
-func (e *engine) submit(r request, now time.Time) {
+func (c *core) submit(r request, now time.Time) {
 	id := r.id()
-	if value, ok := e.completed[id]; ok {
-		e.finish(r, value)
+	if value, ok := c.completed[id]; ok {
+		c.finish(r, value)
 		return
 	}
-	if !e.active() {
-		e.enqueue(r)
+	if !c.active() {
+		c.enqueue(r)
 		return
 	}
-	if e.current.Leader == e.id && !e.prepared {
-		e.enqueue(r)
+	if c.current.Leader == c.id && !c.prepared {
+		c.enqueue(r)
 		return
 	}
-	if r.Proposal.Command.Op == state.GET && e.current.respondersFor(r.Proposal.Command.K)&bit(e.id) != 0 {
-		if e.localReadAuthority(now) {
-			s := e.latest[r.Proposal.Command.K]
-			if e.current.Leader == e.id {
+	if r.Proposal.Command.Op == state.GET && c.current.respondersFor(r.Proposal.Command.K)&bit(c.id) != 0 {
+		if c.localReadAuthority(now) {
+			s := c.latest[r.Proposal.Command.K]
+			if c.current.Leader == c.id {
 				// Figure 7: the stable leader reads the latest committed value.
 				// A commit can precede prefix execution; use the same slot-value
 				// lookup as responders, never an older state-machine value.
-				s = e.latestCommitted[r.Proposal.Command.K]
+				s = c.latestCommitted[r.Proposal.Command.K]
 			}
-			if value, ok := e.readValue(s, r); ok {
-				e.finishLocalRead(r, value)
+			if value, ok := c.readValue(s, r); ok {
+				c.finishLocalRead(r, value)
 				return
 			}
-			if _, ok := e.held[id]; !ok {
-				if s > e.prefix && !e.committed[s] {
-					e.stats.UncommittedReadHolds++
+			if _, ok := c.held[id]; !ok {
+				if s > c.prefix && !c.committed[s] {
+					c.stats.UncommittedReadHolds++
 				}
-				e.held[id] = pendingRead{r, s, now}
-				if _, exists := e.holdWaiters[s]; !exists {
-					heap.Push(&e.holdSlots, s)
+				c.held[id] = pendingRead{r, s, now}
+				if _, exists := c.holdWaiters[s]; !exists {
+					heap.Push(&c.holdSlots, s)
 				}
-				e.holdWaiters[s] = append(e.holdWaiters[s], id)
-				e.holdCounts[s]++
-				e.queueFastSlot(s)
-				e.stats.HeldReads++
+				c.holdWaiters[s] = append(c.holdWaiters[s], id)
+				c.holdCounts[s]++
+				c.queueFastSlot(s)
+				c.stats.HeldReads++
 			}
-			delete(e.queued, id)
+			delete(c.queued, id)
 			return
 		}
-		e.stats.LeaseMisses++
+		c.stats.LeaseMisses++
 	}
-	if e.current.Leader != e.id {
-		e.enqueue(r)
-		e.stats.Forwarded++
-		e.emit(e.current.Leader, message{Kind: forward, Request: r})
+	if c.current.Leader != c.id {
+		c.enqueue(r)
+		c.stats.Forwarded++
+		c.emit(c.current.Leader, message{Kind: forward, Request: r})
 		return
 	}
-	if _, ok := e.inflight[id]; ok {
+	if _, ok := c.inflight[id]; ok {
 		return
 	}
-	delete(e.queued, id)
-	e.admit(r, now)
+	delete(c.queued, id)
+	c.admit(r, now)
 }
 
 // Notice evidence never supplies a value: only an Accept in the same ballot
 // can satisfy it. In particular, recovery cannot commit a stale local tail.
-func (e *engine) applyNoticedSlot(slot uint64) {
-	if slot == 0 || (slot > e.noticePrefix && !e.noticeSlots[slot]) {
+func (c *core) applyNoticedSlot(slot uint64) {
+	if slot == 0 || (slot > c.noticePrefix && !c.noticeSlots[slot]) {
 		return
 	}
-	v, ok := e.log[slot]
-	if !ok || v.Ballot != e.current.Ballot {
+	v, ok := c.log[slot]
+	if !ok || v.Ballot != c.current.Ballot {
 		return
 	}
-	if !e.committed[slot] {
-		e.markCommitted(slot)
+	if !c.committed[slot] {
+		c.markCommitted(slot)
 	}
-	delete(e.noticeSlots, slot)
+	delete(c.noticeSlots, slot)
 }
 
-func (e *engine) learnCommitNotice(prefix, slot uint64, now time.Time) {
-	e.noticePrefix = maxSlot(e.noticePrefix, prefix)
-	e.noticeHigh = maxSlot(e.noticeHigh, maxSlot(prefix, slot))
-	if slot > e.prefix {
-		e.noticeSlots[slot] = true
-		e.applyNoticedSlot(slot)
+func (c *core) learnCommitNotice(prefix, slot uint64, now time.Time) {
+	c.noticePrefix = maxSlot(c.noticePrefix, prefix)
+	c.noticeHigh = maxSlot(c.noticeHigh, maxSlot(prefix, slot))
+	if slot > c.prefix {
+		c.noticeSlots[slot] = true
+		c.applyNoticedSlot(slot)
 	}
 	// The executed prefix is already fixed. Check the unexecuted suffix
 	// directly, without waiting to re-accept all earlier slots in this ballot.
-	for s := e.prefix + 1; s <= e.noticePrefix; s++ {
-		v, ok := e.log[s]
-		if !ok || v.Ballot != e.current.Ballot {
+	for s := c.prefix + 1; s <= c.noticePrefix; s++ {
+		v, ok := c.log[s]
+		if !ok || v.Ballot != c.current.Ballot {
 			break
 		}
-		e.applyNoticedSlot(s)
+		c.applyNoticedSlot(s)
 	}
-	e.apply()
-	e.requestCommitRepair(now)
+	c.apply()
+	c.requestCommitRepair(now)
 }
 
-func (e *engine) tryCommit(s uint64, now time.Time) {
-	if !e.active() || !e.prepared || e.current.Leader != e.id || e.committed[s] {
+func (c *core) tryCommit(s uint64, now time.Time) {
+	if !c.active() || !c.prepared || c.current.Leader != c.id || c.committed[s] {
 		return
 	}
-	v := e.log[s]
-	mask := e.votes[s]
-	if mask.Size() < e.majority {
+	v := c.log[s]
+	mask := c.votes[s]
+	if mask.Size() < c.majority {
 		return
 	}
 	responders := uint64(0)
 	for _, r := range v.requests() {
 		if r.Proposal.Command.Op == state.PUT {
-			responders |= e.current.respondersFor(r.Proposal.Command.K)
+			responders |= c.current.respondersFor(r.Proposal.Command.K)
 		}
 	}
 	if !mask.Covers(replicaset.Set(responders)) {
-		e.stats.CoverageWaits++
+		c.stats.CoverageWaits++
 		return
 	}
-	e.markCommitted(s)
-	e.stats.Commits++
-	e.apply()
-	e.broadcast(message{Kind: commit, CommitPrefix: e.prefix, CommitSlot: s})
-	e.release(now)
+	c.markCommitted(s)
+	c.stats.Commits++
+	c.apply()
+	c.broadcast(message{Kind: commit, CommitPrefix: c.prefix, CommitSlot: s})
+	c.release(now)
 }
 
-func (e *engine) markCommitted(s uint64) {
-	e.committed[s] = true
-	for _, r := range e.log[s].requests() {
+func (c *core) markCommitted(s uint64) {
+	c.committed[s] = true
+	for _, r := range c.log[s].requests() {
 		cmd := r.Proposal.Command
-		if cmd.Op == state.PUT && s > e.latestCommitted[cmd.K] {
-			e.latestCommitted[cmd.K] = s
+		if cmd.Op == state.PUT && s > c.latestCommitted[cmd.K] {
+			c.latestCommitted[cmd.K] = s
 		}
 	}
-	e.queueFastSlot(s)
+	c.queueFastSlot(s)
+}
+
+func (c *core) activate(now time.Time) {
+	for i := range c.seen {
+		c.refreshPeer(i, now)
+	}
 }

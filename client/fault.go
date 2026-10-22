@@ -38,7 +38,7 @@ func (c *BufferClient) ConfigureFaultRun(alias string, clone int) error {
 		return fmt.Errorf("fault runs require clones=0")
 	}
 	c.fault = &faultTransport{dir: dir, alias: alias, dead: make([]atomic.Bool, len(c.servers))}
-	c.fault.replyFrom.Store(int32(c.ClosestId))
+	c.fault.replyFrom.Store(int32(c.ClosestID))
 	return nil
 }
 
@@ -89,13 +89,13 @@ func (c *Client) sendFaultProposal(cmd defs.Propose) {
 		}
 		return
 	}
-	d := c.LeaderId
+	d := c.LeaderID
 	if c.Leaderless {
-		d = c.ClosestId
+		d = c.ClosestID
 		if c.fault.dead[d].Load() {
 			d = c.nearestFaultSurvivor()
 			if d >= 0 {
-				c.ClosestId = d
+				c.ClosestID = d
 				c.fault.replyFrom.Store(int32(d))
 			}
 		}
@@ -109,11 +109,11 @@ func (c *Client) sendFaultProposal(cmd defs.Propose) {
 			// replica 0; the master explicitly returns -1 when no leader exists.
 			r := &defs.GetLeaderReply{}
 			if err := c.call(c.master, "Master.GetLeader", &defs.GetLeaderArgs{}, r); err == nil && r.LeaderId >= 0 && r.LeaderId < len(c.servers) && !c.fault.dead[r.LeaderId].Load() {
-				c.LeaderId = r.LeaderId
+				c.LeaderID = r.LeaderId
 				c.fault.replyFrom.Store(int32(r.LeaderId))
 			}
 		}
-		d = c.LeaderId
+		d = c.LeaderID
 	}
 	c.faultWrite(d, defs.PROPOSE, &cmd)
 }
@@ -220,7 +220,7 @@ func (c *BufferClient) loopFault(getKey func() int64) {
 	if c.protocol != nil {
 		retryPolicy = c.protocol.RetryPolicy()
 	}
-	if err := enc.Encode(map[string]interface{}{"type": "start", "epoch_ns": epoch.UnixNano(), "measurement_ns": measurement.UnixNano(), "actual_start_ns": time.Now().UnixNano(), "duration_s": c.duration.Seconds(), "timeline_origin": "run_start", "warmup_s": c.warmup.Seconds(), "observation_s": end.Sub(epoch).Seconds(), "client": f.alias, "client_id": c.ClientId, "retry_policy": retryPolicy, "histogram_resolution_ms": 1}); err != nil {
+	if err := enc.Encode(map[string]interface{}{"type": "start", "epoch_ns": epoch.UnixNano(), "measurement_ns": measurement.UnixNano(), "actual_start_ns": time.Now().UnixNano(), "duration_s": c.duration.Seconds(), "timeline_origin": "run_start", "warmup_s": c.warmup.Seconds(), "observation_s": end.Sub(epoch).Seconds(), "client": f.alias, "client_id": c.ClientID, "retry_policy": retryPolicy, "histogram_resolution_ms": 1}); err != nil {
 		panic(err)
 	}
 	var mu sync.Mutex
