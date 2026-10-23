@@ -60,6 +60,8 @@ type Config struct {
 	Plan            DeploymentPlan
 	KCensusTopology string
 	KCensusFailure  time.Duration
+	// Zero preserves one logical shard per key; positive counts use key modulo count.
+	KCensusShards int
 
 	// Bodega: default responders and optional per-key/range overrides by alias.
 	BodegaResponders                                                        string
@@ -236,6 +238,9 @@ func Read(filename, alias string) (*Config, error) {
 			case "kcensustopology":
 				c.KCensusTopology, err = expectString(strings.Fields(s.Text()))
 				ok = true
+			case "kcensusshards":
+				c.KCensusShards, err = expectInt(words)
+				ok = true
 			case "kcensusfailure":
 				c.KCensusFailure, err = expectDuration(words)
 				ok = true
@@ -374,6 +379,9 @@ func Read(filename, alias string) (*Config, error) {
 		}
 	}
 
+	if c.KCensusShards < 0 {
+		return c, Err("kcensusShards", "must be zero (one shard per key) or positive")
+	}
 	if c.KCensusFailure < 0 || (c.KCensusFailure > 0 && c.KCensusFailure < 30*time.Millisecond) {
 		return c, Err("kcensusFailure", "must be zero (default) or at least 30ms")
 	}

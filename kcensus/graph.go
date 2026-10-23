@@ -39,7 +39,7 @@ func (c *core) relayPayload(m message) {
 		}
 		c.payloadSeen[id] = true
 	} else {
-		x := c.slot(m.Key, m.Slot)
+		x := c.slot(m.Shard, m.Slot)
 		if x.payloadRelayed == nil {
 			x.payloadRelayed = make(map[graphEdge]bool)
 		}
@@ -54,7 +54,7 @@ func (c *core) relayPayload(m message) {
 		}
 		for _, out := range s.Outgoing {
 			if g.Payload[out] {
-				c.send(out.To, message{Kind: offer, Key: m.Key, Slot: m.Slot, ID: m.ID, Proposer: p, GraphTime: int64(out.Time), Value: m.Value})
+				c.send(out.To, message{Kind: offer, Shard: m.Shard, Slot: m.Slot, ID: m.ID, Proposer: p, GraphTime: int64(out.Time), Value: m.Value})
 			}
 		}
 		break
@@ -130,9 +130,9 @@ func (c *core) receiveGraph(m message, x *slotState) {
 			for _, report := range m.Reports {
 				c.mergeReport(x, report)
 			}
-			c.freezeConflict(m.Key, m.Slot, x)
+			c.freezeConflict(m.Shard, m.Slot, x)
 		}
-		c.graphValue(m.Key, m.Slot, x, m.Value)
+		c.graphValue(m.Shard, m.Slot, x, m.Value)
 	}
 	if x.values[p] == nil {
 		// Evidence cannot authorize acceptance, commitment or inferred reports
@@ -159,8 +159,8 @@ func (c *core) receiveGraph(m message, x *slotState) {
 			c.consumeGraph(old, x, e)
 		}
 	}
-	c.advanceGraph(m.Key, m.Slot, x, p)
-	c.tryGraphCensus(m.Key, m.Slot, x)
+	c.advanceGraph(m.Shard, m.Slot, x, p)
+	c.tryGraphCensus(m.Shard, m.Slot, x)
 }
 
 func (c *core) consumeGraph(m message, x *slotState, edge graphEdge) {
@@ -174,7 +174,7 @@ func (c *core) consumeGraph(m message, x *slotState, edge graphEdge) {
 		}
 		// An explicit snapshot means the sender left this graph's predicted
 		// knowledge schedule. Freeze before advancing local knowledge.
-		c.freezeConflict(m.Key, m.Slot, x)
+		c.freezeConflict(m.Shard, m.Slot, x)
 	} else {
 		g := c.plan.Graphs[p]
 		source := g.state(m.From, edge.Time)
@@ -193,7 +193,7 @@ func (c *core) consumeGraph(m message, x *slotState, edge graphEdge) {
 			}
 		}
 		if bits.OnesCount64(x.participants) > 1 {
-			c.freezeConflict(m.Key, m.Slot, x)
+			c.freezeConflict(m.Shard, m.Slot, x)
 		}
 	}
 }
@@ -230,7 +230,7 @@ func (c *core) advanceGraph(k state.Key, i uint64, x *slotState, p int) {
 	if c.id == c.plan.Leaders[p] && r.Cursor == len(states)-1 && !x.conflictAnnounced && bits.OnesCount64(x.participants) == 1 && x.promised <= uint64(c.n+c.plan.Leaders[p]) && c.canCommit(x) {
 		v := x.fast
 		c.stats.FastCommits++
-		c.broadcastCommit(message{Kind: commit, Key: k, Slot: i, Value: v, References: true})
+		c.broadcastCommit(message{Kind: commit, Shard: k, Slot: i, Value: v, References: true})
 		c.learn(k, i, v)
 	}
 }
@@ -252,7 +252,7 @@ func (c *core) emitGraph(k state.Key, i uint64, x *slotState, p int, s *graphSta
 	}
 	for _, edge := range s.Outgoing {
 		newValue := x.graph(p).NewValue
-		m := message{Kind: spread, Key: k, Slot: i, Proposer: p, GraphTime: int64(edge.Time), Explicit: explicit, Reports: reports, Mask: x.participants, Value: x.values[p], NewValue: newValue, References: true}
+		m := message{Kind: spread, Shard: k, Slot: i, Proposer: p, GraphTime: int64(edge.Time), Explicit: explicit, Reports: reports, Mask: x.participants, Value: x.values[p], NewValue: newValue, References: true}
 		if newValue && c.plan.Graphs[p].Payload[edge] {
 			m.References = false
 			c.stats.GraphPayloads++

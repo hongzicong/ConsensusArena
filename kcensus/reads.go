@@ -34,7 +34,7 @@ func (c *core) sendMissingReadQueries(q *pendingRead) bool {
 			c.stats.SuppressedReadRequests++
 			continue
 		}
-		c.send(voter, message{Kind: readQuery, Key: q.record.Command.K, ID: q.record.ID})
+		c.send(voter, message{Kind: readQuery, Shard: c.shardFor(q.record.Command.K), ID: q.record.ID})
 		sent = true
 	}
 	return sent
@@ -44,7 +44,7 @@ func (c *core) readyRead(q *pendingRead) {
 	if q.quorum {
 		return
 	}
-	executed := c.executed(q.record.Command.K)
+	executed := c.executed(c.shardFor(q.record.Command.K))
 	var fences []uint64
 	for voter, fence := range q.fences {
 		if fence <= executed && q.replies&(1<<voter) == 0 {

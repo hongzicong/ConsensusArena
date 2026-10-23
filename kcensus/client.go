@@ -55,7 +55,8 @@ func NewClient(b *client.BufferClient, conf *config.Config, clone int) *Client {
 	if pid < 0 {
 		panic("KCensus client alias/clone is not configured")
 	}
-	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, topology: topology, core: newCore(pid, topology.Plan, conf.KCensusFailure), inbox: make(chan message, 65536), resultInbox: make(chan message, 4096), proposals: make(chan Record, 65536), stop: make(chan struct{}), requests: make(map[defs.RequestID]*clientRequest)}
+	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, topology: topology, core: newCore(pid, topology.Plan, conf.KCensusFailure, conf.KCensusShards), inbox: make(chan message, 65536), resultInbox: make(chan message, 4096), proposals: make(chan Record, 65536), stop: make(chan struct{}), requests: make(map[defs.RequestID]*clientRequest)}
+	c.Printf("KCENSUS_SHARDS client=%d count=%d mapping=identity-if-zero-otherwise-modulo-v1", pid, conf.KCensusShards)
 	b.ClientID = int32(pid)
 	c.control = make(chan message, 4*c.core.m)
 	b.SkipPing = true
@@ -203,7 +204,7 @@ func (c *Client) queryResults() {
 			if c.Connection(peer) == nil || c.PeerFailed(peer) {
 				continue
 			}
-			c.core.send(peer, message{Kind: resultQuery, Key: q.record.Command.K, ID: id})
+			c.core.send(peer, message{Kind: resultQuery, Shard: c.core.shardFor(q.record.Command.K), ID: id})
 			budget--
 			break
 		}
@@ -223,6 +224,6 @@ func (c *Client) queryResults() {
 func (c *Client) sendRead(q *clientRequest) {
 	if q.delegate >= 0 {
 		r := q.record
-		c.core.send(q.delegate, message{Kind: delegateRead, Key: r.Command.K, ID: r.ID, Request: &r})
+		c.core.send(q.delegate, message{Kind: delegateRead, Shard: c.core.shardFor(r.Command.K), ID: r.ID, Request: &r})
 	}
 }

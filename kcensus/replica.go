@@ -40,7 +40,8 @@ func New(alias string, replicaID int, addrs []string, conf *config.Config, logge
 	plan := topology.Plan
 	logger.Printf("KCENSUS_PLAN replica=%d digest=%x processes=%v delegates=%v predicted_mean=%s budgets=%v returns=%v synthesis=%s requirements=%v", replicaID, plan.Digest, topology.Aliases, plan.Leaders, plan.Mean, plan.Budgets, plan.Returns, time.Since(start), plan.Requirements)
 	logger.Printf("KCENSUS_PRIORITY replica=%d order=%v", replicaID, plan.leaderPriority())
-	r := &Replica{topology: topology, Replica: replica.New(alias, replicaID, n/2, addrs, true, conf, logger), core: newCore(replicaID, plan, conf.KCensusFailure), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[defs.RequestID]*defs.GPropose), pendingReplies: make(map[defs.RequestID]replyJob)}
+	r := &Replica{topology: topology, Replica: replica.New(alias, replicaID, n/2, addrs, true, conf, logger), core: newCore(replicaID, plan, conf.KCensusFailure, conf.KCensusShards), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[defs.RequestID]*defs.GPropose), pendingReplies: make(map[defs.RequestID]replyJob)}
+	logger.Printf("KCENSUS_SHARDS replica=%d count=%d mapping=identity-if-zero-otherwise-modulo-v1", replicaID, conf.KCensusShards)
 	r.core.execute = func(cmd state.Command) state.Value { return cmd.Execute(r.State) }
 	r.core.reply = r.queueReply
 	r.code = r.RPC.Register(&wireMessage{}, r.inbox)

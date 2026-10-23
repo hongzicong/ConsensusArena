@@ -21,7 +21,8 @@ func (c *core) enqueue(r Record, shared bool) {
 	if c.ordered[r.ID] {
 		return
 	}
-	s := c.shard(r.Command.K)
+	k := c.shardFor(r.Command.K)
+	s := c.shard(k)
 	if !s.queued[r.ID] {
 		s.queued[r.ID] = true
 		s.pending = append(s.pending, r.ID)
@@ -32,7 +33,7 @@ func (c *core) enqueue(r Record, shared bool) {
 	if !s.scheduled {
 		s.scheduled = true
 		s.nextOffer = c.now + 4*c.retry
-		c.pendingKeys = append(c.pendingKeys, r.Command.K)
+		c.pendingShards = append(c.pendingShards, k)
 	}
 }
 
@@ -112,7 +113,7 @@ func (c *core) offerValue(k state.Key, v *Value, repair bool) {
 		return
 	}
 	c.stats.OfferedCommands += uint64(len(v.Records))
-	m := message{Kind: offer, Key: k, ID: v.Records[0].ID, Proposer: v.Proposer, Value: v}
+	m := message{Kind: offer, Shard: k, ID: v.Records[0].ID, Proposer: v.Proposer, Value: v}
 	if repair {
 		m.GraphTime = -1
 		// Make retained input available at the live reproposer and coordinator.
@@ -147,7 +148,7 @@ func (c *core) offerRepair(target int, m message) {
 	if c.repairHandoffs == nil {
 		c.repairHandoffs = make(map[payloadObject]uint64)
 	}
-	object := payloadObject{m.Key, v.UID}
+	object := payloadObject{m.Shard, v.UID}
 	bit := uint64(1) << target
 	if c.repairHandoffs[object]&bit != 0 {
 		c.stats.SuppressedRepairOffers++
@@ -160,12 +161,12 @@ func (c *core) offerRepair(target int, m message) {
 // Pending queues can outlive a slot (and its proposer). Revisit them fairly even
 // when there is no active slot to drive the ordinary recovery timer.
 func (c *core) retryPending() {
-	count := len(c.pendingKeys) - c.pendingHead
+	count := len(c.pendingShards) - c.pendingHead
 	if count > 256 {
 		count = 256
 	}
 	for ; count > 0; count-- {
-		k := c.pendingKeys[c.pendingHead]
+		k := c.pendingShards[c.pendingHead]
 		c.pendingHead++
 		s := c.shard(k)
 		if len(s.queued) == 0 {
@@ -173,7 +174,7 @@ func (c *core) retryPending() {
 			s.pending = nil
 			continue
 		}
-		c.pendingKeys = append(c.pendingKeys, k)
+		c.pendingShards = append(c.pendingShards, k)
 		c.propose(k)
 		// Reserve three quarters of each tick for active-slot recovery and reads.
 		// A large payload backlog must not prevent the census that drains it.
@@ -189,9 +190,9 @@ func (c *core) retryPending() {
 			c.offerValue(k, v, true)
 		}
 	}
-	if c.pendingHead > 4096 && c.pendingHead*2 >= len(c.pendingKeys) {
-		copy(c.pendingKeys, c.pendingKeys[c.pendingHead:])
-		c.pendingKeys = c.pendingKeys[:len(c.pendingKeys)-c.pendingHead]
+	if c.pendingHead > 4096 && c.pendingHead*2 >= len(c.pendingShards) {
+		copy(c.pendingShards, c.pendingShards[c.pendingHead:])
+		c.pendingShards = c.pendingShards[:len(c.pendingShards)-c.pendingHead]
 		c.pendingHead = 0
 	}
 }

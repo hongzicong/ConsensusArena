@@ -49,7 +49,7 @@ func (c *core) apply(k state.Key) {
 	if s.executed >= s.high {
 		delete(c.gaps, k)
 	}
-	for id, q := range c.readsByKey[k] {
+	for id, q := range c.readsByShard[k] {
 		c.finishRead(id, q)
 	}
 	c.releaseFuture(k)
@@ -68,9 +68,9 @@ func (c *core) finishRead(id defs.RequestID, q *pendingRead) {
 	v = append(state.Value(nil), v...)
 	c.results[id] = v
 	delete(c.reads, id)
-	delete(c.readsByKey[q.record.Command.K], id)
-	if len(c.readsByKey[q.record.Command.K]) == 0 {
-		delete(c.readsByKey, q.record.Command.K)
+	delete(c.readsByShard[c.shardFor(q.record.Command.K)], id)
+	if len(c.readsByShard[c.shardFor(q.record.Command.K)]) == 0 {
+		delete(c.readsByShard, c.shardFor(q.record.Command.K))
 	}
 	c.stats.ReadWaitNanos += uint64(c.now - q.started)
 	c.complete(id, v)
@@ -89,13 +89,13 @@ func (c *core) complete(id defs.RequestID, v state.Value) {
 			if recoveryReply && record.Command.Op == state.PUT {
 				c.stats.RecoveryResultReplies++
 			}
-			c.send(int(id.Client), message{Kind: executedResult, Key: record.Command.K, ID: id, Result: v})
+			c.send(int(id.Client), message{Kind: executedResult, Shard: c.shardFor(record.Command.K), ID: id, Result: v})
 		}
 	}
 }
 
 func (c *core) acceptsResult(m message, r Record) bool {
-	return m.From >= 0 && m.From < c.n && r.Command.K == m.Key
+	return m.From >= 0 && m.From < c.n && c.shardFor(r.Command.K) == m.Shard
 }
 
 // Called after client completion is claimed, before notifying the workload.
@@ -103,13 +103,13 @@ func (c *core) recordResult(m message, r Record) {
 	if r.Command.Op != state.PUT {
 		return
 	}
-	c.recordWriteCompletion(m.ID, c.executed(m.Key))
+	c.recordWriteCompletion(m.ID, c.executed(m.Shard))
 	// A voter has executed this exact input. Stop offering it while local
 	// commit/payload catch-up continues; this does not advance a slot prefix.
 	c.ordered[m.ID] = true
-	delete(c.repairHandoffs, payloadObject{m.Key, c.commandUIDs[m.ID]})
+	delete(c.repairHandoffs, payloadObject{m.Shard, c.commandUIDs[m.ID]})
 	c.results[m.ID] = append(state.Value(nil), m.Result...)
-	s := c.shard(m.Key)
+	s := c.shard(m.Shard)
 	delete(s.queued, m.ID)
 	delete(s.shared, m.ID)
 }

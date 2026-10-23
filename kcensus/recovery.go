@@ -109,7 +109,7 @@ func (c *core) recoverySnapshot() string {
 		Time                         int64
 	}
 	type head struct {
-		Key                   state.Key `json:"key"`
+		Shard                 state.Key `json:"shard"`
 		Slot                  uint64    `json:"slot"`
 		AgeMS                 int64     `json:"age_ms"`
 		Phase                 uint8     `json:"phase"`
@@ -132,14 +132,14 @@ func (c *core) recoverySnapshot() string {
 		status.HeardMS = append(status.HeardMS, (c.now - at).Milliseconds())
 	}
 	for id, x := range c.active {
-		if id.slot != c.executed(id.key)+1 {
+		if id.slot != c.executed(id.shard)+1 {
 			continue
 		}
 		status.Phases[x.phase]++
 		if c.graphPromiseQuorum(x) {
 			status.Quorums++
 		}
-		h := head{Key: id.key, Slot: id.slot, AgeMS: (c.now - x.created).Milliseconds(), Phase: x.phase, Ballot: x.ballot, Promise: x.promised, Reports: len(x.nodeReports), Acks: bits.OnesCount64(x.acks), Participants: x.participants}
+		h := head{Shard: id.shard, Slot: id.slot, AgeMS: (c.now - x.created).Milliseconds(), Phase: x.phase, Ballot: x.ballot, Promise: x.promised, Reports: len(x.nodeReports), Acks: bits.OnesCount64(x.acks), Participants: x.participants}
 		for _, r := range x.nodeReports {
 			if r.Ballot == x.ballot {
 				h.Frozen++
@@ -155,7 +155,7 @@ func (c *core) recoverySnapshot() string {
 			}
 		}
 		at := 0
-		for at < len(status.Oldest) && (status.Oldest[at].AgeMS > h.AgeMS || status.Oldest[at].AgeMS == h.AgeMS && status.Oldest[at].Key < h.Key) {
+		for at < len(status.Oldest) && (status.Oldest[at].AgeMS > h.AgeMS || status.Oldest[at].AgeMS == h.AgeMS && status.Oldest[at].Shard < h.Shard) {
 			at++
 		}
 		if at < 8 {
@@ -245,14 +245,14 @@ func (c *core) sendMissingPrepare(k state.Key, i uint64, x *slotState) {
 			c.stats.SuppressedRecoveryRequests++
 			continue
 		}
-		c.sendShared(voter, message{Kind: prepare, Key: k, Slot: i, Ballot: x.ballot}, &encoded)
+		c.sendShared(voter, message{Kind: prepare, Shard: k, Slot: i, Ballot: x.ballot}, &encoded)
 		x.prepareSent = x.prepareSent.With(voter)
 	}
 }
 
 func (c *core) sendMissingAccept(k state.Key, i uint64, x *slotState) {
 	var encoded []byte
-	m := c.valuePayload(message{Kind: accept, Key: k, Slot: i, Ballot: x.ballot, Value: x.selected})
+	m := c.valuePayload(message{Kind: accept, Shard: k, Slot: i, Ballot: x.ballot, Value: x.selected})
 	for voter := 0; voter < c.n; voter++ {
 		if c.peerFailed(voter) || x.acks&(uint64(1)<<voter) != 0 {
 			c.stats.SuppressedRecoveryRequests++
@@ -349,7 +349,7 @@ func (c *core) fetchPrefix(k state.Key, i uint64, x *slotState, target int, imme
 	} else {
 		c.stats.DeadlineFetches++
 	}
-	c.send(target, message{Kind: fetch, Key: k, Slot: i})
+	c.send(target, message{Kind: fetch, Shard: k, Slot: i})
 	return true
 }
 
@@ -389,7 +389,7 @@ func newerReport(a, b nodeReport) bool {
 }
 
 func promiseFromReport(k state.Key, slot uint64, r nodeReport) message {
-	m := message{Kind: promise, From: r.From, Key: k, Slot: slot, Ballot: r.Ballot, AcceptedBallot: r.AcceptedBallot, Mask: r.Mask, StateTime: r.Time}
+	m := message{Kind: promise, From: r.From, Shard: k, Slot: slot, Ballot: r.Ballot, AcceptedBallot: r.AcceptedBallot, Mask: r.Mask, StateTime: r.Time}
 	if r.AcceptedBallot > 0 {
 		m.Value = r.Value
 	} else {
@@ -596,7 +596,7 @@ func (c *core) completeCensus(k state.Key, i uint64, x *slotState) {
 	}
 	resolved, ready := c.resolveValue(k, v)
 	if !ready {
-		c.waitPayload(message{Kind: resumeCensus, From: c.id, Key: k, Slot: i, Ballot: x.ballot, Value: v})
+		c.waitPayload(message{Kind: resumeCensus, From: c.id, Shard: k, Slot: i, Ballot: x.ballot, Value: v})
 		return
 	}
 	v = resolved

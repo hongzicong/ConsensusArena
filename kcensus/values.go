@@ -6,7 +6,7 @@ import (
 	"math"
 )
 
-// The registry is per shard: equal scalar UIDs on different keys are unrelated.
+// The registry is per shard: equal scalar UIDs on different shards are unrelated. Records keep real keys.
 func (c *core) nextUID(k state.Key) uint64 {
 	s := c.shard(k)
 	uid := s.nextUID
@@ -17,13 +17,14 @@ func (c *core) nextUID(k state.Key) uint64 {
 	return uid
 }
 func (c *core) singleValue(r Record) *Value {
+	k := c.shardFor(r.Command.K)
 	if uid, ok := c.commandUIDs[r.ID]; ok {
-		v := *c.shard(r.Command.K).objects[uid]
+		v := *c.shard(k).objects[uid]
 		v.Proposer = c.id
 		return &v
 	}
-	v := &Value{UID: c.nextUID(r.Command.K), Proposer: c.id, Records: []Record{r}}
-	if err := c.storeValue(r.Command.K, v); err != nil {
+	v := &Value{UID: c.nextUID(k), Proposer: c.id, Records: []Record{r}}
+	if err := c.storeValue(k, v); err != nil {
 		panic(err)
 	}
 	return v
@@ -41,7 +42,7 @@ func (c *core) storeValue(k state.Key, v *Value) error {
 			return fmt.Errorf("invalid Single descriptor")
 		}
 		r := v.Records[0]
-		if r.Command.Op != state.PUT || r.Command.K != k || len(r.Command.V) > 65535 {
+		if r.Command.Op != state.PUT || c.shardFor(r.Command.K) != k || len(r.Command.V) > 65535 {
 			return fmt.Errorf("invalid Single command")
 		}
 		if old, ok := c.commandUIDs[r.ID]; ok && old != v.UID {

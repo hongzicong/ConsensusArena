@@ -12,8 +12,8 @@ import (
 )
 
 type slotID struct {
-	key  state.Key
-	slot uint64
+	shard state.Key
+	slot  uint64
 }
 
 // Slot and shard objects keep their identity for the lifetime of the core.
@@ -98,6 +98,7 @@ type core struct {
 	id, n, m, f         int
 	plan                Plan
 	priority            []int
+	shardCount          state.Key
 	shards              map[state.Key]*shard
 	active              map[slotID]*slotState
 	retryQueue          []retryItem
@@ -111,7 +112,7 @@ type core struct {
 	reads               map[defs.RequestID]*pendingRead
 	readQueue           []defs.RequestID
 	readHead            int
-	readsByKey          map[state.Key]map[defs.RequestID]*pendingRead
+	readsByShard        map[state.Key]map[defs.RequestID]*pendingRead
 	gaps                map[state.Key]bool
 	gapQueue            []state.Key
 	gapHead             int
@@ -128,7 +129,7 @@ type core struct {
 	reply               func(defs.RequestID, state.Value) bool
 	stats               Stats
 	localWrites         map[defs.RequestID]writeArrival
-	pendingKeys         []state.Key
+	pendingShards       []state.Key
 	pendingHead         int
 	future              map[state.Key][]message
 	payloadWaiting      map[payloadWaitKey]*payloadWait
@@ -142,7 +143,10 @@ type core struct {
 	repairHandoffs      map[payloadObject]uint64 // key/Single UID -> reliable-stream destinations
 }
 
-func newCore(id int, plan Plan, failure time.Duration) *core {
+func newCore(id int, plan Plan, failure time.Duration, shardCount int) *core {
+	if shardCount < 0 {
+		panic("KCensus shard count must not be negative")
+	}
 	if err := validateRequirements(plan.Requirements, plan.Voters); err != nil {
 		panic(err)
 	}
@@ -157,7 +161,7 @@ func newCore(id int, plan Plan, failure time.Duration) *core {
 	if failure <= 0 {
 		failure = 1500 * time.Millisecond
 	}
-	return &core{id: id, n: n, m: m, f: n / 2, plan: plan, priority: plan.leaderPriority(), shards: make(map[state.Key]*shard), active: make(map[slotID]*slotState), known: make(map[defs.RequestID]Record), commandUIDs: make(map[defs.RequestID]uint64), results: make(map[defs.RequestID]state.Value), ordered: make(map[defs.RequestID]bool), reads: make(map[defs.RequestID]*pendingRead), readsByKey: make(map[state.Key]map[defs.RequestID]*pendingRead), gaps: make(map[state.Key]bool), heard: make([]time.Duration, m), failure: failure, retry: failure / 3, localWrites: make(map[defs.RequestID]writeArrival), future: make(map[state.Key][]message)}
+	return &core{shardCount: state.Key(shardCount), id: id, n: n, m: m, f: n / 2, plan: plan, priority: plan.leaderPriority(), shards: make(map[state.Key]*shard), active: make(map[slotID]*slotState), known: make(map[defs.RequestID]Record), commandUIDs: make(map[defs.RequestID]uint64), results: make(map[defs.RequestID]state.Value), ordered: make(map[defs.RequestID]bool), reads: make(map[defs.RequestID]*pendingRead), readsByShard: make(map[state.Key]map[defs.RequestID]*pendingRead), gaps: make(map[state.Key]bool), heard: make([]time.Duration, m), failure: failure, retry: failure / 3, localWrites: make(map[defs.RequestID]writeArrival), future: make(map[state.Key][]message)}
 }
 
 func (c *core) shard(k state.Key) *shard {
@@ -265,6 +269,7 @@ func (c *core) submit(r Record) error {
 		return err
 	}
 	c.remember(r)
+	k := c.shardFor(r.Command.K)
 	if v, ok := c.results[r.ID]; ok {
 		c.complete(r.ID, v)
 		return nil
@@ -277,25 +282,25 @@ func (c *core) submit(r Record) error {
 			q := &pendingRead{record: r, started: c.now, lastSend: c.now, fences: make(map[int]uint64)}
 			c.reads[r.ID] = q
 			c.readQueue = append(c.readQueue, r.ID)
-			if c.readsByKey[r.Command.K] == nil {
-				c.readsByKey[r.Command.K] = make(map[defs.RequestID]*pendingRead)
+			if c.readsByShard[k] == nil {
+				c.readsByShard[k] = make(map[defs.RequestID]*pendingRead)
 			}
-			c.readsByKey[r.Command.K][r.ID] = q
+			c.readsByShard[k][r.ID] = q
 			c.stats.Reads++
 			c.sendMissingReadQueries(q)
 		}
 		return nil
 	}
 	single := c.singleValue(r)
-	s := c.shard(r.Command.K)
+	s := c.shard(k)
 	if _, exists := c.localWrites[r.ID]; !exists {
 		c.localWrites[r.ID] = writeArrival{c.now, s.executed}
 	}
 	c.enqueue(r, false)
-	c.propose(r.Command.K)
+	c.propose(k)
 	if !s.shared[r.ID] {
 		s.shared[r.ID] = true
-		c.offerValue(r.Command.K, single, !c.graphUsable(c.id))
+		c.offerValue(k, single, !c.graphUsable(c.id))
 	}
 	return nil
 }
@@ -377,7 +382,7 @@ func (c *core) validValue(k state.Key, v *Value, fast bool) bool {
 		if bytes > maxBatchBytes {
 			return false
 		}
-		if r.Command.K != k || r.Command.Op != state.PUT || len(r.Command.V) > state.MaxValueBytes || seen[r.ID] {
+		if c.shardFor(r.Command.K) != k || r.Command.Op != state.PUT || len(r.Command.V) > state.MaxValueBytes || seen[r.ID] {
 			return false
 		}
 		seen[r.ID] = true
@@ -419,7 +424,7 @@ func (c *core) learn(k state.Key, i uint64, v *Value) {
 		}
 		for edge := range r.Received {
 			if c.plan.Graphs[p].Payload[edge] {
-				c.relayPayload(message{From: edge.From, Proposer: p, Key: k, Slot: i, GraphTime: int64(edge.Time), Value: x.values[p]})
+				c.relayPayload(message{From: edge.From, Proposer: p, Shard: k, Slot: i, GraphTime: int64(edge.Time), Value: x.values[p]})
 			}
 		}
 	}
@@ -447,8 +452,11 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		c.receiveHeartbeat(m)
 		return
 	}
+	if !c.validShard(m.Shard) {
+		return
+	}
 	if m.Kind == delegateRead {
-		if c.id >= c.n || m.From < c.n || m.Request == nil || m.Request.ID.Client != int32(m.From) || m.Request.Command.Op != state.GET || m.Request.Command.K != m.Key {
+		if c.id >= c.n || m.From < c.n || m.Request == nil || m.Request.ID.Client != int32(m.From) || m.Request.Command.Op != state.GET || c.shardFor(m.Request.Command.K) != m.Shard {
 			return
 		}
 		if err := c.submit(*m.Request); err != nil {
@@ -461,7 +469,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 			return
 		}
 		if v, ok := c.results[m.ID]; ok {
-			c.send(m.From, message{Kind: executedResult, Key: m.Key, ID: m.ID, Result: v})
+			c.send(m.From, message{Kind: executedResult, Shard: m.Shard, ID: m.ID, Result: v})
 		}
 		return
 	}
@@ -470,7 +478,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 	}
 	if m.Kind == readReply && m.Value == nil && m.Fast == nil && len(m.Values) == 0 && len(m.Reports) == 0 && len(m.Knowledge) == 0 && len(m.UIDs) == 0 {
 		q := c.reads[m.ID]
-		if q == nil || q.record.Command.K != m.Key {
+		if q == nil || c.shardFor(q.record.Command.K) != m.Shard {
 			return
 		}
 		if _, seen := q.fences[m.From]; seen {
@@ -479,10 +487,10 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		}
 	}
 	// A learned old Commit needs neither its payload nor another slot transition.
-	if m.Kind == commit && m.Slot > 0 && m.Slot <= c.executed(m.Key) {
+	if m.Kind == commit && m.Slot > 0 && m.Slot <= c.executed(m.Shard) {
 		return
 	}
-	if m.Slot > 0 && m.Slot <= c.executed(m.Key) && (m.Kind == promise || m.Kind == accepted || m.Kind == nack) {
+	if m.Slot > 0 && m.Slot <= c.executed(m.Shard) && (m.Kind == promise || m.Kind == accepted || m.Kind == nack) {
 		c.stats.RetiredRecoveryReplies++
 		return
 	}
@@ -492,17 +500,17 @@ func (c *core) receiveMessage(m message, replayed bool) {
 	}
 	if m.Kind == payloadReply {
 		for _, v := range m.Values {
-			if err := c.storeValue(m.Key, v); err != nil {
+			if err := c.storeValue(m.Shard, v); err != nil {
 				panic(err)
 			}
-			resolved, ready := c.materialize(m.Key, v)
+			resolved, ready := c.materialize(m.Shard, v)
 			if ready {
 				c.enqueueValue(resolved)
 			}
 		}
 		c.stats.PayloadRepairs++
 		c.drainPayload()
-		c.propose(m.Key)
+		c.propose(m.Shard)
 		return
 	}
 	if m.Kind == prepare || m.Kind == promise || m.Kind == accept || m.Kind == commit {
@@ -510,7 +518,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 			if v == nil || v.Batch != nil || v.Reference {
 				return
 			}
-			if err := c.storeValue(m.Key, v); err != nil {
+			if err := c.storeValue(m.Shard, v); err != nil {
 				panic(err)
 			}
 		}
@@ -521,7 +529,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 	}
 	defer c.drainPayload()
 	for _, r := range m.Reports {
-		if r.Value != nil && !r.Value.Reference && !c.validValue(m.Key, r.Value, false) {
+		if r.Value != nil && !r.Value.Reference && !c.validValue(m.Shard, r.Value, false) {
 			return
 		}
 	}
@@ -529,8 +537,8 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		if c.id >= c.n {
 			return
 		}
-		reply := message{Kind: readReply, Key: m.Key, ID: m.ID}
-		reply.High = c.readFence(m.Key)
+		reply := message{Kind: readReply, Shard: m.Shard, ID: m.ID}
+		reply.High = c.readFence(m.Shard)
 		c.send(m.From, reply)
 		return
 	}
@@ -539,11 +547,11 @@ func (c *core) receiveMessage(m message, replayed bool) {
 			return
 		}
 		q := c.reads[m.ID]
-		if q == nil || q.record.Command.K != m.Key {
+		if q == nil || c.shardFor(q.record.Command.K) != m.Shard {
 			return
 		}
-		if m.Value != nil && m.Slot > 0 && c.validValue(m.Key, m.Value, false) {
-			c.learn(m.Key, m.Slot, m.Value)
+		if m.Value != nil && m.Slot > 0 && c.validValue(m.Shard, m.Value, false) {
+			c.learn(m.Shard, m.Slot, m.Value)
 			q = c.reads[m.ID]
 			if q == nil {
 				return
@@ -555,18 +563,18 @@ func (c *core) receiveMessage(m message, replayed bool) {
 			q.fences[m.From] = m.High
 		}
 		c.finishRead(m.ID, q)
-		if c.reads[m.ID] != nil && q.target > c.executed(m.Key) {
-			c.repairPrefix(m.Key, q.target, true)
+		if c.reads[m.ID] != nil && q.target > c.executed(m.Shard) {
+			c.repairPrefix(m.Shard, q.target, true)
 		}
 		return
 	}
 	if m.Kind == offer {
-		if !c.validValue(m.Key, m.Value, true) {
+		if !c.validValue(m.Shard, m.Value, true) {
 			return
 		}
 		c.enqueueValue(m.Value)
 		c.relayPayload(m)
-		c.propose(m.Key)
+		c.propose(m.Shard)
 		return
 	}
 	if m.Value != nil && m.Value.Batch != nil && m.Value.Batch.Slot != m.Slot {
@@ -576,29 +584,29 @@ func (c *core) receiveMessage(m message, replayed bool) {
 	if m.Slot == 0 {
 		return
 	}
-	if m.Value != nil && !c.validValue(m.Key, m.Value, m.Kind == spread) {
+	if m.Value != nil && !c.validValue(m.Shard, m.Value, m.Kind == spread) {
 		return
 	}
-	if m.Fast != nil && !c.validValue(m.Key, m.Fast, true) {
+	if m.Fast != nil && !c.validValue(m.Shard, m.Fast, true) {
 		return
 	}
 	// As in upstream's slot layer, future-slot messages cannot produce an
 	// acceptance before the preceding prefix executes. GET fences can then
 	// refer to the current acceptance rather than metadata's highest slot.
-	if m.Slot > c.executed(m.Key)+1 {
-		c.slot(m.Key, m.Slot)
-		c.future[m.Key] = append(c.future[m.Key], m)
+	if m.Slot > c.executed(m.Shard)+1 {
+		c.slot(m.Shard, m.Slot)
+		c.future[m.Shard] = append(c.future[m.Shard], m)
 		return
 	}
 	if m.Kind == spread || m.Kind == promise || m.Kind == accept {
 		c.enqueueValue(m.Value)
 		c.enqueueValue(m.Fast)
 	}
-	x := c.slot(m.Key, m.Slot)
+	x := c.slot(m.Shard, m.Slot)
 	c.cacheClassic(x, m)
 	if m.Kind == commit {
 		if m.Value != nil {
-			c.learn(m.Key, m.Slot, m.Value)
+			c.learn(m.Shard, m.Slot, m.Value)
 		}
 		return
 	}
@@ -609,19 +617,19 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		if m.Kind == fetch || m.Kind == prepare || m.Kind == accept || m.Kind == spread {
 			// Prefix catch-up must not depend on the bounded UID cache repair
 			// timer when a survivor never received the original phase-2 body.
-			c.send(m.From, c.valuePayload(message{Kind: commit, Key: m.Key, Slot: m.Slot, Value: x.decided}))
+			c.send(m.From, c.valuePayload(message{Kind: commit, Shard: m.Shard, Slot: m.Slot, Value: x.decided}))
 		}
-		c.propose(m.Key)
+		c.propose(m.Shard)
 		return
 	}
 	switch m.Kind {
 	case resumeCensus:
-		c.completeCensus(m.Key, m.Slot, x)
+		c.completeCensus(m.Shard, m.Slot, x)
 	case spread:
 		c.receiveGraph(m, x)
 	case abandon:
 		x.participants |= m.Mask & ((uint64(1) << c.m) - 1)
-		c.freezeConflict(m.Key, m.Slot, x)
+		c.freezeConflict(m.Shard, m.Slot, x)
 	case prepare:
 		if c.id >= c.n || m.From >= c.n {
 			return
@@ -630,7 +638,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 			return
 		}
 		if m.Ballot < x.promised {
-			c.send(m.From, message{Kind: nack, Key: m.Key, Slot: m.Slot, Ballot: x.promised})
+			c.send(m.From, message{Kind: nack, Shard: m.Shard, Slot: m.Slot, Ballot: x.promised})
 			return
 		}
 		x.promised = m.Ballot
@@ -639,21 +647,21 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		if !x.conflictAnnounced {
 			x.conflictAnnounced = true
 			x.announcedParticipants = x.participants
-			c.broadcast(message{Kind: abandon, Key: m.Key, Slot: m.Slot, Mask: x.participants})
+			c.broadcast(message{Kind: abandon, Shard: m.Shard, Slot: m.Slot, Mask: x.participants})
 		}
 		r := x.nodeReports[c.id]
 		fast := x.fast
 		if x.acceptedBallot > 0 {
 			fast = nil
 		}
-		c.send(m.From, c.valuePayload(message{Kind: promise, Key: m.Key, Slot: m.Slot, Ballot: m.Ballot, AcceptedBallot: x.acceptedBallot, Value: x.classic, Fast: fast, Mask: r.Mask, StateTime: r.Time}))
+		c.send(m.From, c.valuePayload(message{Kind: promise, Shard: m.Shard, Slot: m.Slot, Ballot: m.Ballot, AcceptedBallot: x.acceptedBallot, Value: x.classic, Fast: fast, Mask: r.Mask, StateTime: r.Time}))
 	case promise:
 		if c.id >= c.n || m.From >= c.n {
 			return
 		}
 		c.cachePromise(x, m)
 		if m.Ballot == uint64(c.n+c.id) {
-			c.initialCensus(m.Key, m.Slot, x)
+			c.initialCensus(m.Shard, m.Slot, x)
 		}
 		if x.phase != 1 || m.Ballot != x.ballot || x.promised > x.ballot {
 			return
@@ -662,7 +670,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 			return
 		}
 		x.reports[m.From] = m
-		c.completeCensus(m.Key, m.Slot, x)
+		c.completeCensus(m.Shard, m.Slot, x)
 	case accept:
 		if c.id >= c.n || m.From >= c.n {
 			return
@@ -671,7 +679,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 			return
 		}
 		if m.Ballot < x.promised {
-			c.send(m.From, message{Kind: nack, Key: m.Key, Slot: m.Slot, Ballot: x.promised})
+			c.send(m.From, message{Kind: nack, Shard: m.Shard, Slot: m.Slot, Ballot: x.promised})
 			return
 		}
 		if x.acceptedBallot == m.Ballot && !sameValue(x.classic, m.Value) {
@@ -686,7 +694,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		for _, r := range m.Value.Records {
 			c.remember(r)
 		}
-		c.send(m.From, message{Kind: accepted, Key: m.Key, Slot: m.Slot, Ballot: m.Ballot})
+		c.send(m.From, message{Kind: accepted, Shard: m.Shard, Slot: m.Slot, Ballot: m.Ballot})
 	case accepted:
 		if c.id >= c.n || m.From >= c.n {
 			return
@@ -699,8 +707,8 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		if bits.OnesCount64(x.acks) >= c.n-c.f {
 			c.stats.FallbackCommits++
 			v := x.selected
-			c.broadcastCommit(message{Kind: commit, Key: m.Key, Slot: m.Slot, Ballot: x.ballot, Value: v, References: true})
-			c.learn(m.Key, m.Slot, v)
+			c.broadcastCommit(message{Kind: commit, Shard: m.Shard, Slot: m.Slot, Ballot: x.ballot, Value: v, References: true})
+			c.learn(m.Shard, m.Slot, v)
 		}
 	case nack:
 		if m.Ballot > x.promised {
@@ -711,7 +719,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		// The active slot participates in periodic recovery. A request need not
 		// invent a fast acceptance merely to initiate a frozen census.
 	}
-	c.tryGraphCensus(m.Key, m.Slot, x)
+	c.tryGraphCensus(m.Shard, m.Slot, x)
 }
 
 func (c *core) tick(now time.Duration) {
@@ -761,18 +769,18 @@ func (c *core) tick(now time.Duration) {
 		c.retryBudget--
 		c.deferRetry(x)
 		if now-x.created >= c.failure && coord == c.id && (x.phase == 0 || x.promised > x.ballot) {
-			c.startRecovery(id.key, id.slot)
+			c.startRecovery(id.shard, id.slot)
 			continue
 		}
 		if x.phase > 0 && x.ballot >= x.promised {
 			c.stats.Retries++
 			if x.phase == 1 {
-				c.sendMissingPrepare(id.key, id.slot, x)
+				c.sendMissingPrepare(id.shard, id.slot, x)
 			} else {
-				c.sendMissingAccept(id.key, id.slot, x)
+				c.sendMissingAccept(id.shard, id.slot, x)
 			}
 		} else {
-			c.fetchPrefix(id.key, id.slot, x, coord, false)
+			c.fetchPrefix(id.shard, id.slot, x, coord, false)
 		}
 	}
 	if c.retryHead > 4096 && c.retryHead*2 >= len(c.retryQueue) {
@@ -802,8 +810,8 @@ func (c *core) tick(now time.Duration) {
 			q.lastSend = now
 		}
 		c.finishRead(id, q)
-		if c.reads[id] != nil && q.target > c.executed(q.record.Command.K) {
-			c.repairPrefix(q.record.Command.K, q.target, true)
+		if c.reads[id] != nil && q.target > c.executed(c.shardFor(q.record.Command.K)) {
+			c.repairPrefix(c.shardFor(q.record.Command.K), q.target, true)
 		}
 	}
 	if c.readHead > 4096 && c.readHead*2 >= len(c.readQueue) {

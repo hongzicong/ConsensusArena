@@ -28,6 +28,9 @@ type processTopology struct {
 // Replicas retain configuration order; non-voters use sorted alias/clone order.
 // Every process builds this same catalog before opening protocol streams.
 func configuredTopology(conf *config.Config) (processTopology, error) {
+	if conf.KCensusShards < 0 {
+		return processTopology{}, fmt.Errorf("KCensus shard count must not be negative")
+	}
 	n := len(conf.ReplicaAliases)
 	membership, err := conf.Membership()
 	if err != nil {
@@ -104,6 +107,11 @@ func configuredTopology(conf *config.Config) (processTopology, error) {
 				h.Write(length[:])
 				h.Write([]byte(identity))
 			}
+		}
+		if conf.KCensusShards > 0 {
+			h.Write([]byte("kcensus-shards-modulo-v1"))
+			binary.LittleEndian.PutUint64(length[:], uint64(conf.KCensusShards))
+			h.Write(length[:])
 		}
 		copy(t.Plan.Digest[:], h.Sum(nil))
 	}

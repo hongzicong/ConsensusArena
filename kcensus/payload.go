@@ -14,7 +14,7 @@ func (c *core) valuePayload(m message) message {
 			continue
 		}
 		for _, uid := range value.Batch.Members {
-			single := c.shard(m.Key).objects[uid]
+			single := c.shard(m.Shard).objects[uid]
 			if single == nil || single.Batch != nil || len(single.Records) != 1 {
 				panic("selected batch has missing Single payload")
 			}
@@ -25,13 +25,13 @@ func (c *core) valuePayload(m message) message {
 }
 
 type payloadObject struct {
-	Key state.Key
-	UID uint64
+	Shard state.Key
+	UID   uint64
 }
 type payloadWaitKey struct {
 	Kind                         uint8
 	From, Proposer               int
-	Key                          state.Key
+	Shard                        state.Key
 	Slot, Ballot, AcceptedBallot uint64
 	ID                           defs.RequestID
 	GraphTime                    int64
@@ -45,7 +45,7 @@ type payloadWait struct {
 }
 
 func payloadKey(m message) payloadWaitKey {
-	k := payloadWaitKey{Kind: m.Kind, From: m.From, Proposer: m.Proposer, Key: m.Key, Slot: m.Slot, Ballot: m.Ballot, AcceptedBallot: m.AcceptedBallot, ID: m.ID, GraphTime: m.GraphTime}
+	k := payloadWaitKey{Kind: m.Kind, From: m.From, Proposer: m.Proposer, Shard: m.Shard, Slot: m.Slot, Ballot: m.Ballot, AcceptedBallot: m.AcceptedBallot, ID: m.ID, GraphTime: m.GraphTime}
 	if m.Value != nil {
 		k.HasValue = true
 		k.Value = m.Value.UID
@@ -77,12 +77,12 @@ func (c *core) resolveValue(k state.Key, v *Value) (*Value, bool) {
 func (c *core) resolveMessage(m *message) bool {
 	ready := true
 	var ok bool
-	m.Value, ok = c.resolveValue(m.Key, m.Value)
+	m.Value, ok = c.resolveValue(m.Shard, m.Value)
 	ready = ready && ok
-	m.Fast, ok = c.resolveValue(m.Key, m.Fast)
+	m.Fast, ok = c.resolveValue(m.Shard, m.Fast)
 	ready = ready && ok
 	for i := range m.Reports {
-		m.Reports[i].Value, _ = c.resolveValue(m.Key, m.Reports[i].Value)
+		m.Reports[i].Value, _ = c.resolveValue(m.Shard, m.Reports[i].Value)
 	}
 	return ready
 }
@@ -104,13 +104,13 @@ func (c *core) queuePayload(m message, query bool) {
 		if v == nil {
 			continue
 		}
-		obj := c.shard(m.Key).objects[v.UID]
+		obj := c.shard(m.Shard).objects[v.UID]
 		if obj == nil {
-			w.missing[payloadObject{m.Key, v.UID}] = true
+			w.missing[payloadObject{m.Shard, v.UID}] = true
 		} else if obj.Batch != nil {
 			for _, uid := range obj.Batch.Members {
-				if c.shard(m.Key).objects[uid] == nil {
-					w.missing[payloadObject{m.Key, uid}] = true
+				if c.shard(m.Shard).objects[uid] == nil {
+					w.missing[payloadObject{m.Shard, uid}] = true
 				}
 			}
 		}
@@ -127,7 +127,7 @@ func (c *core) queuePayload(m message, query bool) {
 		c.stats.PayloadWaits++
 	}
 	if query && len(c.payloadWaiting) == 1 {
-		c.queryPayload(m.Key, []*Value{m.Value, m.Fast}, m.Reports)
+		c.queryPayload(m.Shard, []*Value{m.Value, m.Fast}, m.Reports)
 		c.payloadRetry = c.now + c.retry
 	}
 }
@@ -161,7 +161,7 @@ func (c *core) queryPayload(k state.Key, values []*Value, reports []nodeReport) 
 		if count > maxBatch {
 			count = maxBatch
 		}
-		c.broadcastAll(message{Kind: payloadQuery, Key: k, UIDs: ids[:count]})
+		c.broadcastAll(message{Kind: payloadQuery, Shard: k, UIDs: ids[:count]})
 		c.stats.PayloadQueries++
 		ids = ids[count:]
 	}
@@ -171,14 +171,14 @@ func (c *core) answerPayload(m message) {
 	size := 0
 	flush := func() {
 		if len(values) > 0 {
-			c.send(m.From, message{Kind: payloadReply, Key: m.Key, Values: values})
+			c.send(m.From, message{Kind: payloadReply, Shard: m.Shard, Values: values})
 			values = nil
 			size = 0
 		}
 	}
 	seen := map[uint64]bool{}
 	for _, uid := range m.UIDs {
-		v := c.shard(m.Key).objects[uid]
+		v := c.shard(m.Shard).objects[uid]
 		if v == nil || seen[uid] {
 			continue
 		}
@@ -268,7 +268,7 @@ func (c *core) retryPayload() {
 		c.payloadRotation = append(c.payloadRotation, w)
 		m := w.message
 		c.retryBudget--
-		c.queryPayload(m.Key, []*Value{m.Value, m.Fast}, m.Reports)
+		c.queryPayload(m.Shard, []*Value{m.Value, m.Fast}, m.Reports)
 	}
 	c.compactPayloadRotation()
 }
