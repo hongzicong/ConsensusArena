@@ -17,6 +17,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/master"
 	"github.com/hongzicong/ConsensusArena/placement"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/wireproto"
 )
 
 var (
@@ -32,6 +33,7 @@ var (
 
 func main() {
 	flag.Parse()
+	log.Printf("WIRE_CODEC name=%s", wireproto.Codec)
 
 	if *confs == "" {
 		flag.Usage()

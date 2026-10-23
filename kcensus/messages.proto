@@ -1,0 +1,69 @@
+syntax = "proto2";
+package kcensus;
+option go_package = "github.com/hongzicong/ConsensusArena/kcensus";
+import "gogoproto/gogo.proto";
+import "replica/defs/messages.proto";
+import "state/messages.proto";
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.goproto_getters_all) = false;
+option (gogoproto.goproto_unrecognized_all) = false;
+option (gogoproto.goproto_unkeyed_all) = false;
+option (gogoproto.goproto_sizecache_all) = false;
+
+message Batch {
+  optional uint64 slot = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Slot", (gogoproto.jsontag) = "Slot"];
+  repeated uint64 members = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Members", (gogoproto.jsontag) = "Members"];
+}
+
+message Record {
+  optional replica.defs.RequestID id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "ID", (gogoproto.jsontag) = "ID"];
+  optional state.Command command = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Command", (gogoproto.jsontag) = "Command"];
+}
+
+message Value {
+  optional uint64 uid = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "UID", (gogoproto.jsontag) = "UID"];
+  optional sint64 proposer = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Proposer", (gogoproto.jsontag) = "Proposer"];
+  repeated Record records = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Records", (gogoproto.jsontag) = "Records"];
+  optional Batch batch = 4 [(gogoproto.customname) = "Batch", (gogoproto.jsontag) = "Batch"];
+  optional bool reference = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Reference", (gogoproto.jsontag) = "Reference"];
+  optional bool absent = 6 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "-"];
+}
+
+message Message {
+  optional uint32 kind = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "uint8", (gogoproto.customname) = "Kind", (gogoproto.jsontag) = "Kind"];
+  optional sint64 from = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "From", (gogoproto.jsontag) = "From"];
+  optional sint64 proposer = 3 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Proposer", (gogoproto.jsontag) = "Proposer"];
+  optional sint64 key = 4 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Key", (gogoproto.customname) = "Key", (gogoproto.jsontag) = "Key"];
+  optional uint64 slot = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Slot", (gogoproto.jsontag) = "Slot"];
+  optional uint64 ballot = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional uint64 accepted_ballot = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "AcceptedBallot", (gogoproto.jsontag) = "AcceptedBallot"];
+  optional uint64 high = 8 [(gogoproto.nullable) = false, (gogoproto.customname) = "High", (gogoproto.jsontag) = "High"];
+  optional replica.defs.RequestID id = 9 [(gogoproto.nullable) = false, (gogoproto.customname) = "ID", (gogoproto.jsontag) = "ID"];
+  optional Value value = 10 [(gogoproto.customname) = "Value", (gogoproto.jsontag) = "Value"];
+  optional Value fast = 11 [(gogoproto.customname) = "Fast", (gogoproto.jsontag) = "Fast"];
+  repeated uint64 knowledge = 12 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/replicaset.Set", (gogoproto.customname) = "Knowledge", (gogoproto.jsontag) = "Knowledge"];
+  optional uint64 mask = 13 [(gogoproto.nullable) = false, (gogoproto.customname) = "Mask", (gogoproto.jsontag) = "Mask"];
+  optional bytes digest = 14 [(gogoproto.nullable) = false, (gogoproto.customtype) = "github.com/hongzicong/ConsensusArena/wiretypes.Hash", (gogoproto.customname) = "Digest", (gogoproto.jsontag) = "Digest"];
+  optional sint64 graph_time = 15 [(gogoproto.nullable) = false, (gogoproto.customname) = "GraphTime", (gogoproto.jsontag) = "GraphTime"];
+  optional bool explicit = 16 [(gogoproto.nullable) = false, (gogoproto.customname) = "Explicit", (gogoproto.jsontag) = "Explicit"];
+  optional bool new_value = 17 [(gogoproto.nullable) = false, (gogoproto.customname) = "NewValue", (gogoproto.jsontag) = "NewValue"];
+  optional sint64 state_time = 18 [(gogoproto.nullable) = false, (gogoproto.customname) = "StateTime", (gogoproto.jsontag) = "StateTime"];
+  repeated NodeReport reports = 19 [(gogoproto.nullable) = false, (gogoproto.customname) = "Reports", (gogoproto.jsontag) = "Reports"];
+  repeated uint64 ui_ds = 20 [(gogoproto.nullable) = false, (gogoproto.customname) = "UIDs", (gogoproto.jsontag) = "UIDs"];
+  repeated Value values = 21 [(gogoproto.customname) = "Values", (gogoproto.jsontag) = "Values"];
+  optional Record request = 22 [(gogoproto.customname) = "Request", (gogoproto.jsontag) = "Request"];
+  optional bytes result = 23 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Value", (gogoproto.customname) = "Result", (gogoproto.jsontag) = "Result"];
+}
+
+message NodeReport {
+  optional sint64 from = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "From", (gogoproto.jsontag) = "From"];
+  optional sint64 proposer = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Proposer", (gogoproto.jsontag) = "Proposer"];
+  optional uint64 ballot = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional uint64 accepted_ballot = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "AcceptedBallot", (gogoproto.jsontag) = "AcceptedBallot"];
+  optional uint64 mask = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Mask", (gogoproto.jsontag) = "Mask"];
+  optional sint64 time = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Time", (gogoproto.jsontag) = "Time"];
+  optional Value value = 7 [(gogoproto.customname) = "Value", (gogoproto.jsontag) = "Value"];
+}
+

@@ -22,7 +22,7 @@ func (r *Replica) run() {
 		case p := <-r.ProposeChan:
 			err = r.Propose(p, time.Now())
 		case raw := <-r.inbox:
-			err = r.Handle(raw, time.Now())
+			err = r.Step(raw, time.Now())
 		case now := <-ticker.C:
 			err = r.Tick(protocol.Tick{Now: now})
 		}
@@ -49,7 +49,7 @@ func (r *Replica) Propose(p *defs.GPropose, now time.Time) error {
 	return r.dispatch(out)
 }
 
-func (r *Replica) Handle(event any, now time.Time) error {
+func (r *Replica) Step(event any, now time.Time) error {
 	m, ok := event.(*message)
 	if !ok || m == nil {
 		return protocol.UnsupportedEvent("__PACKAGE__", event)

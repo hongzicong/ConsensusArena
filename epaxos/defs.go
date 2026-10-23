@@ -3,104 +3,12 @@ package epaxos
 // Protocol messages, identifiers, constants, and value helpers.
 import (
 	"bytes"
-	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"time"
+
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 
 	"github.com/hongzicong/ConsensusArena/state"
 )
-
-type Prepare struct {
-	LeaderId int32
-	Replica  int32
-	Instance int32
-	Ballot   int32
-}
-
-type PrepareReply struct {
-	AcceptorId int32
-	Replica    int32
-	Instance   int32
-	Ballot     int32
-	VBallot    int32
-	Status     int8
-	Command    []state.Command
-	Seq        int32
-	Deps       []int32
-}
-
-type PreAccept struct {
-	LeaderId int32
-	Replica  int32
-	Instance int32
-	Ballot   int32
-	Command  []state.Command
-	Seq      int32
-	Deps     []int32
-}
-
-type PreAcceptReply struct {
-	Replica       int32
-	Instance      int32
-	Ballot        int32
-	VBallot       int32
-	Seq           int32
-	Deps          []int32
-	CommittedDeps []int32
-	Status        int8
-	AcceptorId    int32
-}
-
-type PreAcceptOK struct {
-	Instance int32
-}
-
-type Accept struct {
-	LeaderId int32
-	Replica  int32
-	Instance int32
-	Ballot   int32
-	Seq      int32
-	Deps     []int32
-	Command  []state.Command
-}
-
-type AcceptReply struct {
-	Replica    int32
-	Instance   int32
-	Ballot     int32
-	AcceptorId int32
-}
-
-type Commit struct {
-	LeaderId int32
-	Replica  int32
-	Instance int32
-	Ballot   int32
-	Command  []state.Command
-	Seq      int32
-	Deps     []int32
-}
-
-type TryPreAccept struct {
-	LeaderId int32
-	Replica  int32
-	Instance int32
-	Ballot   int32
-	Command  []state.Command
-	Seq      int32
-	Deps     []int32
-}
-
-type TryPreAcceptReply struct {
-	AcceptorId       int32
-	Replica          int32
-	Instance         int32
-	Ballot           int32
-	VBallot          int32
-	ConflictReplica  int32
-	ConflictInstance int32
-	ConflictStatus   int8
-}
 
 const (
 	NONE int8 = iota
@@ -139,8 +47,6 @@ const BF_K = 4
 const BF_M_N = 32.0
 
 const HT_INIT_SIZE = 200000
-
-type repairRequest struct{ Owner, Slot int32 }
 
 func allPossible(n int) []bool {
 	p := make([]bool, n)

@@ -1,0 +1,110 @@
+syntax = "proto2";
+package epaxos;
+option go_package = "github.com/hongzicong/ConsensusArena/epaxos";
+import "gogoproto/gogo.proto";
+import "state/messages.proto";
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.goproto_getters_all) = false;
+option (gogoproto.goproto_unrecognized_all) = false;
+option (gogoproto.goproto_unkeyed_all) = false;
+option (gogoproto.goproto_sizecache_all) = false;
+
+message Accept {
+  optional sint32 leader_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "LeaderId", (gogoproto.jsontag) = "LeaderId"];
+  optional sint32 replica = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 instance = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Instance", (gogoproto.jsontag) = "Instance"];
+  optional sint32 ballot = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional sint32 seq = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Seq", (gogoproto.jsontag) = "Seq"];
+  repeated sint32 deps = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Deps", (gogoproto.jsontag) = "Deps"];
+  repeated state.Command command = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "Command", (gogoproto.jsontag) = "Command"];
+}
+
+message AcceptReply {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 instance = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Instance", (gogoproto.jsontag) = "Instance"];
+  optional sint32 ballot = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional sint32 acceptor_id = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "AcceptorId", (gogoproto.jsontag) = "AcceptorId"];
+}
+
+message Commit {
+  optional sint32 leader_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "LeaderId", (gogoproto.jsontag) = "LeaderId"];
+  optional sint32 replica = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 instance = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Instance", (gogoproto.jsontag) = "Instance"];
+  optional sint32 ballot = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  repeated state.Command command = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Command", (gogoproto.jsontag) = "Command"];
+  optional sint32 seq = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Seq", (gogoproto.jsontag) = "Seq"];
+  repeated sint32 deps = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "Deps", (gogoproto.jsontag) = "Deps"];
+}
+
+message PreAccept {
+  optional sint32 leader_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "LeaderId", (gogoproto.jsontag) = "LeaderId"];
+  optional sint32 replica = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 instance = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Instance", (gogoproto.jsontag) = "Instance"];
+  optional sint32 ballot = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  repeated state.Command command = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Command", (gogoproto.jsontag) = "Command"];
+  optional sint32 seq = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Seq", (gogoproto.jsontag) = "Seq"];
+  repeated sint32 deps = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "Deps", (gogoproto.jsontag) = "Deps"];
+}
+
+message PreAcceptOK {
+  optional sint32 instance = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Instance", (gogoproto.jsontag) = "Instance"];
+}
+
+message PreAcceptReply {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 instance = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Instance", (gogoproto.jsontag) = "Instance"];
+  optional sint32 ballot = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional sint32 v_ballot = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "VBallot", (gogoproto.jsontag) = "VBallot"];
+  optional sint32 seq = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Seq", (gogoproto.jsontag) = "Seq"];
+  repeated sint32 deps = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Deps", (gogoproto.jsontag) = "Deps"];
+  repeated sint32 committed_deps = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "CommittedDeps", (gogoproto.jsontag) = "CommittedDeps"];
+  optional sint32 status = 8 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int8", (gogoproto.customname) = "Status", (gogoproto.jsontag) = "Status"];
+  optional sint32 acceptor_id = 9 [(gogoproto.nullable) = false, (gogoproto.customname) = "AcceptorId", (gogoproto.jsontag) = "AcceptorId"];
+}
+
+message Prepare {
+  optional sint32 leader_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "LeaderId", (gogoproto.jsontag) = "LeaderId"];
+  optional sint32 replica = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 instance = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Instance", (gogoproto.jsontag) = "Instance"];
+  optional sint32 ballot = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+}
+
+message PrepareReply {
+  optional sint32 acceptor_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "AcceptorId", (gogoproto.jsontag) = "AcceptorId"];
+  optional sint32 replica = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 instance = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Instance", (gogoproto.jsontag) = "Instance"];
+  optional sint32 ballot = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional sint32 status = 5 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int8", (gogoproto.customname) = "Status", (gogoproto.jsontag) = "Status"];
+  repeated state.Command command = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Command", (gogoproto.jsontag) = "Command"];
+  optional sint32 seq = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "Seq", (gogoproto.jsontag) = "Seq"];
+  repeated sint32 deps = 8 [(gogoproto.nullable) = false, (gogoproto.customname) = "Deps", (gogoproto.jsontag) = "Deps"];
+}
+
+message TryPreAccept {
+  optional sint32 leader_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "LeaderId", (gogoproto.jsontag) = "LeaderId"];
+  optional sint32 replica = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 instance = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Instance", (gogoproto.jsontag) = "Instance"];
+  optional sint32 ballot = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  repeated state.Command command = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Command", (gogoproto.jsontag) = "Command"];
+  optional sint32 seq = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Seq", (gogoproto.jsontag) = "Seq"];
+  repeated sint32 deps = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "Deps", (gogoproto.jsontag) = "Deps"];
+}
+
+message TryPreAcceptReply {
+  optional sint32 acceptor_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "AcceptorId", (gogoproto.jsontag) = "AcceptorId"];
+  optional sint32 replica = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 instance = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Instance", (gogoproto.jsontag) = "Instance"];
+  optional sint32 ballot = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional sint32 v_ballot = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "VBallot", (gogoproto.jsontag) = "VBallot"];
+  optional sint32 conflict_replica = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "ConflictReplica", (gogoproto.jsontag) = "ConflictReplica"];
+  optional sint32 conflict_instance = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "ConflictInstance", (gogoproto.jsontag) = "ConflictInstance"];
+  optional sint32 conflict_status = 8 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int8", (gogoproto.customname) = "ConflictStatus", (gogoproto.jsontag) = "ConflictStatus"];
+}
+
+message RepairRequest {
+  optional sint32 owner = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Owner", (gogoproto.jsontag) = "Owner"];
+  optional sint32 slot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Slot", (gogoproto.jsontag) = "Slot"];
+}
+

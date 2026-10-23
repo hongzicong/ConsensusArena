@@ -50,10 +50,10 @@ func (c *core) prepare(m message) {
 				continue
 			}
 			var e *entry
-			if st.Chosen != nil {
-				e = st.Chosen
+			if st.chosen != nil {
+				e = st.chosen
 			} else {
-				e = st.Accepted
+				e = st.accepted
 			}
 			if e != nil {
 				v := *e
@@ -135,22 +135,22 @@ func (c *core) promisePage(m message) {
 	}
 	s := c.snapshots[m.From]
 	if s == nil {
-		s = &snapshot{Pages: m.Pages, High: m.High, Parts: make(map[int][]entry)}
+		s = &snapshot{pages: m.Pages, high: m.High, parts: make(map[int][]entry)}
 		c.snapshots[m.From] = s
 	}
-	if s.Pages != m.Pages || s.High != m.High {
+	if s.pages != m.Pages || s.high != m.High {
 		return
 	}
-	if _, ok := s.Parts[m.Page]; !ok {
-		s.Parts[m.Page] = m.Entries
+	if _, ok := s.parts[m.Page]; !ok {
+		s.parts[m.Page] = m.Entries
 	}
 	var voters uint64
 	maxSlot := c.start - 1
 	for id, s := range c.snapshots {
-		if len(s.Parts) == s.Pages {
+		if len(s.parts) == s.pages {
 			voters |= 1 << id
-			if s.High > maxSlot {
-				maxSlot = s.High
+			if s.high > maxSlot {
+				maxSlot = s.high
 			}
 		}
 	}
@@ -162,7 +162,7 @@ func (c *core) promisePage(m message) {
 		if voters&(1<<id) == 0 {
 			continue
 		}
-		for _, page := range s.Parts {
+		for _, page := range s.parts {
 			for _, e := range page {
 				if e.Payload {
 					c.remember(e.Value)
@@ -182,8 +182,8 @@ func (c *core) promisePage(m message) {
 	for slot := c.start; slot <= maxSlot; slot++ {
 		v, _ := selectValue(bySlot[slot], voters, c.fastSize, c.n)
 		st := c.slot(slot)
-		st.Proposed = &entry{Slot: slot, Epoch: c.promise, Value: v}
-		st.Acks = 0
+		st.proposed = &entry{Slot: slot, Epoch: c.promise, Value: v}
+		st.acks = 0
 		if !v.Noop {
 			c.assigned[v.ID] = true
 		}
@@ -227,8 +227,8 @@ func (c *core) resend() {
 		if st == nil {
 			continue
 		}
-		if st.Chosen != nil {
-			e := *st.Chosen
+		if st.chosen != nil {
+			e := *st.chosen
 			if !e.Value.Noop {
 				if v, ok := c.known[e.Value.ID]; ok {
 					e.Value = v
@@ -236,8 +236,8 @@ func (c *core) resend() {
 				}
 			}
 			committed = append(committed, e)
-		} else if st.Proposed != nil && st.Proposed.Epoch == c.promise {
-			e := *st.Proposed
+		} else if st.proposed != nil && st.proposed.Epoch == c.promise {
+			e := *st.proposed
 			if !e.Value.Noop {
 				v, ok := c.known[e.Value.ID]
 				if !ok {

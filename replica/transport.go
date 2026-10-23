@@ -296,7 +296,7 @@ func (r *Replica) SendToAll(msg fastrpc.Serializable, code uint8, plan ...SendPl
 	return s.SendToAll(msg, code, plan...)
 }
 
-// Protocol callbacks are serialized by Run. Sending to self invokes Handle
+// Protocol callbacks are serialized by Run. Sending to self invokes Step
 // synchronously on the same goroutine, preserving reentrant local transitions.
 // Tick supplies connectivity observations; the protocol decides how to recover.
 type EventLoopMachine interface {
@@ -329,7 +329,7 @@ func (r *EventLoop) Run() {
 		case g := <-r.Base.ProposeChan:
 			protocol.Must(r.Machine.Propose(g, time.Time{}))
 		case msg := <-r.Inbox:
-			protocol.Must(r.Machine.Handle(msg, time.Time{}))
+			protocol.Must(r.Machine.Step(msg, time.Time{}))
 		case now := <-ticker.C:
 			r.Base.M.Lock()
 			alive := append([]bool(nil), r.Base.Alive...)

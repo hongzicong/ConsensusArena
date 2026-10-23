@@ -49,6 +49,9 @@ func (c *BufferClient) CompleteReply(id defs.RequestID, value state.Value, befor
 	}
 	c.completion.ids[id] = struct{}{}
 	c.completion.mu.Unlock()
+	if c.throughput != nil {
+		c.throughput.complete(observed)
+	}
 	if beforeNotify != nil {
 		beforeNotify()
 	}

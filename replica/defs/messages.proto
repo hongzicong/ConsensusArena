@@ -1,0 +1,83 @@
+syntax = "proto2";
+package replica.defs;
+option go_package = "github.com/hongzicong/ConsensusArena/replica/defs";
+import "gogoproto/gogo.proto";
+import "state/messages.proto";
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.goproto_getters_all) = false;
+option (gogoproto.goproto_unrecognized_all) = false;
+option (gogoproto.goproto_unkeyed_all) = false;
+option (gogoproto.goproto_sizecache_all) = false;
+
+message BeTheLeaderArgs {
+}
+
+message BeTheLeaderReply {
+  optional sint32 leader = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Leader", (gogoproto.jsontag) = "Leader"];
+  optional sint32 next_leader = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "NextLeader", (gogoproto.jsontag) = "NextLeader"];
+}
+
+message Beacon {
+  optional sint64 timestamp = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Timestamp", (gogoproto.jsontag) = "Timestamp"];
+}
+
+message BeaconReply {
+  optional sint64 timestamp = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Timestamp", (gogoproto.jsontag) = "Timestamp"];
+}
+
+message PingArgs {
+  optional uint32 act_as_leader = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "uint8", (gogoproto.customname) = "ActAsLeader", (gogoproto.jsontag) = "ActAsLeader"];
+}
+
+message PingReply {
+}
+
+message Propose {
+  optional sint32 command_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "CommandId", (gogoproto.jsontag) = "CommandId"];
+  optional sint32 client_id = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "ClientId", (gogoproto.jsontag) = "ClientId"];
+  optional state.Command command = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Command", (gogoproto.jsontag) = "Command"];
+  optional sint64 timestamp = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Timestamp", (gogoproto.jsontag) = "Timestamp"];
+}
+
+message ProposeAndRead {
+  optional sint32 command_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "CommandId", (gogoproto.jsontag) = "CommandId"];
+  optional state.Command command = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Command", (gogoproto.jsontag) = "Command"];
+  optional sint64 key = 3 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Key", (gogoproto.customname) = "Key", (gogoproto.jsontag) = "Key"];
+}
+
+message ProposeAndReadReply {
+  optional uint32 ok = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "uint8", (gogoproto.customname) = "OK", (gogoproto.jsontag) = "OK"];
+  optional sint32 command_id = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "CommandId", (gogoproto.jsontag) = "CommandId"];
+  optional bytes value = 3 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Value", (gogoproto.customname) = "Value", (gogoproto.jsontag) = "Value"];
+}
+
+message ProposeReply {
+  optional uint32 ok = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "uint8", (gogoproto.customname) = "OK", (gogoproto.jsontag) = "OK"];
+  optional sint32 command_id = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "CommandId", (gogoproto.jsontag) = "CommandId"];
+}
+
+message ProposeReplyTS {
+  optional uint32 ok = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "uint8", (gogoproto.customname) = "OK", (gogoproto.jsontag) = "OK"];
+  optional sint32 command_id = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "CommandId", (gogoproto.jsontag) = "CommandId"];
+  optional bytes value = 3 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Value", (gogoproto.customname) = "Value", (gogoproto.jsontag) = "Value"];
+  optional sint64 timestamp = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Timestamp", (gogoproto.jsontag) = "Timestamp"];
+}
+
+message Read {
+  optional sint32 command_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "CommandId", (gogoproto.jsontag) = "CommandId"];
+  optional sint64 key = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Key", (gogoproto.customname) = "Key", (gogoproto.jsontag) = "Key"];
+}
+
+message ReadReply {
+  optional sint32 command_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "CommandId", (gogoproto.jsontag) = "CommandId"];
+  optional bytes value = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Value", (gogoproto.customname) = "Value", (gogoproto.jsontag) = "Value"];
+}
+
+message RequestID {
+  option (gogoproto.goproto_stringer) = false;
+  optional sint32 client = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Client", (gogoproto.jsontag) = "Client"];
+  optional sint32 sequence = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Sequence", (gogoproto.jsontag) = "Sequence"];
+}
+

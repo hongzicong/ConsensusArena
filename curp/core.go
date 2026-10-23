@@ -12,19 +12,19 @@ import (
 
 // core owns protocol state, ordering, recovery decisions and completion semantics.
 type core struct {
-	N          int
-	ID, Leader int32
+	n          int
+	id, leader int32
 
 	frozen                     []Packet
 	frozenBallot, frozenFloor  int64
-	Ballot                     int64
-	Active, Preparing          bool
-	High, Executed             int64
-	Log                        map[int64]*Record
-	Values                     map[defs.RequestID]state.Value
-	Assigned                   map[defs.RequestID]int64
-	Pending                    map[defs.RequestID]Request
-	Witness                    map[defs.RequestID]Request
+	ballot                     int64
+	active, preparing          bool
+	high, executed             int64
+	log                        map[int64]*Record
+	values                     map[defs.RequestID]state.Value
+	assigned                   map[defs.RequestID]int64
+	pending                    map[defs.RequestID]Request
+	witness                    map[defs.RequestID]Request
 	recorded                   map[defs.RequestID]int64
 	votes                      map[int64]replicaset.Set
 	pages                      map[int32]map[int32]Packet
@@ -38,10 +38,10 @@ type core struct {
 	broadcast                  func(*Packet)
 	reply                      func(Request, state.Value, bool)
 	replyRecord                func(Request, bool)
-	Recoveries                 uint64
-	GapAccepts                 uint64
-	FetchRequests              uint64
-	FetchSuppressed            uint64
+	recoveries                 uint64
+	gapAccepts                 uint64
+	fetchRequests              uint64
+	fetchSuppressed            uint64
 	witnessIndex, pendingIndex *conflictIndex
 	resume                     []Request
 }
@@ -50,15 +50,15 @@ func newCore(n int, id, leader int32, execute func(state.Command) state.Value) *
 	if n < 3 || n > 63 || n%2 == 0 {
 		panic("recovery log requires odd membership of 3..63")
 	}
-	return &core{N: n, ID: id, Leader: leader, Ballot: int64(leader), Active: true,
-		High: -1, Executed: -1, recoveryEnd: -1, Log: map[int64]*Record{}, Values: map[defs.RequestID]state.Value{}, Assigned: map[defs.RequestID]int64{}, Pending: map[defs.RequestID]Request{}, Witness: map[defs.RequestID]Request{}, recorded: map[defs.RequestID]int64{}, votes: map[int64]replicaset.Set{}, pages: map[int32]map[int32]Packet{}, promises: map[int32]bool{}, queued: map[defs.RequestID]bool{}, execute: execute, witnessIndex: newConflictIndex(), pendingIndex: newConflictIndex()}
+	return &core{n: n, id: id, leader: leader, ballot: int64(leader), active: true,
+		high: -1, executed: -1, recoveryEnd: -1, log: map[int64]*Record{}, values: map[defs.RequestID]state.Value{}, assigned: map[defs.RequestID]int64{}, pending: map[defs.RequestID]Request{}, witness: map[defs.RequestID]Request{}, recorded: map[defs.RequestID]int64{}, votes: map[int64]replicaset.Set{}, pages: map[int32]map[int32]Packet{}, promises: map[int32]bool{}, queued: map[defs.RequestID]bool{}, execute: execute, witnessIndex: newConflictIndex(), pendingIndex: newConflictIndex()}
 }
 
 func (c *core) enqueue(r Request) {
-	if _, ok := c.Values[r.ID]; ok {
+	if _, ok := c.values[r.ID]; ok {
 		return
 	}
-	if _, ok := c.Assigned[r.ID]; ok {
+	if _, ok := c.assigned[r.ID]; ok {
 		return
 	}
 	if !c.queued[r.ID] {
@@ -68,18 +68,18 @@ func (c *core) enqueue(r Request) {
 }
 
 func (c *core) submit(r Request) {
-	if v, ok := c.Values[r.ID]; ok {
+	if v, ok := c.values[r.ID]; ok {
 		c.reply(r, v, false)
 		return
 	}
-	c.Pending[r.ID] = r
-	if !c.Active {
+	c.pending[r.ID] = r
+	if !c.active {
 		return
 	}
 	{
-		if b, ok := c.recorded[r.ID]; !ok || b != c.Ballot {
+		if b, ok := c.recorded[r.ID]; !ok || b != c.ballot {
 			// Exclude a retained positive record for this same request.
-			old, exists := c.Witness[r.ID]
+			old, exists := c.witness[r.ID]
 			if exists {
 				c.witnessIndex.remove(old)
 			}
@@ -88,26 +88,26 @@ func (c *core) submit(r Request) {
 				c.witnessIndex.add(old)
 			}
 
-			c.recorded[r.ID] = c.Ballot
+			c.recorded[r.ID] = c.ballot
 			if positive {
 				if !exists {
 					c.witnessIndex.add(r)
 				}
-				c.Witness[r.ID] = r
+				c.witness[r.ID] = r
 			}
-			if c.ID != c.Leader {
+			if c.id != c.leader {
 				c.replyRecord(r, positive)
 			}
 		}
 	}
-	if c.Leader == c.ID {
+	if c.leader == c.id {
 		c.enqueue(r)
 	}
 
 }
 
 func (c *core) tick(now time.Time, alive []bool) {
-	if !alive[c.Leader] {
+	if !alive[c.leader] {
 		candidate := int32(-1)
 		for id, v := range alive {
 			if v {
@@ -115,40 +115,40 @@ func (c *core) tick(now time.Time, alive []bool) {
 				break
 			}
 		}
-		if candidate == c.ID && !c.Preparing {
+		if candidate == c.id && !c.preparing {
 			c.Begin(now)
 		}
 	}
-	if c.Active {
+	if c.active {
 		for i := 0; i < PageSize && len(c.resume) > 0; i++ {
 			r := c.resume[0]
 			c.resume[0] = Request{}
 			c.resume = c.resume[1:]
-			if _, pending := c.Pending[r.ID]; pending {
+			if _, pending := c.pending[r.ID]; pending {
 				c.submit(r)
 			}
 		}
 	}
-	if c.Preparing {
+	if c.preparing {
 		if now.Sub(c.lastSend) >= time.Second {
 			c.lastSend = now
-			p := &Packet{Kind: packetPrepare, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1}
+			p := &Packet{Kind: packetPrepare, From: c.id, Ballot: c.ballot, Floor: c.executed + 1}
 			c.broadcast(p)
 			c.receive(p)
 		}
 		return
 	}
-	if c.Leader == c.ID {
-		if !c.Active && c.Executed >= c.recoveryEnd {
+	if c.leader == c.id {
+		if !c.active && c.executed >= c.recoveryEnd {
 			c.activate()
 		}
-		if c.Active {
+		if c.active {
 			c.flush()
 		}
 		if now.Sub(c.lastSend) >= 200*time.Millisecond {
 			c.lastSend = now
-			c.broadcast(&Packet{Kind: packetReady, From: c.ID, Ballot: c.Ballot, High: c.Executed, Floor: boolInt(c.Active)})
-			c.sendSuffix(c.ID, c.Executed+1, false)
+			c.broadcast(&Packet{Kind: packetReady, From: c.id, Ballot: c.ballot, High: c.executed, Floor: boolInt(c.active)})
+			c.sendSuffix(c.id, c.executed+1, false)
 		}
 	}
 }
@@ -161,37 +161,37 @@ func boolInt(v bool) int64 {
 }
 
 func (c *core) flush() {
-	if c.High-c.Executed >= AdmissionWindow {
+	if c.high-c.executed >= AdmissionWindow {
 		return
 	}
 	records := []Record{}
-	for len(c.queue) > 0 && len(records) < PageSize && c.High-c.Executed < AdmissionWindow {
+	for len(c.queue) > 0 && len(records) < PageSize && c.high-c.executed < AdmissionWindow {
 		id := c.queue[0]
 		c.queue = c.queue[1:]
 		delete(c.queued, id)
-		if _, ok := c.Assigned[id]; ok {
+		if _, ok := c.assigned[id]; ok {
 			continue
 		}
-		if _, ok := c.Values[id]; ok {
+		if _, ok := c.values[id]; ok {
 			continue
 		}
-		r, ok := c.Pending[id]
+		r, ok := c.pending[id]
 		if !ok {
 			continue
 		}
 		fast := true
-		if _, ok := c.Witness[id]; !ok {
+		if _, ok := c.witness[id]; !ok {
 			fast = false
 		}
 		if fast && c.pendingIndex.conflicts(r) {
 			fast = false
 		}
 
-		c.High++
-		rec := Record{Slot: c.High, Ballot: c.Ballot, Request: r}
-		c.Log[c.High] = &rec
+		c.high++
+		rec := Record{Slot: c.high, Ballot: c.ballot, Request: r}
+		c.log[c.high] = &rec
 		c.pendingIndex.add(r)
-		c.Assigned[id] = c.High
+		c.assigned[id] = c.high
 		records = append(records, rec)
 		if fast {
 			switch r.Command.Op {
@@ -203,75 +203,75 @@ func (c *core) flush() {
 		}
 	}
 	if len(records) > 0 {
-		p := &Packet{Kind: packetAccept, From: c.ID, Ballot: c.Ballot, Records: records}
+		p := &Packet{Kind: packetAccept, From: c.id, Ballot: c.ballot, Records: records}
 		c.broadcast(p)
 		c.accept(p)
 	}
 }
 
 func (c *core) receive(p *Packet) {
-	if p.From < 0 || int(p.From) >= c.N {
+	if p.From < 0 || int(p.From) >= c.n {
 		return
 	}
 	if p.Kind == packetPrepare {
-		if p.Ballot < c.Ballot {
+		if p.Ballot < c.ballot {
 			return
 		}
-		if p.Ballot > c.Ballot {
-			c.Ballot = p.Ballot
-			c.Leader = p.From
-			c.Preparing = false
+		if p.Ballot > c.ballot {
+			c.ballot = p.Ballot
+			c.leader = p.From
+			c.preparing = false
 			c.votes = map[int64]replicaset.Set{}
 		}
-		c.Active = false
+		c.active = false
 		c.promise(p)
 		return
 	}
-	if p.Kind == packetReady && p.Ballot > c.Ballot {
-		c.Ballot = p.Ballot
-		c.Leader = p.From
-		c.Preparing = false
-		c.Active = false
+	if p.Kind == packetReady && p.Ballot > c.ballot {
+		c.ballot = p.Ballot
+		c.leader = p.From
+		c.preparing = false
+		c.active = false
 		c.votes = map[int64]replicaset.Set{}
 	}
-	if p.Ballot != c.Ballot {
+	if p.Ballot != c.ballot {
 		return
 	}
 	switch p.Kind {
 	case packetPromise:
 		c.promiseReply(p)
 	case packetAccept:
-		if p.From == c.Leader {
+		if p.From == c.leader {
 			c.accept(p)
 		}
 	case packetAck:
 		c.ack(p)
 	case packetCommit:
-		if p.From != c.Leader {
+		if p.From != c.leader {
 			return
 		}
 		for _, r := range p.Records {
 			c.install(r)
-			c.Log[r.Slot].Committed = true
+			c.log[r.Slot].Committed = true
 		}
 		c.apply()
 	case packetReady:
-		if p.From != c.Leader {
+		if p.From != c.leader {
 			return
 		}
-		if p.Floor == 1 && !c.Active {
-			c.Active = true
+		if p.Floor == 1 && !c.active {
+			c.active = true
 			c.schedulePending()
 		}
-		if p.High > c.Executed {
+		if p.High > c.executed {
 			c.requestFetch(time.Now())
 		}
 	case packetFetch:
-		if c.Leader == c.ID {
+		if c.leader == c.id {
 			c.sendSuffix(p.From, p.Floor, true)
 		}
 	case packetForward:
-		if c.ID == c.Leader && c.Active {
+		if c.id == c.leader && c.active {
 			for _, r := range p.Requests {
 				c.submit(r)
 			}
@@ -280,23 +280,23 @@ func (c *core) receive(p *Packet) {
 }
 
 func (c *core) install(r Record) {
-	if old := c.Log[r.Slot]; old != nil && old.Committed {
+	if old := c.log[r.Slot]; old != nil && old.Committed {
 		if old.Request.ID != r.Request.ID {
 			panic(fmt.Sprintf("conflicting decision at %d", r.Slot))
 		}
 		return
 	}
-	if old := c.Log[r.Slot]; old != nil && r.Slot > c.Executed {
+	if old := c.log[r.Slot]; old != nil && r.Slot > c.executed {
 		c.pendingIndex.remove(old.Request)
 	}
-	if r.Slot > c.Executed {
+	if r.Slot > c.executed {
 		c.pendingIndex.add(r.Request)
 	}
 	cp := r
-	c.Log[r.Slot] = &cp
-	c.Assigned[r.Request.ID] = r.Slot
-	if r.Slot > c.High {
-		c.High = r.Slot
+	c.log[r.Slot] = &cp
+	c.assigned[r.Request.ID] = r.Slot
+	if r.Slot > c.high {
+		c.high = r.Slot
 	}
 }
 
@@ -304,9 +304,9 @@ func (c *core) accept(p *Packet) {
 	accepted := []Record{}
 	gap := false
 	for _, r := range p.Records {
-		if r.Slot > 0 && c.Log[r.Slot-1] == nil {
+		if r.Slot > 0 && c.log[r.Slot-1] == nil {
 			gap = true
-			c.GapAccepts++
+			c.gapAccepts++
 		}
 		// A Paxos vote is per slot: a missing prefix must not prevent this
 		// acceptor from voting in recovery. execute still requires every
@@ -321,7 +321,7 @@ func (c *core) accept(p *Packet) {
 	if len(accepted) == 0 {
 		return
 	}
-	ack := &Packet{Kind: packetAck, From: c.ID, Ballot: c.Ballot, Records: accepted}
+	ack := &Packet{Kind: packetAck, From: c.id, Ballot: c.ballot, Records: accepted}
 
 	// CURP retains all-to-all phase two.
 	c.broadcast(ack)
@@ -329,24 +329,24 @@ func (c *core) accept(p *Packet) {
 }
 
 func (c *core) ack(p *Packet) {
-	if c.Preparing {
+	if c.preparing {
 		return
 	}
 	committed := []Record{}
 	for _, ack := range p.Records {
-		if ack.Slot <= c.Executed {
+		if ack.Slot <= c.executed {
 			continue
 		}
 		c.votes[ack.Slot] = c.votes[ack.Slot].With(int(p.From))
-		r := c.Log[ack.Slot]
-		if r == nil || r.Ballot != c.Ballot || r.Committed || c.votes[ack.Slot].Size() < c.N/2+1 {
+		r := c.log[ack.Slot]
+		if r == nil || r.Ballot != c.ballot || r.Committed || c.votes[ack.Slot].Size() < c.n/2+1 {
 			continue
 		}
 		r.Committed = true
 		committed = append(committed, *r)
 	}
-	if c.ID == c.Leader && len(committed) > 0 {
-		c.broadcast(&Packet{Kind: packetCommit, From: c.ID, Ballot: c.Ballot, Records: committed})
+	if c.id == c.leader && len(committed) > 0 {
+		c.broadcast(&Packet{Kind: packetCommit, From: c.id, Ballot: c.ballot, Records: committed})
 	}
 	c.apply()
 }

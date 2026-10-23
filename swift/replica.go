@@ -117,7 +117,7 @@ func New(alias string, replicaID int, addrs []string, executeEnabled, fastRead, 
 	}
 
 	r.core = newCore(corePorts{
-		N: r.N, ID: r.ID, Logger: r.Logger, codes: &r.channels.rpcCodes,
+		n: r.N, id: r.ID, Logger: r.Logger, codes: &r.channels.rpcCodes,
 		send:                func(id int, code uint8, msg fastrpc.Serializable) error { return r.Messages().Send(id, code, msg) },
 		broadcast:           func(msg fastrpc.Serializable, code uint8) int { return r.SendToAll(msg, code) },
 		sendClient:          r.SendClientMsg,
@@ -157,8 +157,8 @@ func New(alias string, replicaID int, addrs []string, executeEnabled, fastRead, 
 		fmt.Printf("Number of slow paths: %d\n", slowPaths)
 	})
 
-	r.Println("SQ:", r.core.SQ)
-	r.Println("FQ:", r.core.FQ)
+	r.Println("SQ:", r.core.sq)
+	r.Println("FQ:", r.core.fq)
 
 	go r.run()
 

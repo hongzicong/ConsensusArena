@@ -226,6 +226,12 @@ run_scale() {
          END { print "warmup: 5s\nduration: 10s\nrepetitions: 1" }' \
         "$run_dir/config/cluster.conf" > "$run_dir/config/cluster.conf.tmp"
     mv "$run_dir/config/cluster.conf.tmp" "$run_dir/config/cluster.conf"
+    if [[ -n "${CONSENSUSARENA_ARRIVAL_RATE:-}" ]]; then
+        [[ "$CONSENSUSARENA_ARRIVAL_RATE" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid per-client arrival rate" >&2; exit 1; }
+        awk -v rate="$CONSENSUSARENA_ARRIVAL_RATE" '$1 == "arrivalRate:" { $2 = rate } { print }' \
+            "$run_dir/config/cluster.conf" > "$run_dir/config/cluster.conf.tmp"
+        mv "$run_dir/config/cluster.conf.tmp" "$run_dir/config/cluster.conf"
+    fi
     if [[ -n "${CONSENSUSARENA_WORKLOAD_SEED:-}" ]]; then
         if [[ ! "$CONSENSUSARENA_WORKLOAD_SEED" =~ ^[0-9]+$ ]]; then
             echo "Invalid workload seed: $CONSENSUSARENA_WORKLOAD_SEED" >&2

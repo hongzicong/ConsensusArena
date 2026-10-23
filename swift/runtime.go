@@ -43,34 +43,34 @@ func (r *Replica) run() {
 	for !r.Shutdown {
 		select {
 		case call := <-r.control:
-			protocol.Must(r.Handle(call, time.Time{}))
+			protocol.Must(r.Step(call, time.Time{}))
 
 		case newBallot := <-r.recover:
-			protocol.Must(r.Handle(recoveryEvent(newBallot), time.Time{}))
+			protocol.Must(r.Step(recoveryEvent(newBallot), time.Time{}))
 
 		case cmdID := <-r.delivery:
-			protocol.Must(r.Handle(cmdID, time.Time{}))
+			protocol.Must(r.Step(cmdID, time.Time{}))
 
 		case propose := <-r.ProposeChan:
 			protocol.Must(r.Propose(propose, time.Time{}))
 
 		case m := <-r.channels.fastAckChan:
-			protocol.Must(r.Handle(m, time.Time{}))
+			protocol.Must(r.Step(m, time.Time{}))
 
 		case m := <-r.channels.lightSlowAckChan:
-			protocol.Must(r.Handle(m, time.Time{}))
+			protocol.Must(r.Step(m, time.Time{}))
 
 		case m := <-r.channels.acksChan:
-			protocol.Must(r.Handle(m, time.Time{}))
+			protocol.Must(r.Step(m, time.Time{}))
 
 		case m := <-r.channels.optAcksChan:
-			protocol.Must(r.Handle(m, time.Time{}))
+			protocol.Must(r.Step(m, time.Time{}))
 
 		case m := <-r.channels.newLeaderChan:
-			protocol.Must(r.Handle(m, time.Time{}))
+			protocol.Must(r.Step(m, time.Time{}))
 
 		case m := <-r.channels.syncChan:
-			protocol.Must(r.Handle(m, time.Time{}))
+			protocol.Must(r.Step(m, time.Time{}))
 
 		}
 	}
@@ -95,8 +95,8 @@ func (r *Replica) Propose(p *defs.GPropose, _ time.Time) error {
 	}
 	return nil
 }
-func (r *Replica) Handle(event any, now time.Time) error { return r.core.receive(event, now) }
-func (r *Replica) Tick(t protocol.Tick) error            { return r.core.tick(t) }
+func (r *Replica) Step(event any, now time.Time) error { return r.core.receive(event, now) }
+func (r *Replica) Tick(t protocol.Tick) error          { return r.core.tick(t) }
 
 func (r *Replica) allocDesc() *commandDesc {
 	if r.descriptorPoolLevel > 0 {
@@ -138,16 +138,16 @@ func (r *Replica) awaitRecovery() {
 	for r.core.status == RECOVERING {
 		select {
 		case call := <-r.control:
-			protocol.Must(r.Handle(call, time.Time{}))
+			protocol.Must(r.Step(call, time.Time{}))
 
 		case m := <-r.channels.newLeaderChan:
-			protocol.Must(r.Handle(m, time.Time{}))
+			protocol.Must(r.Step(m, time.Time{}))
 
 		case m := <-r.channels.newLeaderAckNChan:
-			protocol.Must(r.Handle(m, time.Time{}))
+			protocol.Must(r.Step(m, time.Time{}))
 
 		case m := <-r.channels.syncChan:
-			protocol.Must(r.Handle(m, time.Time{}))
+			protocol.Must(r.Step(m, time.Time{}))
 		}
 	}
 }

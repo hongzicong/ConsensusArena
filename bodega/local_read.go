@@ -58,17 +58,17 @@ func (c *core) queueFastSlot(s uint64) {
 func (c *core) releaseSlot(s uint64, now time.Time) bool {
 	for _, id := range c.holdWaiters[s] {
 		h, ok := c.held[id]
-		if !ok || h.Slot != s {
+		if !ok || h.slot != s {
 			continue
 		}
-		if !c.localReadAuthority(now) || c.current.respondersFor(h.Request.Proposal.Command.K)&bit(c.id) == 0 {
+		if !c.localReadAuthority(now) || c.current.respondersFor(h.request.Proposal.Command.K)&bit(c.id) == 0 {
 			return false
 		}
-		value, ready := c.readValue(s, h.Request)
+		value, ready := c.readValue(s, h.request)
 		if !ready {
 			return true
 		}
-		c.finishLocalRead(h.Request, value)
+		c.finishLocalRead(h.request, value)
 	}
 	delete(c.holdWaiters, s)
 	return true

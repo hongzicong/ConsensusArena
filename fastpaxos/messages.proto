@@ -1,0 +1,40 @@
+syntax = "proto2";
+package fastpaxos;
+option go_package = "github.com/hongzicong/ConsensusArena/fastpaxos";
+import "gogoproto/gogo.proto";
+import "replica/defs/messages.proto";
+import "state/messages.proto";
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.goproto_getters_all) = false;
+option (gogoproto.goproto_unrecognized_all) = false;
+option (gogoproto.goproto_unkeyed_all) = false;
+option (gogoproto.goproto_sizecache_all) = false;
+
+message Entry {
+  optional sint64 slot = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Slot", (gogoproto.jsontag) = "Slot"];
+  optional uint64 epoch = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Epoch", (gogoproto.jsontag) = "Epoch"];
+  optional uint64 round = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Round", (gogoproto.jsontag) = "Round"];
+  optional Record value = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Value", (gogoproto.jsontag) = "Value"];
+  optional bool payload = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Payload", (gogoproto.jsontag) = "Payload"];
+  optional bool decided = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Decided", (gogoproto.jsontag) = "Decided"];
+}
+
+message Message {
+  optional uint32 kind = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "uint8", (gogoproto.customname) = "Kind", (gogoproto.jsontag) = "Kind"];
+  optional sint64 from = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "From", (gogoproto.jsontag) = "From"];
+  optional uint64 epoch = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Epoch", (gogoproto.jsontag) = "Epoch"];
+  optional sint64 start = 4 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Start", (gogoproto.jsontag) = "Start"];
+  optional sint64 high = 5 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "High", (gogoproto.jsontag) = "High"];
+  optional sint64 page = 6 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Page", (gogoproto.jsontag) = "Page"];
+  optional sint64 pages = 7 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Pages", (gogoproto.jsontag) = "Pages"];
+  repeated Entry entries = 8 [(gogoproto.nullable) = false, (gogoproto.customname) = "Entries", (gogoproto.jsontag) = "Entries"];
+}
+
+message Record {
+  optional replica.defs.RequestID id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "ID", (gogoproto.jsontag) = "ID"];
+  optional state.Command command = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Command", (gogoproto.jsontag) = "Command"];
+  optional bool noop = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Noop", (gogoproto.jsontag) = "Noop"];
+}
+

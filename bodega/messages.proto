@@ -1,0 +1,59 @@
+syntax = "proto2";
+package bodega;
+option go_package = "github.com/hongzicong/ConsensusArena/bodega";
+import "gogoproto/gogo.proto";
+import "replica/defs/messages.proto";
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.goproto_getters_all) = false;
+option (gogoproto.goproto_unrecognized_all) = false;
+option (gogoproto.goproto_unkeyed_all) = false;
+option (gogoproto.goproto_sizecache_all) = false;
+
+message BodegaResponderRange {
+  optional sint64 start = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Start", (gogoproto.jsontag) = "Start"];
+  optional sint64 end = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "End", (gogoproto.jsontag) = "End"];
+  optional uint64 responders = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Responders", (gogoproto.jsontag) = "Responders"];
+}
+
+message Entry {
+  optional uint64 slot = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Slot", (gogoproto.jsontag) = "Slot"];
+  optional uint64 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional Request request = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Request", (gogoproto.jsontag) = "Request"];
+  repeated Request batch = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Batch", (gogoproto.jsontag) = "Batch"];
+  optional bool read_fresh = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "ReadFresh", (gogoproto.jsontag) = "ReadFresh"];
+}
+
+message Message {
+  optional uint32 kind = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "kind", (gogoproto.customname) = "Kind", (gogoproto.jsontag) = "Kind"];
+  optional sint64 from = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "From", (gogoproto.jsontag) = "From"];
+  optional Roster roster = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Roster", (gogoproto.jsontag) = "Roster"];
+  optional uint64 sequence = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Sequence", (gogoproto.jsontag) = "Sequence"];
+  optional uint64 threshold = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Threshold", (gogoproto.jsontag) = "Threshold"];
+  optional uint64 prefix = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Prefix", (gogoproto.jsontag) = "Prefix"];
+  optional uint64 read_prefix = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "ReadPrefix", (gogoproto.jsontag) = "ReadPrefix"];
+  optional uint64 commit_prefix = 8 [(gogoproto.nullable) = false, (gogoproto.customname) = "CommitPrefix", (gogoproto.jsontag) = "CommitPrefix"];
+  optional uint64 commit_slot = 9 [(gogoproto.nullable) = false, (gogoproto.customname) = "CommitSlot", (gogoproto.jsontag) = "CommitSlot"];
+  optional uint64 repair_start = 10 [(gogoproto.nullable) = false, (gogoproto.customname) = "RepairStart", (gogoproto.jsontag) = "RepairStart"];
+  optional uint64 prepare_start = 11 [(gogoproto.nullable) = false, (gogoproto.customname) = "PrepareStart", (gogoproto.jsontag) = "PrepareStart"];
+  optional sint64 part = 12 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Part", (gogoproto.jsontag) = "Part"];
+  optional sint64 parts = 13 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Parts", (gogoproto.jsontag) = "Parts"];
+  optional Entry entry = 14 [(gogoproto.nullable) = false, (gogoproto.customname) = "Entry", (gogoproto.jsontag) = "Entry"];
+  repeated Entry entries = 15 [(gogoproto.nullable) = false, (gogoproto.customname) = "Entries", (gogoproto.jsontag) = "Entries"];
+  optional Request request = 16 [(gogoproto.nullable) = false, (gogoproto.customname) = "Request", (gogoproto.jsontag) = "Request"];
+  optional bytes value = 17 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Value", (gogoproto.customname) = "Value", (gogoproto.jsontag) = "Value"];
+}
+
+message Request {
+  optional replica.defs.Propose proposal = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Proposal", (gogoproto.jsontag) = "Proposal"];
+  optional sint64 origin = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Origin", (gogoproto.jsontag) = "Origin"];
+}
+
+message Roster {
+  optional uint64 ballot = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional sint64 leader = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Leader", (gogoproto.jsontag) = "Leader"];
+  optional uint64 responders = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Responders", (gogoproto.jsontag) = "Responders"];
+  repeated BodegaResponderRange ranges = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ranges", (gogoproto.jsontag) = "Ranges"];
+}
+

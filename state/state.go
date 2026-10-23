@@ -28,12 +28,6 @@ func NIL() Value { return Value([]byte{}) }
 
 type Key int64
 
-type Command struct {
-	Op Operation
-	K  Key
-	V  Value
-}
-
 type ID int64
 type Phase int8
 

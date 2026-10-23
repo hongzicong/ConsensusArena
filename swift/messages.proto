@@ -1,0 +1,158 @@
+syntax = "proto2";
+package swift;
+option go_package = "github.com/hongzicong/ConsensusArena/swift";
+import "gogoproto/gogo.proto";
+import "replica/defs/messages.proto";
+import "state/messages.proto";
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.goproto_getters_all) = false;
+option (gogoproto.goproto_unrecognized_all) = false;
+option (gogoproto.goproto_unkeyed_all) = false;
+option (gogoproto.goproto_sizecache_all) = false;
+
+message Ack {
+  optional replica.defs.RequestID cmd_id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "CmdId", (gogoproto.jsontag) = "CmdId"];
+  repeated replica.defs.RequestID dep = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Dep", (gogoproto.jsontag) = "Dep"];
+  repeated SHash checksum = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Checksum", (gogoproto.jsontag) = "Checksum"];
+  optional sint64 seqnum = 4 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Seqnum", (gogoproto.jsontag) = "Seqnum"];
+}
+
+message MAccept {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional replica.defs.RequestID cmd_id = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "CmdId", (gogoproto.jsontag) = "CmdId"];
+  optional bytes rep = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Rep", (gogoproto.jsontag) = "Rep"];
+}
+
+message MAcks {
+  repeated MFastAck fast_acks = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "FastAcks", (gogoproto.jsontag) = "FastAcks"];
+  repeated MLightSlowAck light_slow_acks = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "LightSlowAcks", (gogoproto.jsontag) = "LightSlowAcks"];
+}
+
+message MCollect {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  repeated replica.defs.RequestID ids = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ids", (gogoproto.jsontag) = "Ids"];
+}
+
+message MFastAck {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional replica.defs.RequestID cmd_id = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "CmdId", (gogoproto.jsontag) = "CmdId"];
+  repeated replica.defs.RequestID dep = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Dep", (gogoproto.jsontag) = "Dep"];
+  repeated SHash checksum = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Checksum", (gogoproto.jsontag) = "Checksum"];
+  optional sint64 seqnum = 6 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Seqnum", (gogoproto.jsontag) = "Seqnum"];
+}
+
+message MFastAckClient {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional replica.defs.RequestID cmd_id = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "CmdId", (gogoproto.jsontag) = "CmdId"];
+  repeated SHash checksum = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Checksum", (gogoproto.jsontag) = "Checksum"];
+}
+
+message MLightSlowAck {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional replica.defs.RequestID cmd_id = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "CmdId", (gogoproto.jsontag) = "CmdId"];
+}
+
+message MLightSync {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+}
+
+message MNewLeader {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+}
+
+message MNewLeaderAck {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional sint32 cballot = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Cballot", (gogoproto.jsontag) = "Cballot"];
+}
+
+message MNewLeaderAckN {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional sint32 cballot = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Cballot", (gogoproto.jsontag) = "Cballot"];
+  repeated replica.defs.RequestID cmd_ids = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "CmdIds", (gogoproto.jsontag) = "CmdIds"];
+  repeated sint64 phases = 5 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Phases", (gogoproto.jsontag) = "Phases"];
+  repeated state.Command cmds = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Cmds", (gogoproto.jsontag) = "Cmds"];
+  repeated SDep deps = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "Deps", (gogoproto.jsontag) = "Deps"];
+}
+
+message MOptAcks {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  repeated Ack acks = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Acks", (gogoproto.jsontag) = "Acks"];
+}
+
+message MPing {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+}
+
+message MPingRep {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+}
+
+message MReply {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional replica.defs.RequestID cmd_id = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "CmdId", (gogoproto.jsontag) = "CmdId"];
+  repeated SHash checksum = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Checksum", (gogoproto.jsontag) = "Checksum"];
+  optional bytes rep = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Rep", (gogoproto.jsontag) = "Rep"];
+}
+
+message MShareState {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+}
+
+message MSlowAck {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional replica.defs.RequestID cmd_id = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "CmdId", (gogoproto.jsontag) = "CmdId"];
+  repeated replica.defs.RequestID dep = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Dep", (gogoproto.jsontag) = "Dep"];
+  repeated SHash checksum = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Checksum", (gogoproto.jsontag) = "Checksum"];
+}
+
+message MSync {
+  optional sint32 replica = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Replica", (gogoproto.jsontag) = "Replica"];
+  optional sint32 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  repeated MSyncPhasesEntry phases = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Phases", (gogoproto.jsontag) = "Phases"];
+  repeated MSyncCmdsEntry cmds = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Cmds", (gogoproto.jsontag) = "Cmds"];
+  repeated MSyncDepsEntry deps = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "Deps", (gogoproto.jsontag) = "Deps"];
+  optional bool phases_present = 103 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "-"];
+  optional bool cmds_present = 104 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "-"];
+  optional bool deps_present = 105 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "-"];
+}
+
+message MSyncPhasesEntry {
+  optional replica.defs.RequestID key = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Key", (gogoproto.jsontag) = "Key"];
+  optional sint64 value = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "int", (gogoproto.customname) = "Value", (gogoproto.jsontag) = "Value"];
+}
+
+message MSyncCmdsEntry {
+  optional replica.defs.RequestID key = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Key", (gogoproto.jsontag) = "Key"];
+  optional state.Command value = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Value", (gogoproto.jsontag) = "Value"];
+}
+
+message MSyncDepsEntry {
+  optional replica.defs.RequestID key = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Key", (gogoproto.jsontag) = "Key"];
+  repeated replica.defs.RequestID value = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Value", (gogoproto.jsontag) = "Value"];
+}
+
+message SDep {
+  repeated replica.defs.RequestID dep = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Dep", (gogoproto.jsontag) = "Dep"];
+}
+
+message SHash {
+  optional bytes h = 1 [(gogoproto.nullable) = false, (gogoproto.customtype) = "github.com/hongzicong/ConsensusArena/wiretypes.Hash", (gogoproto.customname) = "H", (gogoproto.jsontag) = "H"];
+}
+

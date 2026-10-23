@@ -22,7 +22,7 @@ type replyJob struct {
 
 func (r *Replica) drain() {
 	drainOutputs(r.core, r.peers, r.code, nil, func(m message) {
-		protocol.Must(r.Handle(localMessage{m}, time.Time{}))
+		protocol.Must(r.Step(localMessage{m}, time.Time{}))
 	})
 }
 

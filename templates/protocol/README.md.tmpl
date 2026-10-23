@@ -20,7 +20,7 @@ design and the implementation below agree.
 | `client.go` | Ingress choice, routing, and exact completion evidence. |
 
 `Replica` implements the shared `protocol.Machine` event interface through
-`Propose(*defs.GPropose, time.Time) error`, `Handle(any, time.Time) error`, and
+`Propose(*defs.GPropose, time.Time) error`, `Step(any, time.Time) error`, and
 `Tick(protocol.Tick) error`. Its live loop uses these methods, which validate inputs
 and call the private core entries `submit`, `receive`, and `tick`. The core's private
 `effects` are dispatched inside the method; they are not a framework-wide output

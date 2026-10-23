@@ -63,13 +63,13 @@ func (r *Replica) logProgress() {
 	r.M.Unlock()
 	r.Printf("EPAXOS_PROGRESS proposed=%d batches=%d max_batch=%d max_proposal_queue=%d fast=%d slow=%d executed=%d replies=%d recovery_scheduled=%d recovery_suppressed=%d recovery_queue=%d",
 		proposed, batches, maxBatch, maxProposalQueue, fast, slow, executed, replies, recoveryScheduled, recoverySuppressed, len(r.core.instancesToRecover))
-	r.Printf("EPAXOS_REPAIR active=%d blocked=%d send_drops=%d executed_prefix=%v known_prefix=%v", len(r.core.active), len(r.core.blocked), r.Stats.M["sendQueueDrops"], r.core.ExecutedUpTo, r.core.crtInstance)
+	r.Printf("EPAXOS_REPAIR active=%d blocked=%d send_drops=%d executed_prefix=%v known_prefix=%v", len(r.core.active), len(r.core.blocked), r.Stats.M["sendQueueDrops"], r.core.executedUpTo, r.core.crtInstance)
 	for q := int32(0); q < int32(r.N); q++ {
-		slot := r.core.ExecutedUpTo[q] + 1
+		slot := r.core.executedUpTo[q] + 1
 		if slot > r.core.crtInstance[q] {
 			continue
 		}
-		inst := r.core.InstanceSpace[q][slot]
+		inst := r.core.instanceSpace[q][slot]
 		if inst != nil {
 			r.Printf("EPAXOS_HEAD owner=%d slot=%d status=%d promise=%d value_ballot=%d deps=%v", q, slot, inst.Status, inst.bal, inst.vbal, inst.Deps)
 		}
@@ -107,59 +107,59 @@ func (r *Replica) run() {
 
 		select {
 		case call := <-r.control:
-			protocol.Must(r.Handle(call, time.Time{}))
+			protocol.Must(r.Step(call, time.Time{}))
 
 		case propose := <-onOffProposeChan:
 			protocol.Must(r.Propose(propose, time.Time{}))
-			if r.core.BatchingEnabled() || r.core.crtInstance[r.ID]-r.core.ExecutedUpTo[r.ID] >= MAX_INFLIGHT_INSTANCES {
+			if r.core.BatchingEnabled() || r.core.crtInstance[r.ID]-r.core.executedUpTo[r.ID] >= MAX_INFLIGHT_INSTANCES {
 				onOffProposeChan = nil
 			}
 			break
 
 		case <-r.fastClockChan:
-			if r.core.crtInstance[r.ID]-r.core.ExecutedUpTo[r.ID] < MAX_INFLIGHT_INSTANCES {
+			if r.core.crtInstance[r.ID]-r.core.executedUpTo[r.ID] < MAX_INFLIGHT_INSTANCES {
 				onOffProposeChan = r.ProposeChan
 			}
 			break
 
 		case prepareS := <-r.prepareChan:
-			protocol.Must(r.Handle(prepareS, time.Time{}))
+			protocol.Must(r.Step(prepareS, time.Time{}))
 			break
 
 		case preAcceptS := <-r.preAcceptChan:
-			protocol.Must(r.Handle(preAcceptS, time.Time{}))
+			protocol.Must(r.Step(preAcceptS, time.Time{}))
 			break
 
 		case acceptS := <-r.acceptChan:
-			protocol.Must(r.Handle(acceptS, time.Time{}))
+			protocol.Must(r.Step(acceptS, time.Time{}))
 			break
 
 		case commitS := <-r.commitChan:
-			protocol.Must(r.Handle(commitS, time.Time{}))
+			protocol.Must(r.Step(commitS, time.Time{}))
 			break
 
 		case prepareReplyS := <-r.prepareReplyChan:
-			protocol.Must(r.Handle(prepareReplyS, time.Time{}))
+			protocol.Must(r.Step(prepareReplyS, time.Time{}))
 			break
 
 		case preAcceptReplyS := <-r.preAcceptReplyChan:
-			protocol.Must(r.Handle(preAcceptReplyS, time.Time{}))
+			protocol.Must(r.Step(preAcceptReplyS, time.Time{}))
 			break
 
 		case acceptReplyS := <-r.acceptReplyChan:
-			protocol.Must(r.Handle(acceptReplyS, time.Time{}))
+			protocol.Must(r.Step(acceptReplyS, time.Time{}))
 			break
 
 		case tryPreAcceptS := <-r.tryPreAcceptChan:
-			protocol.Must(r.Handle(tryPreAcceptS, time.Time{}))
+			protocol.Must(r.Step(tryPreAcceptS, time.Time{}))
 			break
 
 		case tryPreAcceptReplyS := <-r.tryPreAcceptReplyChan:
-			protocol.Must(r.Handle(tryPreAcceptReplyS, time.Time{}))
+			protocol.Must(r.Step(tryPreAcceptReplyS, time.Time{}))
 			break
 
 		case beacon := <-r.BeaconChan:
-			protocol.Must(r.Handle(beacon, time.Time{}))
+			protocol.Must(r.Step(beacon, time.Time{}))
 			break
 
 		case <-r.slowClockChan:
@@ -167,7 +167,7 @@ func (r *Replica) run() {
 
 		case now := <-execTicker.C:
 			protocol.Must(r.Tick(protocol.Tick{Now: now}))
-			if r.core.crtInstance[r.ID]-r.core.ExecutedUpTo[r.ID] >= MAX_INFLIGHT_INSTANCES {
+			if r.core.crtInstance[r.ID]-r.core.executedUpTo[r.ID] >= MAX_INFLIGHT_INSTANCES {
 				onOffProposeChan = nil
 			} else if !r.core.BatchingEnabled() {
 				onOffProposeChan = r.ProposeChan
@@ -178,10 +178,10 @@ func (r *Replica) run() {
 			break
 
 		case req := <-r.requestChan:
-			protocol.Must(r.Handle(req, time.Time{}))
+			protocol.Must(r.Step(req, time.Time{}))
 
 		case iid := <-r.core.instancesToRecover:
-			protocol.Must(r.Handle(iid, time.Time{}))
+			protocol.Must(r.Step(iid, time.Time{}))
 		}
 	}
 }
@@ -268,8 +268,8 @@ func (r *Replica) Propose(p *defs.GPropose, _ time.Time) error {
 	r.core.submit(batch)
 	return nil
 }
-func (r *Replica) Handle(event any, now time.Time) error { return r.core.receive(event, now) }
-func (r *Replica) Tick(t protocol.Tick) error            { return r.core.tick(t) }
+func (r *Replica) Step(event any, now time.Time) error { return r.core.receive(event, now) }
+func (r *Replica) Tick(t protocol.Tick) error          { return r.core.tick(t) }
 
 func (r *Replica) admitProposal(p *defs.GPropose) *proposal {
 	return &proposal{Propose: p.Propose, context: p}

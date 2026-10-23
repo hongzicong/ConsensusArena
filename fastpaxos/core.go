@@ -14,25 +14,25 @@ import (
 )
 
 type slotState struct {
-	Accepted *entry
-	Proposed *entry // coordinator plan; not a vote until Accept is processed
-	Chosen   *entry
-	Votes    map[int]entry
-	MaxVotes int
-	Acks     replicaset.Set
-	Local    *defs.RequestID
-	Deferred *entry
+	accepted *entry
+	proposed *entry // coordinator plan; not a vote until Accept is processed
+	chosen   *entry
+	votes    map[int]entry
+	maxVotes int
+	acks     replicaset.Set
+	local    *defs.RequestID
+	deferred *entry
 }
 
 type snapshot struct {
-	Pages int
-	High  int
-	Parts map[int][]entry
+	pages int
+	high  int
+	parts map[int][]entry
 }
 
 type pendingCommand struct {
-	ID      defs.RequestID
-	RetryAt time.Duration
+	id      defs.RequestID
+	retryAt time.Duration
 }
 
 // core owns protocol state, ordering, recovery decisions and completion semantics.
@@ -79,7 +79,7 @@ func (c *core) slot(s int) *slotState {
 		c.high = s
 	}
 	if c.slots[s] == nil {
-		c.slots[s] = &slotState{Votes: make(map[int]entry)}
+		c.slots[s] = &slotState{votes: make(map[int]entry)}
 	}
 	return c.slots[s]
 }
@@ -155,7 +155,7 @@ func (c *core) proposeFast(v record) {
 	c.next++
 	st := c.slot(s)
 	id := v.ID
-	st.Local = &id
+	st.local = &id
 	c.vote(entry{Slot: s, Round: 1, Value: v, Payload: true})
 }
 
@@ -164,21 +164,21 @@ func (c *core) vote(e entry) {
 		return
 	}
 	s := c.slot(e.Slot)
-	if s.Accepted != nil {
+	if s.accepted != nil {
 		return
 	}
 	if !e.Value.Noop {
 		v, ok := c.known[e.Value.ID]
 		if !ok {
-			s.Deferred = &e
+			s.deferred = &e
 			c.broadcast(message{Kind: msgFetch, Entries: []entry{e}})
 			return
 		}
 		e.Value = v
 	}
 	e.Payload = true
-	s.Accepted = &e
-	s.Deferred = nil
+	s.accepted = &e
+	s.deferred = nil
 	wire := e
 	wire.Payload = false
 	wire.Value.Command = state.Command{}
@@ -187,21 +187,21 @@ func (c *core) vote(e entry) {
 
 func (c *core) learn(e entry) {
 	s := c.slot(e.Slot)
-	if s.Chosen != nil && !sameValue(s.Chosen.Value, e.Value) {
+	if s.chosen != nil && !sameValue(s.chosen.Value, e.Value) {
 		panic(fmt.Sprintf("conflicting decision in slot %d", e.Slot))
 	}
 	if e.Payload {
 		c.remember(e.Value)
 	}
 	e.Decided = true
-	s.Chosen = &e
+	s.chosen = &e
 	if !e.Value.Noop {
 		c.forgetPending(e.Value.ID)
 	}
 	c.apply()
-	if c.promise == 0 && s.Local != nil && !sameValue(record{ID: *s.Local}, e.Value) && c.pending[*s.Local] != nil {
-		v := c.known[*s.Local]
-		s.Local = nil
+	if c.promise == 0 && s.local != nil && !sameValue(record{ID: *s.local}, e.Value) && c.pending[*s.local] != nil {
+		v := c.known[*s.local]
+		s.local = nil
 		c.proposeFast(v)
 	}
 }
@@ -220,8 +220,8 @@ func (c *core) flush() {
 		e := entry{Slot: c.next, Epoch: c.promise, Value: c.known[id], Payload: true}
 		c.next++
 		st := c.slot(e.Slot)
-		st.Proposed = &e
-		st.Acks = 0
+		st.proposed = &e
+		st.acks = 0
 		batch = append(batch, e)
 	}
 	if len(batch) > 0 {
@@ -244,10 +244,10 @@ func (c *core) receive(m message) {
 				continue
 			}
 			s := c.slot(e.Slot)
-			if s.Chosen != nil {
+			if s.chosen != nil {
 				continue
 			}
-			vs := s.Votes
+			vs := s.votes
 			if _, ok := vs[m.From]; ok {
 				continue
 			}
@@ -258,13 +258,13 @@ func (c *core) receive(m message) {
 					support++
 				}
 			}
-			if support > s.MaxVotes {
-				s.MaxVotes = support
+			if support > s.maxVotes {
+				s.maxVotes = support
 			}
 			if support >= c.fastSize {
 				c.fastCommits++
 				c.learn(e)
-			} else if s.MaxVotes+c.n-len(vs) < c.fastSize {
+			} else if s.maxVotes+c.n-len(vs) < c.fastSize {
 				// Even assigning all unseen votes to the leading value cannot
 				// form a fast quorum. Preserve votes for classic Prepare recovery;
 				// unrestricted fast voters must not use the old fixed-set revote.
@@ -292,13 +292,13 @@ func (c *core) receive(m message) {
 			}
 			c.remember(e.Value)
 			s := c.slot(e.Slot)
-			if s.Chosen != nil && !sameValue(s.Chosen.Value, e.Value) {
+			if s.chosen != nil && !sameValue(s.chosen.Value, e.Value) {
 				panic("accept contradicts chosen")
 			}
-			if s.Accepted != nil && s.Accepted.Epoch == e.Epoch && !sameValue(s.Accepted.Value, e.Value) {
+			if s.accepted != nil && s.accepted.Epoch == e.Epoch && !sameValue(s.accepted.Value, e.Value) {
 				panic("coordinator equivocation")
 			}
-			s.Accepted = &entry{Slot: e.Slot, Epoch: e.Epoch, Value: e.Value, Payload: true}
+			s.accepted = &entry{Slot: e.Slot, Epoch: e.Epoch, Value: e.Value, Payload: true}
 			acks = append(acks, entry{Slot: e.Slot, Epoch: e.Epoch})
 		}
 		c.send(m.From, message{Kind: msgAccepted, Epoch: m.Epoch, Entries: acks})
@@ -309,12 +309,12 @@ func (c *core) receive(m message) {
 		var chosen []entry
 		for _, e := range m.Entries {
 			s := c.slots[e.Slot]
-			if s == nil || s.Proposed == nil || s.Proposed.Epoch != m.Epoch || s.Chosen != nil {
+			if s == nil || s.proposed == nil || s.proposed.Epoch != m.Epoch || s.chosen != nil {
 				continue
 			}
-			s.Acks = s.Acks.With(m.From)
-			if s.Acks.Size() >= c.n/2+1 {
-				v := *s.Proposed
+			s.acks = s.acks.With(m.From)
+			if s.acks.Size() >= c.n/2+1 {
+				v := *s.proposed
 				if !v.Value.Noop {
 					v.Value = c.known[v.Value.ID]
 				}
@@ -353,8 +353,8 @@ func (c *core) receive(m message) {
 		if len(m.Entries) == 0 {
 			var ds []entry
 			for i := m.Start; i <= m.High && i < m.Start+repairBudget; i++ {
-				if s := c.slots[i]; s != nil && s.Chosen != nil {
-					e := *s.Chosen
+				if s := c.slots[i]; s != nil && s.chosen != nil {
+					e := *s.chosen
 					if !e.Value.Noop {
 						v, ok := c.known[e.Value.ID]
 						if !ok {
@@ -381,8 +381,8 @@ func (c *core) receive(m message) {
 			}
 		}
 		for _, s := range c.slots {
-			if s.Deferred != nil {
-				c.vote(*s.Deferred)
+			if s.deferred != nil {
+				c.vote(*s.deferred)
 			}
 		}
 		c.apply()
@@ -426,7 +426,7 @@ func (c *core) tick(now time.Duration) {
 	// Before classic forwarding rotates the list, its head is the oldest
 	// outstanding request. Execution of unrelated slots must not reset its age.
 	if c.promise == 0 && !c.stalled {
-		if e := c.forwardOrder.Front(); e != nil && now >= e.Value.(pendingCommand).RetryAt {
+		if e := c.forwardOrder.Front(); e != nil && now >= e.Value.(pendingCommand).retryAt {
 			c.stalled = true
 			c.ageFallbacks++
 		}
@@ -455,9 +455,9 @@ func (c *core) tick(now time.Duration) {
 	}
 	if now-c.lastRetry >= time.Second {
 		c.lastRetry = now
-		if s := c.slots[c.executed+1]; s != nil && s.Chosen != nil && !s.Chosen.Value.Noop {
-			if _, ok := c.known[s.Chosen.Value.ID]; !ok {
-				c.broadcast(message{Kind: msgFetch, Entries: []entry{*s.Chosen}})
+		if s := c.slots[c.executed+1]; s != nil && s.chosen != nil && !s.chosen.Value.Noop {
+			if _, ok := c.known[s.chosen.Value.ID]; !ok {
+				c.broadcast(message{Kind: msgFetch, Entries: []entry{*s.chosen}})
 			}
 		}
 		if c.promise > 0 && c.owner() != c.id && len(c.pending) > 0 {
@@ -470,13 +470,13 @@ func (c *core) tick(now time.Duration) {
 					break
 				}
 				p := e.Value.(pendingCommand)
-				if p.RetryAt > now {
+				if p.retryAt > now {
 					break
 				}
-				p.RetryAt = now + failureTimeout
+				p.retryAt = now + failureTimeout
 				e.Value = p
 				c.forwardOrder.MoveToBack(e)
-				batch = append(batch, entry{Value: c.known[p.ID], Payload: true})
+				batch = append(batch, entry{Value: c.known[p.id], Payload: true})
 				if len(batch) == pageSize {
 					c.send(c.owner(), message{Kind: msgForward, Entries: batch})
 					batch = nil

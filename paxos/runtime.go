@@ -30,7 +30,7 @@ func newRuntime(base *replica.Replica, leader int32) *runtime {
 	r.core.broadcast = func(p *Packet) { r.SendToAll(p, code) }
 	r.core.reply = func(req Request, v state.Value) {
 		// A recovered command may have no local reply stream yet. A retry
-		// restores proposals, and core.Values returns the original result.
+		// restores proposals, and core.values returns the original result.
 		g := r.proposals[req.ID]
 		if g != nil {
 			r.client(req.ID, 0, &defs.ProposeReplyTS{OK: defs.TRUE, CommandId: req.ID.Sequence, Value: v, Timestamp: g.Timestamp}, false)
@@ -65,7 +65,7 @@ func (p *protocolAdapter) Propose(g *defs.GPropose, _ time.Time) error {
 	return nil
 }
 
-func (p *protocolAdapter) Handle(event any, _ time.Time) error {
+func (p *protocolAdapter) Step(event any, _ time.Time) error {
 	message, ok := event.(*Packet)
 	if !ok || message == nil {
 		return protocol.UnsupportedEvent("paxos", event)
@@ -78,18 +78,18 @@ func (p *protocolAdapter) Tick(t protocol.Tick) error {
 	if t.Kind != protocol.Maintenance {
 		return protocol.UnsupportedTimer("paxos", t.Kind)
 	}
-	if len(t.Alive) != p.runtime.core.N {
+	if len(t.Alive) != p.runtime.core.n {
 		return fmt.Errorf("paxos: connectivity snapshot size mismatch")
 	}
 	p.runtime.core.tick(t.Now, t.Alive)
 	return nil
 }
 
-func (p *protocolAdapter) Leader() int32 { return p.runtime.core.Leader }
+func (p *protocolAdapter) Leader() int32 { return p.runtime.core.leader }
 
 func (p *protocolAdapter) Status() string {
 	c := p.runtime.core
-	return fmt.Sprintf("BASELINE_RECOVERY curp=%t classic=%t ballot=%d leader=%d active=%t preparing=%t accepted=%d executed=%d results=%d replay_replies=%d pending=%d witness=%d recoveries=%d recovery_end=%d gap_accepts=%d fetch_requests=%d fetch_suppressed=%d", false, true, c.Ballot, c.Leader, c.Active, c.Preparing, c.High, c.Executed, len(c.Values), c.ReplayReplies, len(c.Pending), 0, c.Recoveries, c.recoveryEnd, c.GapAccepts, c.FetchRequests, c.FetchSuppressed)
+	return fmt.Sprintf("BASELINE_RECOVERY curp=%t classic=%t ballot=%d leader=%d active=%t preparing=%t accepted=%d executed=%d results=%d replay_replies=%d pending=%d witness=%d recoveries=%d recovery_end=%d gap_accepts=%d fetch_requests=%d fetch_suppressed=%d", false, true, c.ballot, c.leader, c.active, c.preparing, c.high, c.executed, len(c.values), c.replayReplies, len(c.pending), 0, c.recoveries, c.recoveryEnd, c.gapAccepts, c.fetchRequests, c.fetchSuppressed)
 }
 
 // The master discovers the ballot owner; changing a flag cannot install a leader.
@@ -104,8 +104,8 @@ var _ protocol.Machine = (*Replica)(nil)
 func (r *Replica) Propose(p *defs.GPropose, now time.Time) error {
 	return r.runtime.Machine.Propose(p, now)
 }
-func (r *Replica) Handle(event any, now time.Time) error {
-	return r.runtime.Machine.Handle(event, now)
+func (r *Replica) Step(event any, now time.Time) error {
+	return r.runtime.Machine.Step(event, now)
 }
 func (r *Replica) Tick(t protocol.Tick) error {
 	return r.runtime.Machine.Tick(t)

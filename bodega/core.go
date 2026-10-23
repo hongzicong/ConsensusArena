@@ -14,25 +14,25 @@ import (
 )
 
 type options struct {
-	Lease, Margin, Heartbeat, Failure, FailureMax time.Duration
-	Responders                                    uint64
-	Ranges                                        []BodegaResponderRange
+	lease, margin, heartbeat, failure, failureMax time.Duration
+	responders                                    uint64
+	ranges                                        []BodegaResponderRange
 }
 
 type grant struct {
-	Until     time.Time
-	Threshold uint64
+	until     time.Time
+	threshold uint64
 }
 
 type pendingRead struct {
-	Request request
-	Slot    uint64
-	Since   time.Time
+	request request
+	slot    uint64
+	since   time.Time
 }
 
 type snapshot struct {
-	Parts  int
-	Chunks map[int][]entry
+	parts  int
+	chunks map[int][]entry
 }
 
 type statistics struct {
@@ -123,9 +123,9 @@ func newCore(id, n int, opt options) *core {
 // Sample once per timer refresh, not on each failure check. These deadlines
 // affect failure suspicion only; they never extend a roster lease.
 func (c *core) refreshPeer(peer int, now time.Time) {
-	timeout := c.opt.Failure
-	if c.opt.FailureMax > timeout {
-		timeout += time.Duration(rand.Int63n(int64(c.opt.FailureMax-timeout) + 1))
+	timeout := c.opt.failure
+	if c.opt.failureMax > timeout {
+		timeout += time.Duration(rand.Int63n(int64(c.opt.failureMax-timeout) + 1))
 	}
 	c.seen[peer] = now
 	c.failureAt[peer] = now.Add(timeout)
@@ -204,7 +204,7 @@ func (c *core) stable(now time.Time) bool {
 		count++
 	}
 	for p, g := range c.incoming {
-		if p != c.id && now.Before(g.Until) && c.prefix >= g.Threshold {
+		if p != c.id && now.Before(g.until) && c.prefix >= g.threshold {
 			count++
 		}
 	}
@@ -227,7 +227,7 @@ func (c *core) tick(now time.Time) {
 		return
 	}
 	c.sequence++
-	c.requests[c.sequence] = now.Add(c.opt.Lease)
+	c.requests[c.sequence] = now.Add(c.opt.lease)
 	for s, until := range c.requests {
 		if !now.Before(until) {
 			delete(c.requests, s)
@@ -378,11 +378,11 @@ func (c *core) receive(m message, now time.Time) {
 			c.learnCommitNotice(m.CommitPrefix, 0, now)
 		}
 	case leaseRequest:
-		c.outgoing[m.From] = now.Add(c.opt.Lease + c.opt.Margin)
+		c.outgoing[m.From] = now.Add(c.opt.lease + c.opt.margin)
 		c.emit(m.From, message{Kind: leaseReply, Sequence: m.Sequence, Threshold: c.threshold})
 	case leaseReply:
 		until, ok := c.requests[m.Sequence]
-		if ok && m.Roster.Ballot > c.revoked[m.From] && now.Before(until) && until.After(c.incoming[m.From].Until) {
+		if ok && m.Roster.Ballot > c.revoked[m.From] && now.Before(until) && until.After(c.incoming[m.From].until) {
 			c.incoming[m.From] = grant{until, m.Threshold}
 		}
 	case prepare:

@@ -12,16 +12,16 @@ import (
 )
 
 // Machine is driven by the owning replica event loop, never by network writers.
-// Handle accepts decoded wire messages and protocol-local control events; each
+// Step accepts decoded wire messages and protocol-local control events; each
 // implementation validates the concrete type. Outputs retain their native
 // synchronous callbacks/queues: returning from a transition does not define a
-// new send barrier. In particular, local delivery may reenter Handle.
+// new send barrier. In particular, local delivery may reenter Step.
 //
 // now is the event observation time. Existing algorithms may retain additional
 // internal clock reads and workers; this boundary alone is not a pure simulator.
 type Machine interface {
 	Propose(*defs.GPropose, time.Time) error
-	Handle(any, time.Time) error
+	Step(any, time.Time) error
 	Tick(Tick) error
 }
 

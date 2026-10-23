@@ -15,7 +15,7 @@ func (c *core) apply(desc *commandDesc, cmdID defs.RequestID) {
 		return
 	}
 
-	if desc.phase != COMMIT && (!c.optExec || c.ID != c.leader()) {
+	if desc.phase != COMMIT && (!c.optExec || c.id != c.leader()) {
 		return
 	}
 
@@ -50,15 +50,15 @@ func (c *core) apply(desc *commandDesc, cmdID defs.RequestID) {
 func (c *core) completeReply(args *replyArgs) {
 	if args.propose.Proxy && !c.optExec {
 		acc := &MAccept{
-			Replica: c.ID,
+			Replica: c.id,
 			Ballot:  c.ballot,
 			CmdId:   args.cmdID,
 			Rep:     args.val,
 		}
 		c.sendClient(args.propose.ClientId, c.codes.acceptRPC, acc)
-	} else if c.optExec && c.ID == c.leader() {
+	} else if c.optExec && c.id == c.leader() {
 		reply := &MReply{
-			Replica:  c.ID,
+			Replica:  c.id,
 			Ballot:   c.ballot,
 			CmdId:    args.cmdID,
 			Checksum: args.hs,

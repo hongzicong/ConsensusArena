@@ -16,8 +16,8 @@ import (
 // corePorts exposes runtime observations, output and scheduling capabilities.
 // Worker lifetimes and ingress queues remain owned by Replica.
 type corePorts struct {
-	N  int
-	ID int32
+	n  int
+	id int32
 	*dlog.Logger
 	codes                *rpcCodes
 	send                 func(int, uint8, fastrpc.Serializable) error
@@ -78,8 +78,8 @@ type core struct {
 	historyStart int
 
 	qs *QuorumSystem
-	SQ QuorumI
-	FQ QuorumI
+	sq QuorumI
+	fq QuorumI
 
 	fixedMajority bool
 
@@ -129,9 +129,9 @@ func newCore(ports corePorts, fastRead, optExec bool, slowAddrs []string, initia
 	for _, addr := range slowAddrs {
 		c.slowAddrs[addr] = struct{}{}
 	}
-	c.SQ = NewMajorityOf(c.N)
-	c.FQ = NewThreeQuartersOf(c.N)
-	qs, err := NewQuorumSystem(c.N/2+1, c.N, initial, initialLeader)
+	c.sq = NewMajorityOf(c.n)
+	c.fq = NewThreeQuartersOf(c.n)
+	qs, err := NewQuorumSystem(c.n/2+1, c.n, initial, initialLeader)
 	if err != nil {
 		c.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func newCore(ports corePorts, fastRead, optExec bool, slowAddrs []string, initia
 	c.ballot = c.qs.BallotAt(0)
 	c.cballot = c.ballot
 	c.fixedMajority = true
-	c.FQ = c.qs.AQ(c.ballot)
+	c.fq = c.qs.AQ(c.ballot)
 	return c
 }
 
@@ -205,7 +205,7 @@ func (c *core) handlePropose(msg *proposal, desc *commandDesc, cmdID defs.Reques
 	}
 	desc.cmd = msg.Command
 
-	if !c.FQ.Contains(int(c.ID)) || desc.deferFast {
+	if !c.fq.Contains(int(c.id)) || desc.deferFast {
 		desc.afterPropagate.Recall()
 		return
 	}
@@ -219,17 +219,17 @@ func (c *core) handlePropose(msg *proposal, desc *commandDesc, cmdID defs.Reques
 		return
 	}
 
-	if _, exists := c.slowAddrs[msg.Addr]; exists && c.ID != c.leader() {
+	if _, exists := c.slowAddrs[msg.Addr]; exists && c.id != c.leader() {
 		return
 	}
 
 	fastAck := newFastAck()
-	fastAck.Replica = c.ID
+	fastAck.Replica = c.id
 	fastAck.Ballot = c.ballot
 	fastAck.CmdId = cmdID
 	fastAck.Dep = desc.dep
 	fastAck.Checksum = desc.hs
-	if c.ID == c.leader() {
+	if c.id == c.leader() {
 		fastAck.Seqnum = c.seqnum
 		c.seqnum++
 	}
@@ -240,7 +240,7 @@ func (c *core) handlePropose(msg *proposal, desc *commandDesc, cmdID defs.Reques
 	if !c.optExec {
 		c.batcher.SendFastAck(fastAckSend)
 	} else {
-		if (c.ID == c.leader() && !isRead) || (isRead && desc.propose.Proxy) {
+		if (c.id == c.leader() && !isRead) || (isRead && desc.propose.Proxy) {
 			c.batcher.SendFastAck(fastAckSend)
 			// TODO: save old state
 			c.apply(desc, cmdID)
@@ -274,19 +274,19 @@ func (c *core) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 		dep := Dep(msg.Dep)
 		hs := desc.hs
 		neq := !desc.dep.Equals(dep)
-		fast := c.FQ.Contains(int(c.ID))
-		slow := c.SQ.Contains(int(c.ID))
-		sendSlowAck := c.leader() != c.ID && (slow || (fast && neq))
+		fast := c.fq.Contains(int(c.id))
+		slow := c.sq.Contains(int(c.id))
+		sendSlowAck := c.leader() != c.id && (slow || (fast && neq))
 		msgCmdID := msg.CmdId
 		msgChecksum := msg.Checksum
 
 		defer func() {
-			if c.leader() == c.ID || c.delivered.Has(msgCmdID.String()) {
+			if c.leader() == c.id || c.delivered.Has(msgCmdID.String()) {
 				return
 			}
 			if !sendSlowAck && c.optExec && !SHashesEq(hs, msgChecksum) {
 				lightSlowAck := &MLightSlowAck{
-					Replica: c.ID,
+					Replica: c.id,
 					Ballot:  c.ballot,
 					CmdId:   msgCmdID,
 				}
@@ -309,7 +309,7 @@ func (c *core) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 			desc.slowPath = true
 
 			lightSlowAck := &MLightSlowAck{
-				Replica: c.ID,
+				Replica: c.id,
 				Ballot:  c.ballot,
 				CmdId:   msgCmdID,
 			}
@@ -466,8 +466,8 @@ func (c *core) newDesc() *commandDesc {
 	}
 
 	h := getFastAndSlowAcksHandler(c, desc)
-	desc.slowPathH = desc.slowPathH.ReinitMsgSet(c.SQ, acceptFastAndSlowAck, func(interface{}) {}, h)
-	desc.fastPathH = desc.fastPathH.ReinitMsgSet(c.FQ, acceptFastAndSlowAck, func(interface{}) {}, h)
+	desc.slowPathH = desc.slowPathH.ReinitMsgSet(c.sq, acceptFastAndSlowAck, func(interface{}) {}, h)
+	desc.fastPathH = desc.fastPathH.ReinitMsgSet(c.fq, acceptFastAndSlowAck, func(interface{}) {}, h)
 
 	return desc
 }
@@ -515,7 +515,7 @@ func (c *core) handleMsg(m interface{}, desc *commandDesc, cmdID defs.RequestID)
 }
 
 func (c *core) leader() int32 {
-	return Leader(c.ballot, c.N)
+	return Leader(c.ballot, c.n)
 }
 
 func (c *core) getDepAndHashes(cmd state.Command, cmdID defs.RequestID) (Dep, []SHash) {
@@ -614,14 +614,14 @@ func (c *core) submit(propose *proposal) {
 	if _, recovered := c.recoveryCmds[cmdID]; recovered {
 		// Sync already installed this command's dependencies. Do not append
 		// a hash proposal before handlePropose takes the recovery branch.
-		c.getCmdDescSeq(cmdID, propose, nil, nil, c.leader() == c.ID)
+		c.getCmdDescSeq(cmdID, propose, nil, nil, c.leader() == c.id)
 		return
 	}
 	upd, deferred := c.pendingHashUpds[cmdID]
 	var dep Dep
 	var hs []SHash
 	deferFast := !deferred && c.shouldDeferFast(propose.Command)
-	if deferred && c.leader() != c.ID && c.SQ.Contains(int(c.ID)) {
+	if deferred && c.leader() != c.id && c.sq.Contains(int(c.id)) {
 		// The already-enqueued leader transition will send SlowAck and make
 		// handlePropose return before any local FastAck can consume this hash.
 		dep, hs = c.getDepAndHashesWithUpdate(propose.Command, cmdID, upd, false)
@@ -633,7 +633,7 @@ func (c *core) submit(propose *proposal) {
 	} else {
 		dep, hs = c.getDepAndHashes(propose.Command, cmdID)
 	}
-	if deferred && c.leader() != c.ID && !c.SQ.Contains(int(c.ID)) {
+	if deferred && c.leader() != c.id && !c.sq.Contains(int(c.id)) {
 		// TODO: when pipelining this can break ordering, disabling fast paths.
 		delete(c.pendingHashUpds, cmdID)
 		c.recordLeaderHash(cmdID, upd.seqnum, upd.hash)
@@ -644,7 +644,7 @@ func (c *core) submit(propose *proposal) {
 	if deferFast {
 		message = &deferredProposal{propose: propose}
 	}
-	desc := c.getCmdDescSeq(cmdID, message, dep, hs, c.leader() == c.ID)
+	desc := c.getCmdDescSeq(cmdID, message, dep, hs, c.leader() == c.id)
 	if desc == nil {
 		c.Fatal("Got proposal for the delivered command", cmdID)
 	}
@@ -653,7 +653,7 @@ func (c *core) submit(propose *proposal) {
 func (c *core) shouldDeferFast(cmd state.Command) bool {
 	// Optional speculative reads may need the local proxy's execution/reply.
 	// Keep their existing path rather than suppressing that local fast vote.
-	if c.fastRead || c.leader() == c.ID || !c.SQ.Contains(int(c.ID)) {
+	if c.fastRead || c.leader() == c.id || !c.sq.Contains(int(c.id)) {
 		return false
 	}
 	for _, key := range keysOf(cmd) {

@@ -40,7 +40,7 @@ func (c *core) installRecoveryHashBoundary(phases map[defs.RequestID]int) {
 }
 
 func (c *core) recordLeaderAck(msg *MFastAck) {
-	if msg.Ballot != c.ballot || msg.Replica != c.leader() || c.ID == c.leader() {
+	if msg.Ballot != c.ballot || msg.Replica != c.leader() || c.id == c.leader() {
 		return
 	}
 	if msg.Seqnum == recoveryAckSeqnum {
@@ -64,25 +64,25 @@ func (c *core) receiveFastAck(msg *MFastAck) {
 		return
 	}
 	c.recordLeaderAck(msg)
-	c.getCmdDescSeq(msg.CmdId, msg, nil, nil, c.leader() == c.ID)
+	c.getCmdDescSeq(msg.CmdId, msg, nil, nil, c.leader() == c.id)
 }
 
 // Send the same recovery acknowledgements whether the proposal was present at
 // Sync or arrives later. Return local processing so Sync can defer it until all
 // recovered descriptors have been installed, as in the original recovery path.
 func (c *core) sendRecoveryAck(cmdID defs.RequestID, dep Dep, propose *proposal, desc *commandDesc) func() {
-	if !c.SQ.Contains(int(c.ID)) {
+	if !c.sq.Contains(int(c.id)) {
 		return func() {}
 	}
-	if c.ID == c.leader() {
-		ack := newRecoveryFastAck(c.ID, c.ballot, cmdID, dep)
+	if c.id == c.leader() {
+		ack := newRecoveryFastAck(c.id, c.ballot, cmdID, dep)
 		c.batcher.SendFastAck(copyFastAck(ack))
-		c.sendClient(propose.ClientId, c.codes.replyRPC, &MReply{Replica: c.ID, Ballot: c.ballot, CmdId: cmdID})
+		c.sendClient(propose.ClientId, c.codes.replyRPC, &MReply{Replica: c.id, Ballot: c.ballot, CmdId: cmdID})
 		if desc != nil {
 			return func() { c.handleFastAck(ack, desc) }
 		}
 	} else {
-		ack := &MLightSlowAck{Replica: c.ID, Ballot: c.ballot, CmdId: cmdID}
+		ack := &MLightSlowAck{Replica: c.id, Ballot: c.ballot, CmdId: cmdID}
 		c.batcher.SendLightSlowAckClient(ack, propose.ClientId)
 		if desc != nil {
 			return func() { c.handleLightSlowAck(ack, desc) }

@@ -18,7 +18,7 @@ type replyJob struct {
 func (r *Replica) drain() {
 	sender := r.Messages()
 	sender.Local = func(m interface{ Marshal(io.Writer) }) {
-		protocol.Must(r.Handle(m.(*wireMessage).message, time.Time{}))
+		protocol.Must(r.Step(m.(*wireMessage).message, time.Time{}))
 	}
 	protocol.Drain(&r.core.out, func(e envelope) bool {
 		m := &wireMessage{e.Message}

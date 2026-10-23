@@ -1,16 +1,8 @@
 package kcensus
 
-// One RPC code is used for ordinary FIFO delivery.
-// Heartbeats match local probes (High nonce, Explicit reply).
-// Batch bodies contain single UIDs, never commands.
 import (
-	"encoding/binary"
 	"fmt"
-	"io"
-
-	"github.com/hongzicong/ConsensusArena/replicaset"
-	"github.com/hongzicong/ConsensusArena/rpc"
-	"github.com/hongzicong/ConsensusArena/state"
+	rpc "github.com/hongzicong/ConsensusArena/rpc"
 )
 
 const maxFrame = 16 << 20
@@ -22,354 +14,138 @@ type wireMessage struct {
 }
 
 func (*wireMessage) New() rpc.Serializable { return &wireMessage{} }
+
 func (w *wireMessage) BindClient(connection *rpc.ClientConnection) {
 	w.connection = connection
 }
 
-// Append scalar fields directly in little-endian order.
-// binary.Write allocates a temporary byte slice for every scalar field.
-func put(w *[]byte, v interface{}) {
-	switch x := v.(type) {
-	case uint8:
-		*w = append(*w, x)
-	case int8:
-		*w = append(*w, byte(x))
-	case bool:
-		if x {
-			*w = append(*w, 1)
-		} else {
-			*w = append(*w, 0)
-		}
-	case uint16:
-		*w = binary.LittleEndian.AppendUint16(*w, x)
-	case uint32:
-		*w = binary.LittleEndian.AppendUint32(*w, x)
-	case uint64:
-		*w = binary.LittleEndian.AppendUint64(*w, x)
-	case int32:
-		*w = binary.LittleEndian.AppendUint32(*w, uint32(x))
-	case int64:
-		*w = binary.LittleEndian.AppendUint64(*w, uint64(x))
-	case replicaset.Set:
-		*w = binary.LittleEndian.AppendUint64(*w, uint64(x))
-	default:
-		panic("unsupported KCensus wire scalar")
-	}
-}
-func writeRecord(w *[]byte, r Record) {
-	put(w, r.ID.Client)
-	put(w, r.ID.Sequence)
-	put(w, uint8(r.Command.Op))
-	put(w, int64(r.Command.K))
-	put(w, uint32(len(r.Command.V)))
-	*w = append(*w, r.Command.V...)
-}
-func writeValue(w *[]byte, v *Value, references bool) {
+// Reference selection copies only the native generated header. Records and
+// batches stay owned by protocol state; no converted protobuf graph is built.
+func wireValue(v *Value, references bool) Value {
 	if v == nil {
-		put(w, uint8(0))
-		return
+		return Value{Absent: true}
 	}
-	flag := uint8(2)
-	if !references && !v.Reference {
-		if v.Batch != nil {
-			flag = 3
-		} else {
-			flag = 1
-		}
+	value := *v
+	if references || value.Reference {
+		value.Reference = true
+		value.Records = nil
+		value.Batch = nil
 	}
-	put(w, flag)
-	put(w, v.UID)
-	put(w, uint8(v.Proposer))
-	if flag == 1 {
-		if len(v.Records) != 1 {
-			panic("Single must have exactly one record")
-		}
-		writeRecord(w, v.Records[0])
-	} else if flag == 3 {
-		put(w, v.Batch.Slot)
-		put(w, uint16(len(v.Batch.Members)))
-		for _, uid := range v.Batch.Members {
-			put(w, uid)
-		}
+	if !value.Reference && value.Batch == nil && !value.Absent && len(value.Records) != 1 {
+		panic("Single must have exactly one record")
 	}
+	return value
 }
-func (w *wireMessage) Marshal(out io.Writer) {
-	b := make([]byte, 4, 192)
-	put(&b, w.Kind)
-	put(&b, uint8(w.From))
-	put(&b, uint8(w.Proposer))
-	put(&b, int64(w.Key))
-	put(&b, w.Slot)
-	put(&b, w.Ballot)
-	put(&b, w.AcceptedBallot)
-	put(&b, w.High)
-	put(&b, w.ID.Client)
-	put(&b, w.ID.Sequence)
-	put(&b, w.Mask)
-	b = append(b, w.Digest[:]...)
-	writeValue(&b, w.Value, w.References)
-	writeValue(&b, w.Fast, w.References)
-	put(&b, uint8(len(w.Knowledge)))
-	for _, k := range w.Knowledge {
-		put(&b, k)
-	}
-	put(&b, w.GraphTime)
-	put(&b, w.Explicit)
-	put(&b, w.NewValue)
-	put(&b, w.StateTime)
-	put(&b, uint8(len(w.Reports)))
-	for _, r := range w.Reports {
-		put(&b, uint8(r.From))
-		put(&b, int8(r.Proposer))
-		put(&b, r.Ballot)
-		put(&b, r.AcceptedBallot)
-		put(&b, r.Mask)
-		put(&b, r.Time)
-		writeValue(&b, r.Value, true)
-	}
-	put(&b, uint16(len(w.UIDs)))
-	for _, uid := range w.UIDs {
-		put(&b, uid)
-	}
-	put(&b, uint16(len(w.Values)))
-	for _, v := range w.Values {
-		writeValue(&b, v, false)
-	}
-	put(&b, w.Request != nil)
-	if w.Request != nil {
-		writeRecord(&b, *w.Request)
-	}
-	put(&b, uint32(len(w.Result)))
-	b = append(b, w.Result...)
-	if len(b)-4 > maxFrame {
-		panic("KCensus frame exceeds limit")
-	}
-	binary.LittleEndian.PutUint32(b[:4], uint32(len(b)-4))
-	_, _ = out.Write(b)
+
+func wireValueSize(v *Value, references bool) int {
+	value := wireValue(v, references)
+	return value.Size()
 }
-func (w *wireMessage) Unmarshal(in io.Reader) error {
-	*w = wireMessage{}
-	var size uint32
-	if err := binary.Read(in, binary.LittleEndian, &size); err != nil {
+func wireValueMarshal(v *Value, references bool, dst []byte) (int, error) {
+	value := wireValue(v, references)
+	return value.MarshalToSizedBuffer(dst)
+}
+
+func (m *Message) normalizeAbsentValues() error {
+	clean := func(v **Value) error {
+		if *v == nil || !(*v).Absent {
+			return nil
+		}
+		x := *v
+		if x.UID != 0 || x.Proposer != 0 || len(x.Records) != 0 || x.Batch != nil || x.Reference {
+			return fmt.Errorf("protobuf: absent value contains data")
+		}
+		*v = nil
+		return nil
+	}
+	if err := clean(&m.Value); err != nil {
 		return err
 	}
-	if size > maxFrame {
-		return fmt.Errorf("KCensus frame too large: %d", size)
-	}
-	data := make([]byte, size)
-	if _, err := io.ReadFull(in, data); err != nil {
+	if err := clean(&m.Fast); err != nil {
 		return err
 	}
-	var err error
-	get := func(v interface{}) {
-		if err != nil {
-			return
+	for i := range m.Reports {
+		if err := clean(&m.Reports[i].Value); err != nil {
+			return err
 		}
-		size := 0
-		switch v.(type) {
-		case *uint8, *int8, *bool:
-			size = 1
-		case *uint16:
-			size = 2
-		case *uint32, *int32:
-			size = 4
-		case *uint64, *int64, *replicaset.Set:
-			size = 8
-		case *[32]byte:
-			size = 32
-		default:
-			panic("unsupported KCensus wire scalar")
-		}
-		if len(data) < size {
-			err = io.ErrUnexpectedEOF
-			return
-		}
-		switch x := v.(type) {
-		case *uint8:
-			*x = data[0]
-		case *int8:
-			*x = int8(data[0])
-		case *bool:
-			*x = data[0] != 0
-		case *uint16:
-			*x = binary.LittleEndian.Uint16(data)
-		case *uint32:
-			*x = binary.LittleEndian.Uint32(data)
-		case *int32:
-			*x = int32(binary.LittleEndian.Uint32(data))
-		case *uint64:
-			*x = binary.LittleEndian.Uint64(data)
-		case *int64:
-			*x = int64(binary.LittleEndian.Uint64(data))
-		case *replicaset.Set:
-			*x = replicaset.Set(binary.LittleEndian.Uint64(data))
-		case *[32]byte:
-			copy(x[:], data[:size])
-		}
-		data = data[size:]
 	}
-	readBytes := func() state.Value {
-		var length uint32
-		get(&length)
-		if err != nil {
-			return nil
+	for i := range m.Values {
+		if err := clean(&m.Values[i]); err != nil {
+			return err
 		}
-		if length > 65535 || int(length) > len(data) {
-			err = fmt.Errorf("invalid command/result length")
-			return nil
-		}
-		v := make(state.Value, length)
-		copy(v, data[:length])
-		data = data[length:]
-		return v
 	}
-	readRecord := func() Record {
-		var x Record
-		var op uint8
-		var key int64
-		get(&x.ID.Client)
-		get(&x.ID.Sequence)
-		get(&op)
-		get(&key)
-		x.Command = state.Command{Op: state.Operation(op), K: state.Key(key), V: readBytes()}
-		return x
+	return nil
+}
+
+func validateProtoValue(v *Value) error {
+	if v == nil {
+		return nil
 	}
-	readValue := func() *Value {
-		var flag, proposer uint8
-		get(&flag)
-		if err != nil || flag == 0 {
-			return nil
+	if v.Proposer < 0 || v.Proposer >= 63 {
+		return fmt.Errorf("invalid proposer")
+	}
+	if v.Reference {
+		if v.Batch != nil || len(v.Records) != 0 {
+			return fmt.Errorf("reference contains payload")
 		}
-		if flag > 3 {
-			err = fmt.Errorf("invalid UID value flag")
-			return nil
+		return nil
+	}
+	if v.Batch != nil {
+		b := v.Batch
+		if v.UID&1 == 0 || b.Slot == 0 || len(b.Members) < 2 || len(b.Members) > maxBatch || len(v.Records) != 0 {
+			return fmt.Errorf("invalid batch header")
 		}
-		v := &Value{}
-		get(&v.UID)
-		get(&proposer)
-		v.Proposer = int(proposer)
-		if proposer >= 63 {
-			err = fmt.Errorf("invalid proposer")
-			return nil
-		}
-		switch flag {
-		case 1:
-			if v.UID&1 != 0 {
-				err = fmt.Errorf("odd Single UID")
-				return nil
+		seen := make(map[uint64]bool, len(b.Members))
+		for _, uid := range b.Members {
+			if uid&1 != 0 || seen[uid] {
+				return fmt.Errorf("nested or duplicate batch member")
 			}
-			v.Records = []Record{readRecord()}
-		case 2:
-			v.Reference = true
-		case 3:
-			if v.UID&1 == 0 {
-				err = fmt.Errorf("even Batch UID")
-				return nil
-			}
-			v.Batch = &Batch{}
-			var count uint16
-			get(&v.Batch.Slot)
-			get(&count)
-			if count < 2 || count > maxBatch || v.Batch.Slot == 0 {
-				err = fmt.Errorf("invalid batch header")
-				return nil
-			}
-			v.Batch.Members = make([]uint64, count)
-			seen := map[uint64]bool{}
-			for i := range v.Batch.Members {
-				get(&v.Batch.Members[i])
-				uid := v.Batch.Members[i]
-				if uid&1 != 0 || seen[uid] {
-					err = fmt.Errorf("nested or duplicate batch member")
-					return nil
-				}
-				seen[uid] = true
-			}
+			seen[uid] = true
 		}
-		return v
+		return nil
 	}
-	var from, proposer uint8
-	var key int64
-	get(&w.Kind)
-	get(&from)
-	get(&proposer)
-	get(&key)
-	w.From, w.Proposer, w.Key = int(from), int(proposer), state.Key(key)
-	get(&w.Slot)
-	get(&w.Ballot)
-	get(&w.AcceptedBallot)
-	get(&w.High)
-	get(&w.ID.Client)
-	get(&w.ID.Sequence)
-	get(&w.Mask)
-	get(&w.Digest)
-	w.Value = readValue()
-	w.Fast = readValue()
-	var count uint8
-	get(&count)
-	if count > 63 {
-		return fmt.Errorf("oversize knowledge")
+	if v.UID&1 != 0 || len(v.Records) != 1 || len(v.Records[0].Command.V) > 65535 {
+		return fmt.Errorf("invalid single value")
 	}
-	w.Knowledge = make([]replicaset.Set, count)
-	for i := range w.Knowledge {
-		get(&w.Knowledge[i])
+	if v.Records[0].Command.V == nil {
+		v.Records[0].Command.V = make([]byte, 0)
 	}
-	get(&w.GraphTime)
-	get(&w.Explicit)
-	get(&w.NewValue)
-	get(&w.StateTime)
-	get(&count)
-	if count > 63 {
-		return fmt.Errorf("oversize reports")
+	return nil
+}
+
+func validateProtoMessage(m *message) error {
+	if m.Kind < spread || m.Kind > resultQuery || len(m.Knowledge) > 63 || len(m.Reports) > 63 || len(m.UIDs) > maxBatch || len(m.Values) > maxBatch || len(m.Result) > 65535 {
+		return fmt.Errorf("invalid KCensus frame")
 	}
-	w.Reports = make([]nodeReport, count)
+	if err := validateProtoValue(m.Value); err != nil {
+		return err
+	}
+	if err := validateProtoValue(m.Fast); err != nil {
+		return err
+	}
 	var voters uint64
-	for i := range w.Reports {
-		x := &w.Reports[i]
-		var from uint8
-		var proposer int8
-		get(&from)
-		get(&proposer)
-		x.From, x.Proposer = int(from), int(proposer)
-		get(&x.Ballot)
-		get(&x.AcceptedBallot)
-		get(&x.Mask)
-		get(&x.Time)
-		x.Value = readValue()
-		if from >= 63 || proposer < -1 || proposer >= 63 || voters&(1<<from) != 0 {
+	for _, r := range m.Reports {
+		if r.From < 0 || r.From >= 63 || r.Proposer < -1 || r.Proposer >= 63 || voters&(1<<r.From) != 0 {
 			return fmt.Errorf("invalid voter report")
 		}
-		voters |= 1 << from
+		voters |= 1 << r.From
+		if err := validateProtoValue(r.Value); err != nil {
+			return err
+		}
 	}
-	var many uint16
-	get(&many)
-	if many > maxBatch {
-		return fmt.Errorf("too many UID queries")
+	for _, v := range m.Values {
+		if err := validateProtoValue(v); err != nil {
+			return err
+		}
 	}
-	w.UIDs = make([]uint64, many)
-	for i := range w.UIDs {
-		get(&w.UIDs[i])
+	if m.Request != nil && len(m.Request.Command.V) > 65535 {
+		return fmt.Errorf("invalid command length")
 	}
-	get(&many)
-	if many > maxBatch {
-		return fmt.Errorf("too many payload objects")
+	if m.Request != nil && m.Request.Command.V == nil {
+		m.Request.Command.V = make([]byte, 0)
 	}
-	w.Values = make([]*Value, many)
-	for i := range w.Values {
-		w.Values[i] = readValue()
-	}
-	var request bool
-	get(&request)
-	if request {
-		x := readRecord()
-		w.Request = &x
-	}
-	w.Result = readBytes()
-	if err != nil {
-		return err
-	}
-	if w.Kind < spread || w.Kind > resultQuery || len(data) != 0 {
-		return fmt.Errorf("invalid KCensus frame")
+	if m.Result == nil {
+		m.Result = make([]byte, 0)
 	}
 	return nil
 }

@@ -25,10 +25,10 @@ type SCComponent struct {
 }
 
 func (s *executionScheduler) executeCommand(replica int32, instance int32) bool {
-	if s.core.InstanceSpace[replica][instance] == nil {
+	if s.core.instanceSpace[replica][instance] == nil {
 		return false
 	}
-	inst := s.core.InstanceSpace[replica][instance]
+	inst := s.core.instanceSpace[replica][instance]
 	if inst.Status == EXECUTED {
 		return true
 	}
@@ -76,20 +76,20 @@ func (s *executionScheduler) strongconnect(v *Instance, index *int) bool {
 		return false
 	}
 
-	for q := int32(0); q < int32(s.core.N); q++ {
+	for q := int32(0); q < int32(s.core.n); q++ {
 		inst := v.Deps[q]
 		// Every newly proposed/recovered row instance explicitly depends on
 		// its predecessor. Following the endpoint therefore reaches the full
 		// dependency prefix without rescanning it at every DFS vertex.
-		for i := inst; i > s.core.ExecutedUpTo[q]; i = -1 {
-			if s.core.InstanceSpace[q][i] == nil || s.core.InstanceSpace[q][i].Cmds == nil {
+		for i := inst; i > s.core.executedUpTo[q]; i = -1 {
+			if s.core.instanceSpace[q][i] == nil || s.core.instanceSpace[q][i].Cmds == nil {
 				s.core.blockedOn(q, i, time.Now())
 				return false
 			}
 
 			if s.core.transconf {
 				for _, alpha := range v.Cmds {
-					for _, beta := range s.core.InstanceSpace[q][i].Cmds {
+					for _, beta := range s.core.instanceSpace[q][i].Cmds {
 						if !state.Conflict(&alpha, &beta) {
 							continue
 						}
@@ -97,16 +97,16 @@ func (s *executionScheduler) strongconnect(v *Instance, index *int) bool {
 				}
 			}
 
-			if s.core.InstanceSpace[q][i].Status == EXECUTED {
+			if s.core.instanceSpace[q][i].Status == EXECUTED {
 				continue
 			}
 
-			for s.core.InstanceSpace[q][i].Status != COMMITTED {
+			for s.core.instanceSpace[q][i].Status != COMMITTED {
 				s.core.blockedOn(q, i, time.Now())
 				return false
 			}
 
-			w := s.core.InstanceSpace[q][i]
+			w := s.core.instanceSpace[q][i]
 
 			if w.Index == 0 {
 				if !s.strongconnect(w, index) {
@@ -137,18 +137,18 @@ func (s *executionScheduler) strongconnect(v *Instance, index *int) bool {
 				} else if shouldRespond {
 					val := s.core.execute(w.Cmds[idx])
 					_ = s.core.replyResult(w.lb.clientProposals[idx], val, -1)
-					s.core.M.Lock()
-					s.core.Stats.M["clientReplies"]++
-					s.core.M.Unlock()
+					s.core.m.Lock()
+					s.core.stats.M["clientReplies"]++
+					s.core.m.Unlock()
 				} else if w.Cmds[idx].Op == state.PUT {
 					s.core.execute(w.Cmds[idx])
 				}
 			}
 			w.Status = EXECUTED
 			w.onStack = false
-			s.core.M.Lock()
-			s.core.Stats.M["executedCommands"] += len(w.Cmds)
-			s.core.M.Unlock()
+			s.core.m.Lock()
+			s.core.stats.M["executedCommands"] += len(w.Cmds)
+			s.core.m.Unlock()
 		}
 		s.stack = s.stack[0:l]
 	}
@@ -171,15 +171,15 @@ func (na nodeArray) Swap(i, j int) {
 }
 
 func (c *core) apply(now time.Time) {
-	for q := int32(0); q < int32(c.N); q++ {
+	for q := int32(0); q < int32(c.n); q++ {
 		for budget := 0; budget < 128; budget++ {
-			i := c.ExecutedUpTo[q] + 1
+			i := c.executedUpTo[q] + 1
 			if i > c.crtInstance[q] {
 				break
 			}
-			inst := c.InstanceSpace[q][i]
+			inst := c.instanceSpace[q][i]
 			if inst != nil && inst.Status == EXECUTED {
-				c.ExecutedUpTo[q]++
+				c.executedUpTo[q]++
 				delete(c.blocked, recoveryKey(q, i))
 				continue
 			}

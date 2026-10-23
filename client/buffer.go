@@ -38,6 +38,7 @@ type BufferClient struct {
 	warmup         time.Duration
 	duration       time.Duration
 	latency        *latencyRun
+	throughput     *throughputObserver
 
 	rand          *rand.Rand
 	valueRand     *rand.Rand

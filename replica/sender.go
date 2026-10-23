@@ -2,7 +2,6 @@ package replica
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"io"
 	"net"
@@ -28,16 +27,21 @@ type Frame struct {
 
 // Encode freezes a message before the next protocol transition can mutate it.
 func Encode(code uint8, msg interface{ Marshal(io.Writer) }, tagged bool) Frame {
-	var b bytes.Buffer
-	if tagged {
-		b.WriteByte(code)
+	encoder, ok := msg.(interface {
+		MarshalProtoFrame(uint8, bool) ([]byte, error)
+	})
+	if !ok {
+		panic("data-plane message requires a protobuf frame encoder")
 	}
-	msg.Marshal(&b)
-	f := Frame{Data: b.Bytes()}
-	if tagged, ok := msg.(interface{ FrameTag() uint8 }); ok {
-		f.Tag = tagged.FrameTag()
+	data, err := encoder.MarshalProtoFrame(code, tagged)
+	if err != nil {
+		panic(err)
 	}
-	return f
+	frame := Frame{Data: data}
+	if tagger, ok := msg.(interface{ FrameTag() uint8 }); ok {
+		frame.Tag = tagger.FrameTag()
+	}
+	return frame
 }
 
 // FrameSource supplies protocol-specific scheduling, not socket I/O. Take

@@ -1,0 +1,340 @@
+{
+  "roots": {
+    "bodega": [
+      {
+        "type": "message",
+        "model": "message"
+      }
+    ],
+    "epaxos": [
+      {
+        "type": "repairRequest",
+        "model": "repairRequest"
+      },
+      {
+        "type": "PrepareReply",
+        "model": "PrepareReply"
+      },
+      {
+        "type": "PreAccept",
+        "model": "PreAccept"
+      },
+      {
+        "type": "Accept",
+        "model": "Accept"
+      },
+      {
+        "type": "AcceptReply",
+        "model": "AcceptReply"
+      },
+      {
+        "type": "TryPreAccept",
+        "model": "TryPreAccept"
+      },
+      {
+        "type": "Prepare",
+        "model": "Prepare"
+      },
+      {
+        "type": "PreAcceptReply",
+        "model": "PreAcceptReply"
+      },
+      {
+        "type": "PreAcceptOK",
+        "model": "PreAcceptOK"
+      },
+      {
+        "type": "Commit",
+        "model": "Commit"
+      },
+      {
+        "type": "TryPreAcceptReply",
+        "model": "TryPreAcceptReply"
+      }
+    ],
+    "paxos": [
+      {
+        "type": "Packet",
+        "model": "Packet"
+      }
+    ],
+    "swift": [
+      {
+        "type": "MSync",
+        "model": "MSync"
+      },
+      {
+        "type": "SHash",
+        "model": "SHash"
+      },
+      {
+        "type": "Ack",
+        "model": "Ack"
+      },
+      {
+        "type": "MNewLeaderAck",
+        "model": "MNewLeaderAck"
+      },
+      {
+        "type": "MLightSync",
+        "model": "MLightSync"
+      },
+      {
+        "type": "MFastAck",
+        "model": "MFastAck"
+      },
+      {
+        "type": "MFastAckClient",
+        "model": "MFastAckClient"
+      },
+      {
+        "type": "MLightSlowAck",
+        "model": "MLightSlowAck"
+      },
+      {
+        "type": "MAccept",
+        "model": "MAccept"
+      },
+      {
+        "type": "MNewLeader",
+        "model": "MNewLeader"
+      },
+      {
+        "type": "SDep",
+        "model": "SDep"
+      },
+      {
+        "type": "MShareState",
+        "model": "MShareState"
+      },
+      {
+        "type": "MOptAcks",
+        "model": "MOptAcks"
+      },
+      {
+        "type": "MPing",
+        "model": "MPing"
+      },
+      {
+        "type": "MSlowAck",
+        "model": "MSlowAck"
+      },
+      {
+        "type": "MAcks",
+        "model": "MAcks"
+      },
+      {
+        "type": "MReply",
+        "model": "MReply"
+      },
+      {
+        "type": "MNewLeaderAckN",
+        "model": "MNewLeaderAckN"
+      },
+      {
+        "type": "MCollect",
+        "model": "MCollect"
+      },
+      {
+        "type": "MPingRep",
+        "model": "MPingRep"
+      }
+    ],
+    "curp": [
+      {
+        "type": "MCommit",
+        "model": "MCommit"
+      },
+      {
+        "type": "MSyncReply",
+        "model": "MSyncReply"
+      },
+      {
+        "type": "MAccept",
+        "model": "MAccept"
+      },
+      {
+        "type": "MReply",
+        "model": "MReply"
+      },
+      {
+        "type": "MAcceptAck",
+        "model": "MAcceptAck"
+      },
+      {
+        "type": "MAAcks",
+        "model": "MAAcks"
+      },
+      {
+        "type": "MRecordAck",
+        "model": "MRecordAck"
+      },
+      {
+        "type": "MSync",
+        "model": "MSync"
+      },
+      {
+        "type": "Packet",
+        "model": "Packet"
+      }
+    ],
+    "fastpaxos": [
+      {
+        "type": "wireMessage",
+        "model": "message"
+      }
+    ],
+    "kcensus": [
+      {
+        "type": "wireMessage",
+        "model": "message"
+      }
+    ],
+    "replica/defs": [
+      {
+        "type": "PingArgs",
+        "model": "PingArgs"
+      },
+      {
+        "type": "PingReply",
+        "model": "PingReply"
+      },
+      {
+        "type": "BeTheLeaderReply",
+        "model": "BeTheLeaderReply"
+      },
+      {
+        "type": "Propose",
+        "model": "Propose"
+      },
+      {
+        "type": "ProposeReplyTS",
+        "model": "ProposeReplyTS"
+      },
+      {
+        "type": "Read",
+        "model": "Read"
+      },
+      {
+        "type": "ProposeAndRead",
+        "model": "ProposeAndRead"
+      },
+      {
+        "type": "BeaconReply",
+        "model": "BeaconReply"
+      },
+      {
+        "type": "BeTheLeaderArgs",
+        "model": "BeTheLeaderArgs"
+      },
+      {
+        "type": "ProposeReply",
+        "model": "ProposeReply"
+      },
+      {
+        "type": "ReadReply",
+        "model": "ReadReply"
+      },
+      {
+        "type": "ProposeAndReadReply",
+        "model": "ProposeAndReadReply"
+      },
+      {
+        "type": "Beacon",
+        "model": "Beacon"
+      },
+      {
+        "type": "RequestID",
+        "model": "RequestID"
+      }
+    ]
+  },
+  "binary_sizes": {
+    "epaxos": [
+      "TryPreAcceptReply",
+      "Commit",
+      "PreAcceptOK",
+      "PreAcceptReply",
+      "Prepare",
+      "TryPreAccept",
+      "AcceptReply",
+      "Accept",
+      "PreAccept",
+      "PrepareReply"
+    ],
+    "swift": [
+      "MPingRep",
+      "MCollect",
+      "MNewLeaderAckN",
+      "MReply",
+      "MAcks",
+      "MSlowAck",
+      "MPing",
+      "MOptAcks",
+      "MShareState",
+      "SDep",
+      "MNewLeader",
+      "MAccept",
+      "MLightSlowAck",
+      "MFastAckClient",
+      "MFastAck",
+      "MLightSync",
+      "MNewLeaderAck",
+      "Ack",
+      "SHash"
+    ],
+    "curp": [
+      "MSync",
+      "MRecordAck",
+      "MAAcks",
+      "MAcceptAck",
+      "MReply",
+      "MAccept",
+      "MSyncReply",
+      "MCommit"
+    ],
+    "replica/defs": [
+      "Beacon",
+      "ProposeAndReadReply",
+      "ReadReply",
+      "ProposeReply",
+      "BeTheLeaderArgs",
+      "BeaconReply",
+      "ProposeAndRead",
+      "Read",
+      "ProposeReplyTS",
+      "Propose",
+      "BeTheLeaderReply",
+      "PingReply",
+      "PingArgs",
+      "RequestID"
+    ]
+  },
+  "aliases": {
+    "bodega.kind": "uint8",
+    "state.Key": "int64",
+    "state.Operation": "uint8",
+    "state.Value": "[]byte",
+    "swift.Dep": "[]defs.RequestID"
+  },
+  "local_names": {
+    "bodega": {
+      "entry": "Entry",
+      "message": "Message",
+      "request": "Request",
+      "roster": "Roster"
+    },
+    "epaxos": {
+      "repairRequest": "RepairRequest"
+    },
+    "fastpaxos": {
+      "entry": "Entry",
+      "message": "Message",
+      "record": "Record"
+    },
+    "kcensus": {
+      "message": "Message",
+      "nodeReport": "NodeReport"
+    }
+  }
+}

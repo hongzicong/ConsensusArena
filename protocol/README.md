@@ -4,7 +4,7 @@ All seven replica implementations and the generated skeleton implement `Machine`
 
 ```go
 Propose(*defs.GPropose, time.Time) error
-Handle(any, time.Time) error
+Step(any, time.Time) error
 Tick(protocol.Tick) error
 ```
 
@@ -14,14 +14,14 @@ Paxos and CURP also embed it in their existing runtime adapter interfaces.
 Core data structures, ballots, evidence and commit rules remain protocol-local.
 
 The owner calls the methods on its existing event-loop goroutine. Calling them
-concurrently from another goroutine is not supported. `Handle` accepts the
+concurrently from another goroutine is not supported. `Step` accepts the
 protocol's decoded message types plus its explicitly recognized local control
 events. Unknown types and nil wire messages return an error. Nil proposals and
 unsupported timer kinds also return errors. These errors describe driver wiring
 errors; ordinary protocol rejection retains its existing reply/drop behavior.
 Live loops use `protocol.Must` for this trusted dispatch.
 
-| Protocol | `Handle` inputs | `Tick` behavior |
+| Protocol | `Step` inputs | `Tick` behavior |
 | --- | --- | --- |
 | Paxos / CURP | `*Packet`; self delivery retains synchronous dispatch | Maintenance, with a complete `Alive` snapshot |
 | FastPaxos | `*wireMessage` or a local `message` | Maintenance using `Elapsed` from runtime startup |

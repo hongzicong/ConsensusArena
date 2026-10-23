@@ -24,7 +24,7 @@ type Replica struct {
 }
 
 func readOptions(conf *config.Config, n int) (options, error) {
-	o := options{Lease: 2500 * time.Millisecond, Margin: 100 * time.Millisecond, Heartbeat: 120 * time.Millisecond, Failure: 1200 * time.Millisecond, FailureMax: 2400 * time.Millisecond}
+	o := options{lease: 2500 * time.Millisecond, margin: 100 * time.Millisecond, heartbeat: 120 * time.Millisecond, failure: 1200 * time.Millisecond, failureMax: 2400 * time.Millisecond}
 	if n < 3 || n > 63 || n%2 == 0 {
 		return o, fmt.Errorf("Bodega requires odd membership of 3..63 replicas")
 	}
@@ -32,22 +32,22 @@ func readOptions(conf *config.Config, n int) (options, error) {
 		return o, fmt.Errorf("Bodega requires state-machine execution (noop: false)")
 	}
 	if conf.BodegaLease != 0 {
-		o.Lease = conf.BodegaLease
+		o.lease = conf.BodegaLease
 	}
 	if conf.BodegaMargin != 0 {
-		o.Margin = conf.BodegaMargin
+		o.margin = conf.BodegaMargin
 	}
 	if conf.BodegaHeartbeat != 0 {
-		o.Heartbeat = conf.BodegaHeartbeat
+		o.heartbeat = conf.BodegaHeartbeat
 	}
 	if conf.BodegaFailure != 0 {
-		o.Failure = conf.BodegaFailure
-		o.FailureMax = conf.BodegaFailure // Preserve the legacy fixed-timeout override.
+		o.failure = conf.BodegaFailure
+		o.failureMax = conf.BodegaFailure // Preserve the legacy fixed-timeout override.
 	}
 	if conf.BodegaFailureMax != 0 {
-		o.FailureMax = conf.BodegaFailureMax
+		o.failureMax = conf.BodegaFailureMax
 	}
-	if o.Heartbeat <= 0 || o.Failure <= 2*o.Heartbeat || o.FailureMax < o.Failure || o.Lease <= o.FailureMax || o.Margin <= 0 {
+	if o.heartbeat <= 0 || o.failure <= 2*o.heartbeat || o.failureMax < o.failure || o.lease <= o.failureMax || o.margin <= 0 {
 		return o, fmt.Errorf("Bodega requires 0 < 2*heartbeat < failure <= failureMax < lease, positive margin")
 	}
 	names := strings.TrimSpace(conf.BodegaResponders)
@@ -58,11 +58,11 @@ func readOptions(conf *config.Config, n int) (options, error) {
 	if err != nil {
 		return o, err
 	}
-	o.Responders, err = responderMask(names, members, n)
+	o.responders, err = responderMask(names, members, n)
 	if err != nil {
 		return o, err
 	}
-	o.Ranges, err = responderRanges(conf.BodegaResponderRanges, members, n)
+	o.ranges, err = responderRanges(conf.BodegaResponderRanges, members, n)
 	return o, err
 }
 

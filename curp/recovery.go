@@ -12,29 +12,29 @@ import (
 )
 
 func (c *core) Begin(now time.Time) {
-	c.Ballot = (c.Ballot/int64(c.N)+1)*int64(c.N) + int64(c.ID)
-	c.Leader = c.ID
-	c.Active = false
-	c.Preparing = true
-	c.Recoveries++
+	c.ballot = (c.ballot/int64(c.n)+1)*int64(c.n) + int64(c.id)
+	c.leader = c.id
+	c.active = false
+	c.preparing = true
+	c.recoveries++
 	c.pages = map[int32]map[int32]Packet{}
 	c.promises = map[int32]bool{}
 	c.votes = map[int64]replicaset.Set{}
 	c.lastSend = now
-	p := &Packet{Kind: packetPrepare, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1}
+	p := &Packet{Kind: packetPrepare, From: c.id, Ballot: c.ballot, Floor: c.executed + 1}
 	c.broadcast(p)
 	c.receive(p)
 }
 
 func (c *core) activate() {
-	c.Active = true
-	c.broadcast(&Packet{Kind: packetReady, From: c.ID, Ballot: c.Ballot, High: c.Executed, Floor: 1})
+	c.active = true
+	c.broadcast(&Packet{Kind: packetReady, From: c.id, Ballot: c.ballot, High: c.executed, Floor: 1})
 	c.schedulePending()
 }
 
 func (c *core) schedulePending() {
-	c.resume = make([]Request, 0, len(c.Pending))
-	for _, r := range c.Pending {
+	c.resume = make([]Request, 0, len(c.pending))
+	for _, r := range c.pending {
 		c.resume = append(c.resume, r)
 	}
 }
@@ -43,14 +43,14 @@ func (c *core) promise(p *Packet) {
 
 	var snapshot []Packet
 	values := []Record{}
-	for slot := p.Floor; slot <= c.High; slot++ {
-		if r := c.Log[slot]; r != nil {
+	for slot := p.Floor; slot <= c.high; slot++ {
+		if r := c.log[slot]; r != nil {
 			values = append(values, *r)
 		}
 	}
 	witness := []Request{}
 	{
-		for _, r := range c.Witness {
+		for _, r := range c.witness {
 			witness = append(witness, r)
 		}
 	}
@@ -70,7 +70,7 @@ func (c *core) promise(p *Packet) {
 		count = 1
 	}
 	for page := 0; page < count; page++ {
-		reply := &Packet{Kind: packetPromise, From: c.ID, Ballot: c.Ballot, Floor: p.Floor, High: c.High, Page: int32(page), Pages: int32(count)}
+		reply := &Packet{Kind: packetPromise, From: c.id, Ballot: c.ballot, Floor: p.Floor, High: c.high, Page: int32(page), Pages: int32(count)}
 		lo := page * PageSize
 		hi := lo + PageSize
 		if lo < len(values) {
@@ -96,7 +96,7 @@ func (c *core) promise(p *Packet) {
 }
 
 func (c *core) promiseReply(p *Packet) {
-	if !c.Preparing || c.Leader != c.ID || p.Pages <= 0 || p.Page < 0 || p.Page >= p.Pages {
+	if !c.preparing || c.leader != c.id || p.Pages <= 0 || p.Page < 0 || p.Page >= p.Pages {
 		return
 	}
 	if c.pages[p.From] == nil {
@@ -108,18 +108,18 @@ func (c *core) promiseReply(p *Packet) {
 	}
 	for page := int32(0); page < p.Pages; page++ {
 		v, ok := c.pages[p.From][page]
-		if !ok || v.Pages != p.Pages || v.Floor != c.Executed+1 || v.High != p.High {
+		if !ok || v.Pages != p.Pages || v.Floor != c.executed+1 || v.High != p.High {
 			return
 		}
 	}
 	c.promises[p.From] = true
-	if len(c.promises) < c.N/2+1 {
+	if len(c.promises) < c.n/2+1 {
 		return
 	}
 	selected := map[int64]Record{}
 	witnessVotes := map[defs.RequestID]uint64{}
 	witness := map[defs.RequestID]Request{}
-	high := c.Executed
+	high := c.executed
 	for peer := range c.promises {
 		for _, page := range c.pages[peer] {
 			if page.High > high {
@@ -137,25 +137,25 @@ func (c *core) promiseReply(p *Packet) {
 			}
 		}
 	}
-	c.Preparing = false
-	c.High = high
-	c.Assigned = map[defs.RequestID]int64{}
+	c.preparing = false
+	c.high = high
+	c.assigned = map[defs.RequestID]int64{}
 	c.pendingIndex = newConflictIndex()
-	for slot, r := range c.Log {
-		if slot <= c.Executed {
-			c.Assigned[r.Request.ID] = slot
+	for slot, r := range c.log {
+		if slot <= c.executed {
+			c.assigned[r.Request.ID] = slot
 		}
 	}
-	for slot := c.Executed + 1; slot <= high; slot++ {
+	for slot := c.executed + 1; slot <= high; slot++ {
 		r, ok := selected[slot]
 		if !ok {
 			r = Record{Slot: slot, Request: Request{ID: defs.RequestID{Client: -1, Sequence: int32(slot)}, Command: state.Command{Op: state.NONE}}}
 		}
-		r.Ballot = c.Ballot
+		r.Ballot = c.ballot
 		r.Committed = false
-		c.Log[slot] = &r
+		c.log[slot] = &r
 		c.pendingIndex.add(r.Request)
-		c.Assigned[r.Request.ID] = slot
+		c.assigned[r.Request.ID] = slot
 	}
 	keys := []defs.RequestID{}
 	for id := range witness {
@@ -167,65 +167,65 @@ func (c *core) promiseReply(p *Packet) {
 		}
 		return keys[i].Sequence < keys[j].Sequence
 	})
-	threshold := (c.N/2+1)/2 + 1 // ceil(f/2)+1
+	threshold := (c.n/2+1)/2 + 1 // ceil(f/2)+1
 	for _, id := range keys {
 		if bits.OnesCount64(witnessVotes[id]) < threshold {
 			continue
 		}
-		if _, ok := c.Assigned[id]; ok {
+		if _, ok := c.assigned[id]; ok {
 			continue
 		}
-		if _, ok := c.Values[id]; ok {
+		if _, ok := c.values[id]; ok {
 			continue
 		}
-		c.High++
-		r := Record{Slot: c.High, Ballot: c.Ballot, Request: witness[id]}
-		c.Log[c.High] = &r
+		c.high++
+		r := Record{Slot: c.high, Ballot: c.ballot, Request: witness[id]}
+		c.log[c.high] = &r
 		c.pendingIndex.add(r.Request)
-		c.Assigned[id] = c.High
+		c.assigned[id] = c.high
 	}
-	c.recoveryEnd = c.High
+	c.recoveryEnd = c.high
 	c.votes = map[int64]replicaset.Set{}
-	c.sendSuffix(c.ID, c.Executed+1, false)
-	if c.Executed >= c.recoveryEnd {
+	c.sendSuffix(c.id, c.executed+1, false)
+	if c.executed >= c.recoveryEnd {
 		c.activate()
 	}
 }
 
 func (c *core) requestFetch(now time.Time) {
-	if c.ID == c.Leader {
+	if c.id == c.leader {
 		return
 	}
 	// Gap notifications and leader heartbeats share a retry budget. A burst
 	// of later accepts must not enqueue the same suffix for every packet.
 	if now.Sub(c.lastFetch) < 100*time.Millisecond {
-		c.FetchSuppressed++
+		c.fetchSuppressed++
 		return
 	}
 	c.lastFetch = now
-	c.FetchRequests++
-	c.send(c.Leader, &Packet{Kind: packetFetch, From: c.ID, Ballot: c.Ballot, Floor: c.Executed + 1})
+	c.fetchRequests++
+	c.send(c.leader, &Packet{Kind: packetFetch, From: c.id, Ballot: c.ballot, Floor: c.executed + 1})
 }
 
 func (c *core) sendSuffix(to int32, start int64, fetch bool) {
-	end := c.High
+	end := c.high
 	if limit := start + 2048 - 1; end > limit {
 		end = limit
 	}
 	for lo := start; lo <= end; lo += PageSize {
 		recs := []Record{}
 		for slot := lo; slot < lo+PageSize && slot <= end; slot++ {
-			if r := c.Log[slot]; r != nil {
+			if r := c.log[slot]; r != nil {
 				cp := *r
-				cp.Ballot = c.Ballot
+				cp.Ballot = c.ballot
 				recs = append(recs, cp)
 			}
 		}
 		if len(recs) == 0 {
 			continue
 		}
-		if fetch && to != c.ID {
-			c.send(to, &Packet{Kind: packetAccept, From: c.ID, Ballot: c.Ballot, Records: recs})
+		if fetch && to != c.id {
+			c.send(to, &Packet{Kind: packetAccept, From: c.id, Ballot: c.ballot, Records: recs})
 			decided := []Record{}
 			for _, r := range recs {
 				if r.Committed {
@@ -233,13 +233,13 @@ func (c *core) sendSuffix(to int32, start int64, fetch bool) {
 				}
 			}
 			if len(decided) > 0 {
-				c.send(to, &Packet{Kind: packetCommit, From: c.ID, Ballot: c.Ballot, Records: decided})
+				c.send(to, &Packet{Kind: packetCommit, From: c.id, Ballot: c.ballot, Records: decided})
 			}
 		} else {
 			for i := range recs {
 				recs[i].Committed = false
 			}
-			p := &Packet{Kind: packetAccept, From: c.ID, Ballot: c.Ballot, Records: recs}
+			p := &Packet{Kind: packetAccept, From: c.id, Ballot: c.ballot, Records: recs}
 			c.broadcast(p)
 			c.accept(p)
 		}

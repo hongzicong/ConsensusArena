@@ -1,0 +1,19 @@
+syntax = "proto2";
+package state;
+option go_package = "github.com/hongzicong/ConsensusArena/state";
+import "gogoproto/gogo.proto";
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.goproto_getters_all) = false;
+option (gogoproto.goproto_unrecognized_all) = false;
+option (gogoproto.goproto_unkeyed_all) = false;
+option (gogoproto.goproto_sizecache_all) = false;
+
+message Command {
+  option (gogoproto.goproto_stringer) = false;
+  optional uint32 op = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "Operation", (gogoproto.customname) = "Op", (gogoproto.jsontag) = "Op"];
+  optional sint64 k = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "Key", (gogoproto.customname) = "K", (gogoproto.jsontag) = "K"];
+  optional bytes v = 3 [(gogoproto.nullable) = false, (gogoproto.casttype) = "Value", (gogoproto.customname) = "V", (gogoproto.jsontag) = "V"];
+}
+

@@ -27,7 +27,7 @@ func (c *core) handleLeaderCall(now time.Time) int {
 func (c *core) proposeRoster(leader int, responders uint64, now time.Time) {
 	ranges := c.current.Ranges
 	if c.current.Ballot == 0 {
-		ranges = c.opt.Ranges
+		ranges = c.opt.ranges
 	}
 	c.proposeRosterRanges(leader, responders, ranges, now)
 }
@@ -100,7 +100,7 @@ func (c *core) install(now time.Time) {
 	c.stats.RosterChanges++
 	// An old held slot can be overwritten during recovery: re-route these reads.
 	for id, h := range c.held {
-		c.enqueue(h.Request)
+		c.enqueue(h.request)
 		delete(c.held, id)
 	}
 	c.holdSlots = nil
@@ -195,13 +195,13 @@ func (c *core) addSnapshot(from int, start uint64, part, parts int, entries []en
 		s = &snapshot{parts, map[int][]entry{}}
 		c.snapshots[from] = s
 	}
-	if s.Parts != parts {
+	if s.parts != parts {
 		return
 	}
-	s.Chunks[part] = entries
+	s.chunks[part] = entries
 	count := 0
 	for _, s := range c.snapshots {
-		if len(s.Chunks) == s.Parts {
+		if len(s.chunks) == s.parts {
 			count++
 		}
 	}
@@ -211,10 +211,10 @@ func (c *core) addSnapshot(from int, start uint64, part, parts int, entries []en
 	selected := map[uint64]entry{}
 	high := start - 1
 	for _, s := range c.snapshots {
-		if len(s.Chunks) != s.Parts {
+		if len(s.chunks) != s.parts {
 			continue
 		}
-		for _, vs := range s.Chunks {
+		for _, vs := range s.chunks {
 			for _, v := range vs {
 				if old, ok := selected[v.Slot]; !ok || v.Ballot > old.Ballot {
 					selected[v.Slot] = v
@@ -271,7 +271,7 @@ func (c *core) proposeFilteredRoster(leader int, healthy uint64, now time.Time) 
 	c.tracePeerAges("BODEGA_ROSTER_FILTER", now, healthy)
 	mask, ranges := c.current.Responders, c.current.Ranges
 	if c.current.Ballot == 0 {
-		mask, ranges = c.opt.Responders, c.opt.Ranges
+		mask, ranges = c.opt.responders, c.opt.ranges
 	}
 	ranges = slices.Clone(ranges)
 	for i := range ranges {
@@ -288,7 +288,7 @@ func (c *core) requestCommitRepair(now time.Time) {
 	if !c.active() || c.id == c.current.Leader || start > c.noticeHigh {
 		return
 	}
-	if !c.lastRepair.IsZero() && now.Sub(c.lastRepair) < c.opt.Heartbeat {
+	if !c.lastRepair.IsZero() && now.Sub(c.lastRepair) < c.opt.heartbeat {
 		return
 	}
 	c.lastRepair = now

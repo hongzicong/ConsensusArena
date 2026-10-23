@@ -15,11 +15,11 @@ import (
 // corePorts supplies synchronous I/O ports and shared runtime observations.
 // It owns no sockets or state-machine storage; callbacks preserve existing ordering.
 type corePorts struct {
-	N, F int
-	ID   int32
+	n, f int
+	id   int32
 	*dlog.Logger
-	M     *sync.Mutex
-	Stats *defs.Stats
+	m     *sync.Mutex
+	stats *defs.Stats
 	*rpcCodes
 	send                   func(int32, uint8, fastrpc.Serializable)
 	broadcast              func([]int32, int, uint8, fastrpc.Serializable)
@@ -39,10 +39,10 @@ type corePorts struct {
 // core owns protocol state, ordering, recovery decisions and completion semantics.
 type core struct {
 	corePorts
-	InstanceSpace      [][]*Instance
+	instanceSpace      [][]*Instance
 	crtInstance        []int32
-	CommittedUpTo      []int32
-	ExecutedUpTo       []int32
+	committedUpTo      []int32
+	executedUpTo       []int32
 	scheduler          *executionScheduler
 	conflicts          []map[state.Key]*InstPair
 	maxSeqPerKey       map[state.Key]int32
@@ -50,7 +50,7 @@ type core struct {
 	latestCPReplica    int32
 	latestCPInstance   int32
 	instancesToRecover chan *instanceID
-	IsLeader           bool
+	isLeader           bool
 	maxRecvBallot      int32
 	batchWait          int
 	transconf          bool
@@ -59,18 +59,18 @@ type core struct {
 	deferMap           map[uint64]uint64
 	*repairState
 	transportState
-	Thrifty bool
+	thrifty bool
 	execute func(state.Command) state.Value
 }
 
 func newCore(ports corePorts, batchWait int, transconf bool) *core {
 	c := &core{
 		corePorts:          ports,
-		InstanceSpace:      make([][]*Instance, ports.N),
-		crtInstance:        make([]int32, ports.N),
-		CommittedUpTo:      make([]int32, ports.N),
-		ExecutedUpTo:       make([]int32, ports.N),
-		conflicts:          make([]map[state.Key]*InstPair, ports.N),
+		instanceSpace:      make([][]*Instance, ports.n),
+		crtInstance:        make([]int32, ports.n),
+		committedUpTo:      make([]int32, ports.n),
+		executedUpTo:       make([]int32, ports.n),
+		conflicts:          make([]map[state.Key]*InstPair, ports.n),
 		maxSeqPerKey:       make(map[state.Key]int32),
 		latestCPInstance:   -1,
 		instancesToRecover: make(chan *instanceID, defs.CHAN_BUFFER_SIZE),
@@ -80,14 +80,14 @@ func newCore(ports corePorts, batchWait int, transconf bool) *core {
 		recoveryAttempts:   make(map[uint64]recoveryAttempt),
 		deferMap:           make(map[uint64]uint64),
 		repairState:        newRepairState(),
-		transportState:     newTransportState(int(ports.ID), ports.N),
-		Thrifty:            true,
+		transportState:     newTransportState(int(ports.id), ports.n),
+		thrifty:            true,
 	}
-	for i := 0; i < c.N; i++ {
-		c.InstanceSpace[i] = make([]*Instance, MAX_INSTANCE)
+	for i := 0; i < c.n; i++ {
+		c.instanceSpace[i] = make([]*Instance, MAX_INSTANCE)
 		c.crtInstance[i] = -1
-		c.ExecutedUpTo[i] = -1
-		c.CommittedUpTo[i] = -1
+		c.executedUpTo[i] = -1
+		c.committedUpTo[i] = -1
 		c.conflicts[i] = make(map[state.Key]*InstPair, HT_INIT_SIZE)
 	}
 	c.scheduler = &executionScheduler{core: c, stack: make([]*Instance, 0, 100)}
@@ -159,22 +159,22 @@ func isInitialBallot(ballot int32, replica int32, instance int32) bool {
 }
 
 func (c *core) makeBallot(replica int32, instance int32) {
-	inst := c.InstanceSpace[replica][instance]
+	inst := c.instanceSpace[replica][instance]
 	high := inst.bal
 	if c.maxRecvBallot > high {
 		high = c.maxRecvBallot
 	}
-	inst.lb.lastTriedBallot = (high/int32(c.N)+1)*int32(c.N) + c.ID
+	inst.lb.lastTriedBallot = (high/int32(c.n)+1)*int32(c.n) + c.id
 }
 
 func (c *core) updateCommitted(replica int32) {
-	c.M.Lock()
-	for c.InstanceSpace[replica][c.CommittedUpTo[replica]+1] != nil &&
-		(c.InstanceSpace[replica][c.CommittedUpTo[replica]+1].Status == COMMITTED ||
-			c.InstanceSpace[replica][c.CommittedUpTo[replica]+1].Status == EXECUTED) {
-		c.CommittedUpTo[replica] = c.CommittedUpTo[replica] + 1
+	c.m.Lock()
+	for c.instanceSpace[replica][c.committedUpTo[replica]+1] != nil &&
+		(c.instanceSpace[replica][c.committedUpTo[replica]+1].Status == COMMITTED ||
+			c.instanceSpace[replica][c.committedUpTo[replica]+1].Status == EXECUTED) {
+		c.committedUpTo[replica] = c.committedUpTo[replica] + 1
 	}
-	c.M.Unlock()
+	c.m.Unlock()
 }
 
 func (c *core) updateConflicts(cmds []state.Command, replica int32, instance int32, seq int32) {
@@ -207,8 +207,8 @@ func (c *core) updateConflicts(cmds []state.Command, replica int32, instance int
 
 func (c *core) updateAttributes(cmds []state.Command, seq int32, deps []int32, replica int32, instance int32) (int32, []int32, bool) {
 	changed := false
-	for q := 0; q < c.N; q++ {
-		if c.ID != replica && int32(q) == replica {
+	for q := 0; q < c.n; q++ {
+		if c.id != replica && int32(q) == replica {
 			continue
 		}
 		for i := 0; i < len(cmds); i++ {
@@ -223,8 +223,8 @@ func (c *core) updateAttributes(cmds []state.Command, seq int32, deps []int32, r
 
 				if d > deps[q] {
 					deps[q] = d
-					if seq <= c.InstanceSpace[q][d].Seq {
-						seq = c.InstanceSpace[q][d].Seq + 1
+					if seq <= c.instanceSpace[q][d].Seq {
+						seq = c.instanceSpace[q][d].Seq + 1
 					}
 					changed = true
 					break
@@ -252,7 +252,7 @@ func (c *core) mergeAttributes(seq1 int32, deps1 []int32, seq2 int32, deps2 []in
 			seq1 = seq2
 		}
 	}
-	for q := 0; q < c.N; q++ {
+	for q := 0; q < c.n; q++ {
 		if deps1[q] != deps2[q] {
 			equal = false
 			if deps2[q] > deps1[q] {
@@ -280,19 +280,19 @@ func (c *core) beginProposalBatch(proposalQueue int) int {
 	if maxBatch := c.maxBatchCommands(); batchSize > maxBatch {
 		batchSize = maxBatch
 	}
-	c.M.Lock()
-	c.Stats.M["totalBatching"]++
-	c.Stats.M["totalBatchingSize"] += batchSize
-	c.Stats.M["proposedCommands"] += batchSize
-	if batchSize > c.Stats.M["maxBatchSize"] {
-		c.Stats.M["maxBatchSize"] = batchSize
+	c.m.Lock()
+	c.stats.M["totalBatching"]++
+	c.stats.M["totalBatchingSize"] += batchSize
+	c.stats.M["proposedCommands"] += batchSize
+	if batchSize > c.stats.M["maxBatchSize"] {
+		c.stats.M["maxBatchSize"] = batchSize
 	}
-	if proposalQueue > c.Stats.M["maxProposalQueue"] {
-		c.Stats.M["maxProposalQueue"] = proposalQueue
+	if proposalQueue > c.stats.M["maxProposalQueue"] {
+		c.stats.M["maxProposalQueue"] = proposalQueue
 	}
-	c.M.Unlock()
+	c.m.Unlock()
 
-	c.crtInstance[c.ID]++
+	c.crtInstance[c.id]++
 
 	return batchSize
 }
@@ -302,7 +302,7 @@ func (c *core) submit(proposals []*proposal) {
 	for i, p := range proposals {
 		cmds[i] = p.Command
 	}
-	c.startPhase1(cmds, c.ID, c.crtInstance[c.ID], c.ID, proposals)
+	c.startPhase1(cmds, c.id, c.crtInstance[c.id], c.id, proposals)
 }
 
 func (c *core) startPhase1(cmds []state.Command, replica int32, instance int32, ballot int32, proposals []*proposal) {
@@ -312,20 +312,20 @@ func (c *core) startPhase1(cmds []state.Command, replica int32, instance int32, 
 	}
 	// init command attributes
 	seq := int32(0)
-	deps := make([]int32, c.N)
-	for q := 0; q < c.N; q++ {
+	deps := make([]int32, c.n)
+	for q := 0; q < c.n; q++ {
 		deps[q] = -1
 	}
 	deps[replica] = instance - 1
 	seq, deps, _ = c.updateAttributes(cmds, seq, deps, replica, instance)
-	comDeps := make([]int32, c.N)
-	for i := 0; i < c.N; i++ {
+	comDeps := make([]int32, c.n)
+	for i := 0; i < c.n; i++ {
 		comDeps[i] = -1
 	}
 
 	inst := c.newInstance(replica, instance, cmds, ballot, ballot, PREACCEPTED, seq, deps)
 	inst.lb = c.newLeaderBookkeeping(proposals, append([]int32(nil), deps...), comDeps, append([]int32(nil), deps...), ballot, cmds, PREACCEPTED, seq)
-	c.InstanceSpace[replica][instance] = inst
+	c.instanceSpace[replica][instance] = inst
 	inst.lb.preparing = false
 
 	c.updateConflicts(cmds, replica, instance, seq)
@@ -334,7 +334,7 @@ func (c *core) startPhase1(cmds []state.Command, replica int32, instance int32, 
 		c.maxSeq = seq
 	}
 
-	c.recordInstanceMetadata(c.InstanceSpace[replica][instance])
+	c.recordInstanceMetadata(c.instanceSpace[replica][instance])
 	c.recordCommands(cmds)
 	c.sync()
 
@@ -342,7 +342,7 @@ func (c *core) startPhase1(cmds []state.Command, replica int32, instance int32, 
 }
 
 func (c *core) handlePreAccept(preAccept *PreAccept) {
-	inst := c.InstanceSpace[preAccept.Replica][preAccept.Instance]
+	inst := c.instanceSpace[preAccept.Replica][preAccept.Instance]
 
 	if preAccept.Seq >= c.maxSeq {
 		c.maxSeq = preAccept.Seq + 1
@@ -358,7 +358,7 @@ func (c *core) handlePreAccept(preAccept *PreAccept) {
 
 	if inst == nil {
 		inst = c.newInstanceDefault(preAccept.Replica, preAccept.Instance)
-		c.InstanceSpace[preAccept.Replica][preAccept.Instance] = inst
+		c.instanceSpace[preAccept.Replica][preAccept.Instance] = inst
 	}
 
 	if inst != nil && preAccept.Ballot < inst.bal {
@@ -369,7 +369,7 @@ func (c *core) handlePreAccept(preAccept *PreAccept) {
 
 	if inst.Status >= ACCEPTED {
 		if inst.Cmds == nil {
-			c.InstanceSpace[preAccept.Replica][preAccept.Instance].Cmds = preAccept.Command
+			c.instanceSpace[preAccept.Replica][preAccept.Instance].Cmds = preAccept.Command
 			c.updateConflicts(preAccept.Command, preAccept.Replica, preAccept.Instance, preAccept.Seq)
 			c.recordCommands(preAccept.Command)
 			c.sync()
@@ -389,7 +389,7 @@ func (c *core) handlePreAccept(preAccept *PreAccept) {
 		inst.Status = status
 
 		c.updateConflicts(preAccept.Command, preAccept.Replica, preAccept.Instance, preAccept.Seq)
-		c.recordInstanceMetadata(c.InstanceSpace[preAccept.Replica][preAccept.Instance])
+		c.recordInstanceMetadata(c.instanceSpace[preAccept.Replica][preAccept.Instance])
 		c.recordCommands(preAccept.Command)
 		c.sync()
 
@@ -402,13 +402,13 @@ func (c *core) handlePreAccept(preAccept *PreAccept) {
 		inst.vbal,
 		inst.Seq,
 		inst.Deps,
-		c.CommittedUpTo,
-		inst.Status, c.ID}
+		c.committedUpTo,
+		inst.Status, c.id}
 	c.send(preAccept.LeaderId, c.preAcceptReplyRPC, reply)
 }
 
 func (c *core) handlePreAcceptReply(pareply *PreAcceptReply) {
-	inst := c.InstanceSpace[pareply.Replica][pareply.Instance]
+	inst := c.instanceSpace[pareply.Replica][pareply.Instance]
 	if inst == nil || inst.lb == nil {
 		return
 	}
@@ -427,8 +427,8 @@ func (c *core) handlePreAcceptReply(pareply *PreAcceptReply) {
 
 	if lb.lastTriedBallot < pareply.Ballot {
 		lb.nacks++
-		if lb.nacks+1 > c.N>>1 {
-			if c.IsLeader {
+		if lb.nacks+1 > c.n>>1 {
+			if c.isLeader {
 				c.makeBallot(pareply.Replica, pareply.Instance)
 				c.bcastPrepare(pareply.Replica, pareply.Instance)
 			}
@@ -440,7 +440,7 @@ func (c *core) handlePreAcceptReply(pareply *PreAcceptReply) {
 		return
 	}
 
-	if pareply.AcceptorId < 0 || pareply.AcceptorId >= int32(c.N) || !lb.preVoters.Add(int(pareply.AcceptorId)) {
+	if pareply.AcceptorId < 0 || pareply.AcceptorId >= int32(c.n) || !lb.preVoters.Add(int(pareply.AcceptorId)) {
 		return
 	}
 	inst.lb.preAcceptOKs++
@@ -455,25 +455,25 @@ func (c *core) handlePreAcceptReply(pareply *PreAcceptReply) {
 	isInitialBallot := isInitialBallot(lb.lastTriedBallot, pareply.Replica, pareply.Instance)
 
 	seq, deps, allEqual := c.mergeAttributes(lb.seq, lb.deps, pareply.Seq, pareply.Deps)
-	if c.N <= 3 && c.Thrifty {
+	if c.n <= 3 && c.thrifty {
 		// no need to check for equality
 	} else {
 		inst.lb.allEqual = inst.lb.allEqual && allEqual
 		if !allEqual {
-			c.M.Lock()
-			c.Stats.M["conflicted"]++
-			c.M.Unlock()
+			c.m.Lock()
+			c.stats.M["conflicted"]++
+			c.m.Unlock()
 		}
 	}
 
 	allCommitted := true
-	if c.N > 7 {
-		for q := 0; q < c.N; q++ {
+	if c.n > 7 {
+		for q := 0; q < c.n; q++ {
 			if inst.lb.committedDeps[q] < pareply.CommittedDeps[q] {
 				inst.lb.committedDeps[q] = pareply.CommittedDeps[q]
 			}
-			if inst.lb.committedDeps[q] < c.CommittedUpTo[q] {
-				inst.lb.committedDeps[q] = c.CommittedUpTo[q]
+			if inst.lb.committedDeps[q] < c.committedUpTo[q] {
+				inst.lb.committedDeps[q] = c.committedUpTo[q]
 			}
 			if inst.lb.committedDeps[q] < inst.Deps[q] {
 				allCommitted = false
@@ -504,21 +504,21 @@ func (c *core) handlePreAcceptReply(pareply *PreAcceptReply) {
 		if inst.lb.clientProposals != nil && !c.replyAfterExecution() {
 			for i := 0; i < len(inst.lb.clientProposals); i++ {
 				_ = c.replyResult(inst.lb.clientProposals[i], state.NIL(), -1)
-				c.M.Lock()
-				c.Stats.M["clientReplies"]++
-				c.M.Unlock()
+				c.m.Lock()
+				c.stats.M["clientReplies"]++
+				c.m.Unlock()
 			}
 		}
 
 		c.bcastCommit(pareply.Replica, pareply.Instance)
 
-		c.M.Lock()
-		c.Stats.M["fast"]++
+		c.m.Lock()
+		c.stats.M["fast"]++
 		if inst.proposeTime != 0 {
-			c.Stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
+			c.stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
 		}
-		c.M.Unlock()
-	} else if inst.lb.preAcceptOKs >= c.N/2 && (!precondition || !c.fastQuorumAvailable()) {
+		c.m.Unlock()
+	} else if inst.lb.preAcceptOKs >= c.n/2 && (!precondition || !c.fastQuorumAvailable()) {
 		lb.status = ACCEPTED
 
 		inst.Status = lb.status
@@ -531,17 +531,17 @@ func (c *core) handlePreAcceptReply(pareply *PreAcceptReply) {
 
 		c.bcastAccept(pareply.Replica, pareply.Instance)
 
-		c.M.Lock()
-		c.Stats.M["slow"]++
+		c.m.Lock()
+		c.stats.M["slow"]++
 		if !allCommitted {
-			c.Stats.M["weird"]++
+			c.stats.M["weird"]++
 		}
-		c.M.Unlock()
+		c.m.Unlock()
 	}
 }
 
 func (c *core) handleAccept(accept *Accept) {
-	inst := c.InstanceSpace[accept.Replica][accept.Instance]
+	inst := c.instanceSpace[accept.Replica][accept.Instance]
 
 	if accept.Ballot > c.maxRecvBallot {
 		c.maxRecvBallot = accept.Ballot
@@ -553,7 +553,7 @@ func (c *core) handleAccept(accept *Accept) {
 
 	if inst == nil {
 		inst = c.newInstanceDefault(accept.Replica, accept.Instance)
-		c.InstanceSpace[accept.Replica][accept.Instance] = inst
+		c.instanceSpace[accept.Replica][accept.Instance] = inst
 	}
 
 	if accept.Ballot < inst.bal {
@@ -568,17 +568,17 @@ func (c *core) handleAccept(accept *Accept) {
 		inst.Status = ACCEPTED
 		inst.Cmds = accept.Command
 		c.updateConflicts(inst.Cmds, accept.Replica, accept.Instance, inst.Seq)
-		c.recordInstanceMetadata(c.InstanceSpace[accept.Replica][accept.Instance])
+		c.recordInstanceMetadata(c.instanceSpace[accept.Replica][accept.Instance])
 		c.sync()
 	}
 
-	reply := &AcceptReply{accept.Replica, accept.Instance, inst.bal, c.ID}
+	reply := &AcceptReply{accept.Replica, accept.Instance, inst.bal, c.id}
 	c.send(accept.LeaderId, c.acceptReplyRPC, reply)
 
 }
 
 func (c *core) handleAcceptReply(areply *AcceptReply) {
-	inst := c.InstanceSpace[areply.Replica][areply.Instance]
+	inst := c.instanceSpace[areply.Replica][areply.Instance]
 	if inst == nil || inst.lb == nil {
 		return
 	}
@@ -601,8 +601,8 @@ func (c *core) handleAcceptReply(areply *AcceptReply) {
 
 	if areply.Ballot > lb.lastTriedBallot {
 		lb.nacks++
-		if lb.nacks+1 > c.N>>1 {
-			if c.IsLeader {
+		if lb.nacks+1 > c.n>>1 {
+			if c.isLeader {
 				c.makeBallot(areply.Replica, areply.Instance)
 				c.bcastPrepare(areply.Replica, areply.Instance)
 			}
@@ -610,12 +610,12 @@ func (c *core) handleAcceptReply(areply *AcceptReply) {
 		return
 	}
 
-	if areply.AcceptorId < 0 || areply.AcceptorId >= int32(c.N) || !lb.acceptVoters.Add(int(areply.AcceptorId)) {
+	if areply.AcceptorId < 0 || areply.AcceptorId >= int32(c.n) || !lb.acceptVoters.Add(int(areply.AcceptorId)) {
 		return
 	}
 	inst.lb.acceptOKs++
 
-	if inst.lb.acceptOKs+1 > c.N/2 {
+	if inst.lb.acceptOKs+1 > c.n/2 {
 		lb.status = COMMITTED
 		inst.Status = COMMITTED
 		c.updateCommitted(areply.Replica)
@@ -626,23 +626,23 @@ func (c *core) handleAcceptReply(areply *AcceptReply) {
 		if inst.lb.clientProposals != nil && !c.replyAfterExecution() {
 			for i := 0; i < len(inst.lb.clientProposals); i++ {
 				_ = c.replyResult(inst.lb.clientProposals[i], state.NIL(), -1)
-				c.M.Lock()
-				c.Stats.M["clientReplies"]++
-				c.M.Unlock()
+				c.m.Lock()
+				c.stats.M["clientReplies"]++
+				c.m.Unlock()
 			}
 		}
 
 		c.bcastCommit(areply.Replica, areply.Instance)
-		c.M.Lock()
+		c.m.Lock()
 		if inst.proposeTime != 0 {
-			c.Stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
+			c.stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
 		}
-		c.M.Unlock()
+		c.m.Unlock()
 	}
 }
 
 func (c *core) handleCommit(commit *Commit) {
-	inst := c.InstanceSpace[commit.Replica][commit.Instance]
+	inst := c.instanceSpace[commit.Replica][commit.Instance]
 
 	if commit.Instance > c.crtInstance[commit.Replica] {
 		c.crtInstance[commit.Replica] = commit.Instance
@@ -653,8 +653,8 @@ func (c *core) handleCommit(commit *Commit) {
 	}
 
 	if inst == nil {
-		c.InstanceSpace[commit.Replica][commit.Instance] = c.newInstanceDefault(commit.Replica, commit.Instance)
-		inst = c.InstanceSpace[commit.Replica][commit.Instance]
+		c.instanceSpace[commit.Replica][commit.Instance] = c.newInstanceDefault(commit.Replica, commit.Instance)
+		inst = c.instanceSpace[commit.Replica][commit.Instance]
 	}
 
 	if inst.Status >= COMMITTED {
@@ -662,7 +662,7 @@ func (c *core) handleCommit(commit *Commit) {
 	}
 
 	// FIXME timeout on client side?
-	if commit.Replica == c.ID {
+	if commit.Replica == c.id {
 		if len(commit.Command) == 1 && commit.Command[0].Op == state.NONE && inst.lb != nil && inst.lb.clientProposals != nil {
 			for _, p := range inst.lb.clientProposals {
 				c.Printf("In %d.%d, re-proposing %s \n", commit.Replica, commit.Instance, p.Command.String())
@@ -684,7 +684,7 @@ func (c *core) handleCommit(commit *Commit) {
 	c.updateConflicts(commit.Command, commit.Replica, commit.Instance, commit.Seq)
 	c.updateCommitted(commit.Replica)
 	c.clearRecovery(commit.Replica, commit.Instance)
-	c.recordInstanceMetadata(c.InstanceSpace[commit.Replica][commit.Instance])
+	c.recordInstanceMetadata(c.instanceSpace[commit.Replica][commit.Instance])
 	c.recordCommands(commit.Command)
 
 }
@@ -702,12 +702,12 @@ func (c *core) newLeaderBookkeepingDefault() *LeaderBookkeeping {
 }
 
 func (c *core) newLeaderBookkeeping(p []*proposal, originalDeps []int32, committedDeps []int32, deps []int32, lastTriedBallot int32, cmds []state.Command, status int8, seq int32) *LeaderBookkeeping {
-	return &LeaderBookkeeping{clientProposals: p, ballot: lastTriedBallot, allEqual: true, originalDeps: originalDeps, committedDeps: committedDeps, preparing: true, possibleQuorum: allPossible(c.N), lastTriedBallot: lastTriedBallot, cmds: cmds, status: status, seq: seq, deps: deps, preVoters: replicaset.New(int(c.ID)), acceptVoters: replicaset.New(int(c.ID)), prepareVoters: replicaset.New(), phaseStarted: time.Now()}
+	return &LeaderBookkeeping{clientProposals: p, ballot: lastTriedBallot, allEqual: true, originalDeps: originalDeps, committedDeps: committedDeps, preparing: true, possibleQuorum: allPossible(c.n), lastTriedBallot: lastTriedBallot, cmds: cmds, status: status, seq: seq, deps: deps, preVoters: replicaset.New(int(c.id)), acceptVoters: replicaset.New(int(c.id)), prepareVoters: replicaset.New(), phaseStarted: time.Now()}
 }
 
 func (c *core) newNilDeps() []int32 {
-	nildeps := make([]int32, c.N)
-	for i := 0; i < c.N; i++ {
+	nildeps := make([]int32, c.n)
+	for i := 0; i < c.n; i++ {
 		nildeps[i] = -1
 	}
 	return nildeps
@@ -717,7 +717,7 @@ func (c *core) newNilDeps() []int32 {
 
 func (c *core) fastQuorumAvailable() bool {
 	live := 0
-	for id := int32(0); id < int32(c.N); id++ {
+	for id := int32(0); id < int32(c.n); id++ {
 		if c.peerAlive(id) {
 			live++
 		}
@@ -726,11 +726,11 @@ func (c *core) fastQuorumAvailable() bool {
 }
 
 func (c *core) FastQuorumSize() int {
-	return c.F + (c.F+1)/2
+	return c.f + (c.f+1)/2
 }
 
 func (c *core) SlowQuorumSize() int {
-	return (c.N + 1) / 2
+	return (c.n + 1) / 2
 }
 
 func (c *core) recoverBroadcast(phase string) {
@@ -741,57 +741,57 @@ func (c *core) recoverBroadcast(phase string) {
 
 func (c *core) bcastPrepare(replica int32, instance int32) {
 	defer c.recoverBroadcast("Prepare")
-	lb := c.InstanceSpace[replica][instance].lb
-	msg := &Prepare{LeaderId: c.ID, Replica: replica, Instance: instance, Ballot: lb.lastTriedBallot}
-	c.broadcast(c.cyclicPeers, c.N-1, c.prepareRPC, msg)
+	lb := c.instanceSpace[replica][instance].lb
+	msg := &Prepare{LeaderId: c.id, Replica: replica, Instance: instance, Ballot: lb.lastTriedBallot}
+	c.broadcast(c.cyclicPeers, c.n-1, c.prepareRPC, msg)
 }
 
 func (c *core) bcastPreAccept(replica int32, instance int32) {
 	defer c.recoverBroadcast("PreAccept")
-	lb := c.InstanceSpace[replica][instance].lb
+	lb := c.instanceSpace[replica][instance].lb
 	msg := &PreAccept{
-		LeaderId: c.ID, Replica: replica, Instance: instance,
+		LeaderId: c.id, Replica: replica, Instance: instance,
 		Ballot: lb.lastTriedBallot, Command: lb.cmds, Seq: lb.seq, Deps: lb.deps,
 	}
-	limit := c.N - 1
-	if c.Thrifty {
+	limit := c.n - 1
+	if c.thrifty {
 		limit = c.FastQuorumSize() - 1
 	}
-	c.broadcast(c.preferredPeerOrder()[:c.N-1], limit, c.preAcceptRPC, msg)
+	c.broadcast(c.preferredPeerOrder()[:c.n-1], limit, c.preAcceptRPC, msg)
 }
 
 func (c *core) bcastTryPreAccept(replica int32, instance int32) {
 	defer c.recoverBroadcast("PreAccept")
-	lb := c.InstanceSpace[replica][instance].lb
+	lb := c.instanceSpace[replica][instance].lb
 	msg := &TryPreAccept{
-		LeaderId: c.ID, Replica: replica, Instance: instance,
+		LeaderId: c.id, Replica: replica, Instance: instance,
 		Ballot: lb.lastTriedBallot, Command: lb.cmds, Seq: lb.seq, Deps: lb.deps,
 	}
-	c.broadcast(nil, c.N-1, c.tryPreAcceptRPC, msg)
+	c.broadcast(nil, c.n-1, c.tryPreAcceptRPC, msg)
 }
 
 func (c *core) bcastAccept(replica int32, instance int32) {
 	defer c.recoverBroadcast("Accept")
-	lb := c.InstanceSpace[replica][instance].lb
+	lb := c.instanceSpace[replica][instance].lb
 	msg := &Accept{
-		LeaderId: c.ID, Replica: replica, Instance: instance,
+		LeaderId: c.id, Replica: replica, Instance: instance,
 		Ballot: lb.lastTriedBallot, Seq: lb.seq, Deps: lb.deps, Command: lb.cmds,
 	}
-	limit := c.N - 1
-	if c.Thrifty {
-		limit = c.N / 2
+	limit := c.n - 1
+	if c.thrifty {
+		limit = c.n / 2
 	}
-	c.broadcast(c.preferredPeerOrder()[:c.N-1], limit, c.acceptRPC, msg)
+	c.broadcast(c.preferredPeerOrder()[:c.n-1], limit, c.acceptRPC, msg)
 }
 
 func (c *core) bcastCommit(replica int32, instance int32) {
 	defer c.recoverBroadcast("Commit")
-	lb := c.InstanceSpace[replica][instance].lb
+	lb := c.instanceSpace[replica][instance].lb
 	msg := &Commit{
-		LeaderId: c.ID, Replica: replica, Instance: instance,
+		LeaderId: c.id, Replica: replica, Instance: instance,
 		Ballot: lb.ballot, Command: lb.cmds, Seq: lb.seq, Deps: lb.deps,
 	}
-	c.broadcast(c.preferredPeerOrder()[:c.N-1], c.N-1, c.commitRPC, msg)
+	c.broadcast(c.preferredPeerOrder()[:c.n-1], c.n-1, c.commitRPC, msg)
 }
 
 func (c *core) receive(event any, _ time.Time) error {

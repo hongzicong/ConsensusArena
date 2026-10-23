@@ -22,7 +22,7 @@ func (r *Replica) run() {
 		case p := <-r.ProposeChan:
 			protocol.Must(r.Propose(p, time.Time{}))
 		case msg := <-r.inbox:
-			protocol.Must(r.Handle(msg, time.Time{}))
+			protocol.Must(r.Step(msg, time.Time{}))
 		case now := <-ticker.C:
 			t := now.Sub(start)
 			protocol.Must(r.Tick(protocol.Tick{Now: now, Elapsed: t}))
@@ -49,7 +49,7 @@ func (r *Replica) Propose(p *defs.GPropose, _ time.Time) error {
 	return nil
 }
 
-func (r *Replica) Handle(event any, _ time.Time) error {
+func (r *Replica) Step(event any, _ time.Time) error {
 	switch m := event.(type) {
 	case *wireMessage:
 		if m == nil {

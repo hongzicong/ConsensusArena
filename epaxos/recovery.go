@@ -13,7 +13,7 @@ type recoveryAttempt struct {
 }
 
 func (c *core) handleLeaderCall() {
-	c.IsLeader = true
+	c.isLeader = true
 	c.Println("I am the leader")
 }
 
@@ -27,9 +27,9 @@ func (c *core) scheduleRecovery(replica, instance int32, now time.Time) bool {
 	attempt, exists := c.recoveryAttempts[key]
 	if exists && now.Before(attempt.nextAttempt) {
 		c.recoveryMu.Unlock()
-		c.M.Lock()
-		c.Stats.M["recoverySuppressed"]++
-		c.M.Unlock()
+		c.m.Lock()
+		c.stats.M["recoverySuppressed"]++
+		c.m.Unlock()
 		return false
 	}
 	backoff := INITIAL_RECOVERY_BACKOFF
@@ -44,17 +44,17 @@ func (c *core) scheduleRecovery(replica, instance int32, now time.Time) bool {
 
 	select {
 	case c.instancesToRecover <- &instanceID{replica: replica, instance: instance}:
-		c.M.Lock()
-		c.Stats.M["recoveryScheduled"]++
-		c.M.Unlock()
+		c.m.Lock()
+		c.stats.M["recoveryScheduled"]++
+		c.m.Unlock()
 		if c.Logger != nil {
 			c.Printf("EPAXOS_RECOVERY_SCHEDULED replica=%d instance=%d next_backoff=%s", replica, instance, backoff)
 		}
 		return true
 	default:
-		c.M.Lock()
-		c.Stats.M["recoveryQueueFull"]++
-		c.M.Unlock()
+		c.m.Lock()
+		c.stats.M["recoveryQueueFull"]++
+		c.m.Unlock()
 		return false
 	}
 }
@@ -67,10 +67,10 @@ func (c *core) clearRecovery(replica, instance int32) {
 
 func (c *core) startRecoveryForInstance(replica int32, instance int32) {
 	c.active[instanceID{replica, instance}] = true
-	inst := c.InstanceSpace[replica][instance]
+	inst := c.instanceSpace[replica][instance]
 	if inst == nil {
 		inst = c.newInstanceDefault(replica, instance)
-		c.InstanceSpace[replica][instance] = inst
+		c.instanceSpace[replica][instance] = inst
 	} else if inst.Status >= COMMITTED && inst.Cmds != nil {
 		c.clearRecovery(replica, instance)
 		c.Printf("No need to recover %d.%d", replica, instance)
@@ -94,7 +94,7 @@ func (c *core) startRecoveryForInstance(replica int32, instance int32) {
 
 	inst.bal = lb.lastTriedBallot
 	preply := &PrepareReply{
-		c.ID,
+		c.id,
 		replica,
 		instance,
 		inst.bal,
@@ -104,15 +104,15 @@ func (c *core) startRecoveryForInstance(replica int32, instance int32) {
 		inst.Seq,
 		inst.Deps}
 
-	lb.prepareVoters.Add(int(c.ID))
+	lb.prepareVoters.Add(int(c.id))
 	lb.prepareReplies = append(lb.prepareReplies, preply)
-	lb.leaderResponded = c.ID == replica
+	lb.leaderResponded = c.id == replica
 
 	c.bcastPrepare(replica, instance)
 }
 
 func (c *core) handlePrepare(prepare *Prepare) {
-	inst := c.InstanceSpace[prepare.Replica][prepare.Instance]
+	inst := c.instanceSpace[prepare.Replica][prepare.Instance]
 	var preply *PrepareReply
 
 	if prepare.Ballot > c.maxRecvBallot {
@@ -120,8 +120,8 @@ func (c *core) handlePrepare(prepare *Prepare) {
 	}
 
 	if inst == nil {
-		c.InstanceSpace[prepare.Replica][prepare.Instance] = c.newInstanceDefault(prepare.Replica, prepare.Instance)
-		inst = c.InstanceSpace[prepare.Replica][prepare.Instance]
+		c.instanceSpace[prepare.Replica][prepare.Instance] = c.newInstanceDefault(prepare.Replica, prepare.Instance)
+		inst = c.instanceSpace[prepare.Replica][prepare.Instance]
 	}
 
 	if prepare.Ballot < inst.bal {
@@ -132,7 +132,7 @@ func (c *core) handlePrepare(prepare *Prepare) {
 	}
 
 	preply = &PrepareReply{
-		c.ID,
+		c.id,
 		prepare.Replica,
 		prepare.Instance,
 		inst.bal,
@@ -145,7 +145,7 @@ func (c *core) handlePrepare(prepare *Prepare) {
 }
 
 func (c *core) handlePrepareReply(preply *PrepareReply) {
-	inst := c.InstanceSpace[preply.Replica][preply.Instance]
+	inst := c.instanceSpace[preply.Replica][preply.Instance]
 	if inst == nil || inst.lb == nil {
 		return
 	}
@@ -167,7 +167,7 @@ func (c *core) handlePrepareReply(preply *PrepareReply) {
 		return
 	}
 
-	if preply.AcceptorId < 0 || preply.AcceptorId >= int32(c.N) || !lb.prepareVoters.Add(int(preply.AcceptorId)) {
+	if preply.AcceptorId < 0 || preply.AcceptorId >= int32(c.n) || !lb.prepareVoters.Add(int(preply.AcceptorId)) {
 		return
 	}
 	lb.prepareReplies = append(lb.prepareReplies, preply)
@@ -203,8 +203,8 @@ func (c *core) handlePrepareReply(preply *PrepareReply) {
 	lb.ballot, lb.cmds, lb.seq, lb.status = chosen.VBallot, chosen.Command, chosen.Seq, chosen.Status
 	lb.deps = append([]int32(nil), chosen.Deps...)
 	if chosen.Status >= COMMITTED {
-		c.handleCommit(&Commit{c.ID, preply.Replica, preply.Instance, chosen.VBallot, chosen.Command, chosen.Seq, chosen.Deps})
-		c.broadcast(nil, c.N-1, c.commitRPC, &Commit{c.ID, preply.Replica, preply.Instance, chosen.VBallot, chosen.Command, chosen.Seq, chosen.Deps})
+		c.handleCommit(&Commit{c.id, preply.Replica, preply.Instance, chosen.VBallot, chosen.Command, chosen.Seq, chosen.Deps})
+		c.broadcast(nil, c.n-1, c.commitRPC, &Commit{c.id, preply.Replica, preply.Instance, chosen.VBallot, chosen.Command, chosen.Seq, chosen.Deps})
 		return
 	}
 	matching := 0
@@ -222,29 +222,29 @@ func (c *core) handlePrepareReply(preply *PrepareReply) {
 	inst.Cmds, inst.Seq, inst.Deps = lb.cmds, lb.seq, append([]int32(nil), lb.deps...)
 	inst.Status, inst.vbal = chosen.Status, chosen.VBallot
 	initial := isInitialBallot(chosen.VBallot, preply.Replica, preply.Instance)
-	if chosen.Status == ACCEPTED || (initial && allEqual && !lb.leaderResponded && matching >= c.N/2) {
+	if chosen.Status == ACCEPTED || (initial && allEqual && !lb.leaderResponded && matching >= c.n/2) {
 		inst.Status, lb.status = ACCEPTED, ACCEPTED
 		inst.vbal, lb.ballot = lb.lastTriedBallot, lb.lastTriedBallot
 		c.bcastAccept(preply.Replica, preply.Instance)
-	} else if initial && allEqual && !lb.leaderResponded && matching >= (c.F+1)/2 {
+	} else if initial && allEqual && !lb.leaderResponded && matching >= (c.f+1)/2 {
 		// Original optimized recovery (TentativePreAccept), including its
 		// published limitations; this is not the EPaxos* recovery algorithm.
 		lb.tryingToPreAccept = true
 		lb.preAcceptOKs, lb.tpaReps = 0, 0
 		lb.preVoters = replicaset.New()
 		c.bcastTryPreAccept(preply.Replica, preply.Instance)
-		c.handleTryPreAccept(&TryPreAccept{c.ID, preply.Replica, preply.Instance, lb.lastTriedBallot, lb.cmds, lb.seq, lb.deps})
+		c.handleTryPreAccept(&TryPreAccept{c.id, preply.Replica, preply.Instance, lb.lastTriedBallot, lb.cmds, lb.seq, lb.deps})
 	} else {
 		c.startPhase1(lb.cmds, preply.Replica, preply.Instance, lb.lastTriedBallot, lb.clientProposals)
 	}
 }
 
 func (c *core) handleTryPreAccept(tpa *TryPreAccept) {
-	inst := c.InstanceSpace[tpa.Replica][tpa.Instance]
+	inst := c.instanceSpace[tpa.Replica][tpa.Instance]
 
 	if inst == nil {
-		c.InstanceSpace[tpa.Replica][tpa.Instance] = c.newInstanceDefault(tpa.Replica, tpa.Instance)
-		inst = c.InstanceSpace[tpa.Replica][tpa.Instance]
+		c.instanceSpace[tpa.Replica][tpa.Instance] = c.newInstanceDefault(tpa.Replica, tpa.Instance)
+		inst = c.instanceSpace[tpa.Replica][tpa.Instance]
 	}
 
 	confRep, confInst := int32(-1), int32(-1)
@@ -253,7 +253,7 @@ func (c *core) handleTryPreAccept(tpa *TryPreAccept) {
 		inst.bal = tpa.Ballot
 		if conflict, cr, ci := c.findPreAcceptConflicts(tpa.Command, tpa.Replica, tpa.Instance, tpa.Seq, tpa.Deps); conflict {
 			confRep, confInst = cr, ci
-			confStatus = c.InstanceSpace[cr][ci].Status
+			confStatus = c.instanceSpace[cr][ci].Status
 		} else {
 			if tpa.Instance > c.crtInstance[tpa.Replica] {
 				c.crtInstance[tpa.Replica] = tpa.Instance
@@ -263,8 +263,8 @@ func (c *core) handleTryPreAccept(tpa *TryPreAccept) {
 			c.updateConflicts(inst.Cmds, tpa.Replica, tpa.Instance, inst.Seq)
 		}
 	}
-	reply := &TryPreAcceptReply{c.ID, tpa.Replica, tpa.Instance, inst.bal, inst.vbal, confRep, confInst, confStatus}
-	if tpa.LeaderId == c.ID {
+	reply := &TryPreAcceptReply{c.id, tpa.Replica, tpa.Instance, inst.bal, inst.vbal, confRep, confInst, confStatus}
+	if tpa.LeaderId == c.id {
 		c.handleTryPreAcceptReply(reply)
 	} else {
 		c.send(tpa.LeaderId, c.tryPreAcceptReplyRPC, reply)
@@ -273,7 +273,7 @@ func (c *core) handleTryPreAccept(tpa *TryPreAccept) {
 }
 
 func (c *core) findPreAcceptConflicts(cmds []state.Command, replica int32, instance int32, seq int32, deps []int32) (bool, int32, int32) {
-	inst := c.InstanceSpace[replica][instance]
+	inst := c.instanceSpace[replica][instance]
 	if inst != nil && len(inst.Cmds) > 0 {
 		if inst.Status >= ACCEPTED {
 			// already ACCEPTED or COMMITTED
@@ -285,8 +285,8 @@ func (c *core) findPreAcceptConflicts(cmds []state.Command, replica int32, insta
 			return false, replica, instance
 		}
 	}
-	for q := int32(0); q < int32(c.N); q++ {
-		for i := c.ExecutedUpTo[q]; i <= c.crtInstance[q]; i++ { // FIXME this is not enough imho.
+	for q := int32(0); q < int32(c.n); q++ {
+		for i := c.executedUpTo[q]; i <= c.crtInstance[q]; i++ { // FIXME this is not enough imho.
 			if i == -1 {
 				//do not check placeholder
 				continue
@@ -300,7 +300,7 @@ func (c *core) findPreAcceptConflicts(cmds []state.Command, replica int32, insta
 				//the instance cannot be a dependency for itself
 				continue
 			}
-			inst := c.InstanceSpace[q][i]
+			inst := c.instanceSpace[q][i]
 			if inst == nil || inst.Cmds == nil || len(inst.Cmds) == 0 {
 				continue
 			}
@@ -321,15 +321,15 @@ func (c *core) findPreAcceptConflicts(cmds []state.Command, replica int32, insta
 }
 
 func (c *core) handleTryPreAcceptReply(tpar *TryPreAcceptReply) {
-	inst := c.InstanceSpace[tpar.Replica][tpar.Instance]
+	inst := c.instanceSpace[tpar.Replica][tpar.Instance]
 
 	if tpar.Ballot > c.maxRecvBallot {
 		c.maxRecvBallot = tpar.Ballot
 	}
 
 	if inst == nil {
-		c.InstanceSpace[tpar.Replica][tpar.Instance] = c.newInstanceDefault(tpar.Replica, tpar.Instance)
-		inst = c.InstanceSpace[tpar.Replica][tpar.Instance]
+		c.instanceSpace[tpar.Replica][tpar.Instance] = c.newInstanceDefault(tpar.Replica, tpar.Instance)
+		inst = c.instanceSpace[tpar.Replica][tpar.Instance]
 	}
 
 	lb := inst.lb
@@ -341,7 +341,7 @@ func (c *core) handleTryPreAcceptReply(tpar *TryPreAcceptReply) {
 		return
 	}
 
-	if tpar.AcceptorId < 0 || tpar.AcceptorId >= int32(c.N) || !lb.preVoters.Add(int(tpar.AcceptorId)) {
+	if tpar.AcceptorId < 0 || tpar.AcceptorId >= int32(c.n) || !lb.preVoters.Add(int(tpar.AcceptorId)) {
 		return
 	}
 	lb.tpaReps++
@@ -367,7 +367,7 @@ func (c *core) handleTryPreAcceptReply(tpar *TryPreAcceptReply) {
 	} else {
 		lb.nacks++
 		lb.possibleQuorum[tpar.AcceptorId] = false
-		if tpar.ConflictReplica >= 0 && tpar.ConflictReplica < int32(c.N) {
+		if tpar.ConflictReplica >= 0 && tpar.ConflictReplica < int32(c.n) {
 			lb.possibleQuorum[tpar.ConflictReplica] = false
 		}
 	}
@@ -383,13 +383,13 @@ func (c *core) handleTryPreAcceptReply(tpar *TryPreAcceptReply) {
 
 	// the code below is not checked in TLA (liveness)
 	notInQuorum := 0
-	for q := 0; q < c.N; q++ {
+	for q := 0; q < c.n; q++ {
 		if !lb.possibleQuorum[q] {
 			notInQuorum++
 		}
 	}
 
-	if notInQuorum == c.N/2 {
+	if notInQuorum == c.n/2 {
 		//this is to prevent defer cycles
 		if present, dq, _ := c.deferredByInstance(tpar.Replica, tpar.Instance); present {
 			if lb.possibleQuorum[dq] {
@@ -441,25 +441,25 @@ func (c *core) recoveryCoordinator(owner int32) int32 {
 	if c.peerAlive(owner) {
 		return owner
 	}
-	for i := int32(0); i < int32(c.N); i++ {
+	for i := int32(0); i < int32(c.n); i++ {
 		if c.peerAlive(i) {
 			return i
 		}
 	}
-	return c.ID
+	return c.id
 }
 
 func (c *core) handleRepairRequest(m *repairRequest) {
-	if m.Owner < 0 || m.Owner >= int32(c.N) || m.Slot < 0 || m.Slot >= MAX_INSTANCE {
+	if m.Owner < 0 || m.Owner >= int32(c.n) || m.Slot < 0 || m.Slot >= MAX_INSTANCE {
 		return
 	}
-	i := c.InstanceSpace[m.Owner][m.Slot]
+	i := c.instanceSpace[m.Owner][m.Slot]
 	if i != nil && i.Status >= COMMITTED && i.Cmds != nil {
-		commit := &Commit{c.ID, m.Owner, m.Slot, i.vbal, i.Cmds, i.Seq, i.Deps}
-		c.broadcast(nil, c.N-1, c.commitRPC, commit)
+		commit := &Commit{c.id, m.Owner, m.Slot, i.vbal, i.Cmds, i.Seq, i.Deps}
+		c.broadcast(nil, c.n-1, c.commitRPC, commit)
 		return
 	}
-	if c.recoveryCoordinator(m.Owner) == c.ID {
+	if c.recoveryCoordinator(m.Owner) == c.id {
 		c.scheduleRecovery(m.Owner, m.Slot, time.Now())
 	}
 }
@@ -472,7 +472,7 @@ func (c *core) blockedOn(owner, slot int32, now time.Time) {
 	first, ok := c.blocked[key]
 	if !ok {
 		c.blocked[key] = now
-		c.Stats.M["dependencyBlocks"]++
+		c.stats.M["dependencyBlocks"]++
 		return
 	}
 	if now.Sub(first) < COMMIT_GRACE_PERIOD {
@@ -480,7 +480,7 @@ func (c *core) blockedOn(owner, slot int32, now time.Time) {
 	}
 	c.blocked[key] = now
 	target := c.recoveryCoordinator(owner)
-	if target == c.ID {
+	if target == c.id {
 		c.scheduleRecovery(owner, slot, now)
 	} else {
 		c.send(target, c.requestRPC, &repairRequest{owner, slot})
@@ -493,13 +493,13 @@ func (c *core) repairTick(now time.Time) {
 		// Repair a bounded suffix in parallel. Waiting for DFS to uncover
 		// one predecessor every grace period takes minutes after an owner
 		// crashes with a window of unfinished instances.
-		for owner := int32(0); owner < int32(c.N); owner++ {
+		for owner := int32(0); owner < int32(c.n); owner++ {
 			end := c.crtInstance[owner]
-			if limit := c.ExecutedUpTo[owner] + 256; end > limit {
+			if limit := c.executedUpTo[owner] + 256; end > limit {
 				end = limit
 			}
-			for slot := c.ExecutedUpTo[owner] + 1; slot <= end; slot++ {
-				inst := c.InstanceSpace[owner][slot]
+			for slot := c.executedUpTo[owner] + 1; slot <= end; slot++ {
+				inst := c.instanceSpace[owner][slot]
 				if inst == nil || inst.Status < COMMITTED || inst.Cmds == nil {
 					c.blockedOn(owner, slot, now)
 				}
@@ -511,7 +511,7 @@ func (c *core) repairTick(now time.Time) {
 	// traversal frontier and starve recovery of earlier missing instances.
 	for key := range c.blocked {
 		owner, slot := int32(key>>32), int32(key)
-		inst := c.InstanceSpace[owner][slot]
+		inst := c.instanceSpace[owner][slot]
 		if inst != nil && inst.Status >= COMMITTED && inst.Cmds != nil {
 			delete(c.blocked, key)
 			continue
@@ -519,7 +519,7 @@ func (c *core) repairTick(now time.Time) {
 		c.blockedOn(owner, slot, now)
 	}
 	for id := range c.active {
-		inst := c.InstanceSpace[id.replica][id.instance]
+		inst := c.instanceSpace[id.replica][id.instance]
 		if inst == nil || inst.Status >= COMMITTED || inst.lb == nil {
 			delete(c.active, id)
 			continue
@@ -532,7 +532,7 @@ func (c *core) repairTick(now time.Time) {
 		if age < time.Second {
 			continue
 		}
-		if !lb.preparing && !lb.tryingToPreAccept && (lb.status == PREACCEPTED || lb.status == PREACCEPTED_EQ) && lb.preAcceptOKs >= c.N/2 {
+		if !lb.preparing && !lb.tryingToPreAccept && (lb.status == PREACCEPTED || lb.status == PREACCEPTED_EQ) && lb.preAcceptOKs >= c.n/2 {
 			lb.status = ACCEPTED
 			inst.Status = ACCEPTED
 			inst.Cmds = lb.cmds
@@ -543,7 +543,7 @@ func (c *core) repairTick(now time.Time) {
 			c.bcastAccept(id.replica, id.instance)
 			lb.phaseStarted = now
 		} else if age >= COMMIT_GRACE_PERIOD {
-			if c.recoveryCoordinator(id.replica) == c.ID {
+			if c.recoveryCoordinator(id.replica) == c.id {
 				c.startRecoveryForInstance(id.replica, id.instance)
 			}
 		}

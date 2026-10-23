@@ -12,8 +12,16 @@ import (
 )
 
 type slotID struct {
-	Key  state.Key
-	Slot uint64
+	key  state.Key
+	slot uint64
+}
+
+// Slot and shard objects keep their identity for the lifetime of the core.
+// Retirement is recorded by instance.decided; the active map remains an index.
+type retryItem struct {
+	id       slotID
+	instance *slotState
+	owner    *shard
 }
 
 type slotState struct {
@@ -92,7 +100,7 @@ type core struct {
 	priority            []int
 	shards              map[state.Key]*shard
 	active              map[slotID]*slotState
-	retryQueue          []slotID
+	retryQueue          []retryItem
 	retryHead           int
 	retryBudget         int
 	activeCensuses      int
@@ -177,7 +185,7 @@ func (c *core) slot(k state.Key, i uint64) *slotState {
 		x = &slotState{knowledge: make([]replicaset.Set, c.m), created: c.now, nextRetry: c.now + c.retry, retryDelay: c.retry}
 		s.slots[i] = x
 		c.active[slotID{k, i}] = x
-		c.retryQueue = append(c.retryQueue, slotID{k, i})
+		c.retryQueue = append(c.retryQueue, retryItem{slotID{k, i}, x, s})
 	}
 	return x
 }
@@ -726,23 +734,24 @@ func (c *core) tick(now time.Duration) {
 		remaining = 4096
 	}
 	for ; remaining > 0; remaining-- {
-		id := c.retryQueue[c.retryHead]
+		item := c.retryQueue[c.retryHead]
+		c.retryQueue[c.retryHead] = retryItem{}
 		c.retryHead++
-		x := c.active[id]
-		if x == nil {
+		id, x := item.id, item.instance
+		if x.decided != nil {
 			continue
 		}
-		c.retryQueue = append(c.retryQueue, id)
+		c.retryQueue = append(c.retryQueue, item)
 		// Non-voters retain/repair their input and query execution results;
 		// voter recovery broadcasts each learned slot back to every participant.
 		// They do not run a second global per-shard Fetch workload.
 		if c.id >= c.n {
 			continue
 		}
-		if id.Slot > c.executed(id.Key)+1 {
+		if now < x.nextRetry {
 			continue
 		}
-		if now < x.nextRetry {
+		if id.slot > item.owner.executed+1 {
 			continue
 		}
 		if c.retryBudget == 0 {
@@ -752,23 +761,24 @@ func (c *core) tick(now time.Duration) {
 		c.retryBudget--
 		c.deferRetry(x)
 		if now-x.created >= c.failure && coord == c.id && (x.phase == 0 || x.promised > x.ballot) {
-			c.startRecovery(id.Key, id.Slot)
+			c.startRecovery(id.key, id.slot)
 			continue
 		}
 		if x.phase > 0 && x.ballot >= x.promised {
 			c.stats.Retries++
 			if x.phase == 1 {
-				c.sendMissingPrepare(id.Key, id.Slot, x)
+				c.sendMissingPrepare(id.key, id.slot, x)
 			} else {
-				c.sendMissingAccept(id.Key, id.Slot, x)
+				c.sendMissingAccept(id.key, id.slot, x)
 			}
 		} else {
-			c.fetchPrefix(id.Key, id.Slot, x, coord, false)
+			c.fetchPrefix(id.key, id.slot, x, coord, false)
 		}
 	}
 	if c.retryHead > 4096 && c.retryHead*2 >= len(c.retryQueue) {
-		copy(c.retryQueue, c.retryQueue[c.retryHead:])
-		c.retryQueue = c.retryQueue[:len(c.retryQueue)-c.retryHead]
+		retained := copy(c.retryQueue, c.retryQueue[c.retryHead:])
+		clear(c.retryQueue[retained:])
+		c.retryQueue = c.retryQueue[:retained]
 		c.retryHead = 0
 	}
 

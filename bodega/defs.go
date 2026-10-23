@@ -15,11 +15,6 @@ const BodegaCancelRead = 254
 
 // BodegaResponderRange overrides the default mask on inclusive [Start, End].
 // The leader is implicit; masks contain replica IDs from configuration order.
-type BodegaResponderRange struct {
-	Start, End int64
-	Responders uint64
-}
-
 func BodegaRespondersFor(defaultMask uint64, ranges []BodegaResponderRange, leader int, key int64) uint64 {
 	i := sort.Search(len(ranges), func(i int) bool { return ranges[i].End >= key })
 	if i < len(ranges) && ranges[i].Start <= key {
@@ -69,13 +64,6 @@ const (
 	kindCount
 )
 
-type roster struct {
-	Ballot     uint64
-	Leader     int
-	Responders uint64
-	Ranges     []BodegaResponderRange
-}
-
 func sameRoster(a, b roster) bool {
 	return a.Ballot == b.Ballot && a.Leader == b.Leader && a.Responders == b.Responders && slices.Equal(a.Ranges, b.Ranges)
 }
@@ -92,36 +80,8 @@ func (r roster) allResponders() uint64 {
 	return mask
 }
 
-type request struct {
-	Proposal defs.Propose
-	Origin   int
-}
-
 func (r request) id() defs.RequestID {
 	return r.Proposal.RequestID()
-}
-
-type entry struct {
-	Slot, Ballot uint64
-	Request      request
-	Batch        []request // nonempty only for multi-command entries
-	ReadFresh    bool      // first assignment in this ballot, never a recovered entry
-}
-
-type message struct {
-	Kind                        kind
-	From                        int
-	Roster                      roster
-	Sequence, Threshold, Prefix uint64
-	ReadPrefix                  uint64 // leader-certified majority accepted prefix
-	CommitPrefix, CommitSlot    uint64 // inclusive prefix and optional out-of-order slot
-	RepairStart                 uint64
-	PrepareStart                uint64
-	Part, Parts                 int
-	Entry                       entry
-	Entries                     []entry
-	Request                     request
-	Value                       state.Value
 }
 
 func maxSlot(a, b uint64) uint64 {

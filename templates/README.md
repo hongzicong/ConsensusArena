@@ -20,7 +20,7 @@ not choose a leader, quorum size, commit rule, recovery rule, or routing policy.
 ## Responsibility boundaries
 
 - The replica implements the shared `protocol.Machine` interface in `runtime.go`:
-  `Propose(*defs.GPropose, time.Time) error`, `Handle(any, time.Time) error`, and
+  `Propose(*defs.GPropose, time.Time) error`, `Step(any, time.Time) error`, and
   `Tick(protocol.Tick) error`. Live loops and external event drivers use the same
   entry points. See [the event contract](../protocol/README.md) for time, ownership,
   errors and output ordering.

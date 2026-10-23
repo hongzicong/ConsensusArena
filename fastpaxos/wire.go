@@ -1,110 +1,45 @@
 package fastpaxos
 
-// Message factories, wire encoding, and wire decoding.
 import (
-	"encoding/binary"
 	"fmt"
-	"io"
-
-	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
-// Bounded frames. Fast votes carry IDs; classic messages carry data.
 type wireMessage struct{ message }
 
 func (*wireMessage) New() fastrpc.Serializable { return &wireMessage{} }
 
-func (m *wireMessage) Marshal(w io.Writer) {
-	var h [30]byte
-	h[0] = m.Kind
-	h[1] = byte(m.From)
-	binary.LittleEndian.PutUint64(h[2:10], m.Epoch)
-	for i, v := range []int{m.Start, m.High, m.Page, m.Pages, len(m.Entries)} {
-		binary.LittleEndian.PutUint32(h[10+4*i:14+4*i], uint32(int32(v)))
+func wireRecordSize(v *Record, payload bool) int {
+	if !payload || v.Noop {
+		return v.SizeIdentity()
 	}
-	w.Write(h[:])
-	for _, e := range m.Entries {
-		var b [29]byte
-		binary.LittleEndian.PutUint32(b[:4], uint32(e.Slot))
-		binary.LittleEndian.PutUint64(b[4:12], e.Epoch)
-		binary.LittleEndian.PutUint64(b[12:20], e.Round)
-		binary.LittleEndian.PutUint32(b[20:24], uint32(e.Value.ID.Client))
-		binary.LittleEndian.PutUint32(b[24:28], uint32(e.Value.ID.Sequence))
-		if e.Payload {
-			b[28] |= 1
-		}
-		if e.Decided {
-			b[28] |= 2
-		}
-		if e.Value.Noop {
-			b[28] |= 4
-		}
-		w.Write(b[:])
-		if e.Payload && !e.Value.Noop {
-			var p [13]byte
-			p[0] = byte(e.Value.Command.Op)
-			binary.LittleEndian.PutUint64(p[1:9], uint64(e.Value.Command.K))
-			binary.LittleEndian.PutUint32(p[9:13], uint32(len(e.Value.Command.V)))
-			w.Write(p[:])
-			w.Write(e.Value.Command.V)
-		}
+	return v.Size()
+}
+func wireRecordMarshal(v *Record, payload bool, dst []byte) (int, error) {
+	if !payload || v.Noop {
+		return v.MarshalIdentityToSizedBuffer(dst)
 	}
+	return v.MarshalToSizedBuffer(dst)
 }
 
-func (m *wireMessage) Unmarshal(r io.Reader) error {
-	var h [30]byte
-	if _, err := io.ReadFull(r, h[:]); err != nil {
-		return err
+func validateProtoMessage(m *message) error {
+	if m.Kind > msgRecover || len(m.Entries) > pageSize {
+		return fmt.Errorf("invalid FastPaxos message")
 	}
-	if h[0] > msgRecover {
-		return fmt.Errorf("unsupported FastPaxos frame")
-	}
-	m.Kind = h[0]
-	m.From = int(h[1])
-	m.Epoch = binary.LittleEndian.Uint64(h[2:10])
-	fields := []*int{&m.Start, &m.High, &m.Page, &m.Pages}
-	for i, p := range fields {
-		*p = int(int32(binary.LittleEndian.Uint32(h[10+4*i : 14+4*i])))
-	}
-	n := binary.LittleEndian.Uint32(h[26:30])
-	if n > pageSize {
-		return fmt.Errorf("oversized FastPaxos batch")
-	}
-	m.Entries = make([]entry, int(n))
 	total := 0
 	for i := range m.Entries {
-		var b [29]byte
-		if _, err := io.ReadFull(r, b[:]); err != nil {
-			return err
-		}
 		e := &m.Entries[i]
-		e.Slot = int(int32(binary.LittleEndian.Uint32(b[:4])))
 		if e.Slot < 0 {
 			return fmt.Errorf("negative FastPaxos slot")
 		}
-		e.Epoch = binary.LittleEndian.Uint64(b[4:12])
-		e.Round = binary.LittleEndian.Uint64(b[12:20])
-		e.Value.ID = defs.RequestID{Client: int32(binary.LittleEndian.Uint32(b[20:24])), Sequence: int32(binary.LittleEndian.Uint32(b[24:28]))}
-		e.Payload = b[28]&1 != 0
-		e.Decided = b[28]&2 != 0
-		e.Value.Noop = b[28]&4 != 0
 		if e.Payload && !e.Value.Noop {
-			var p [13]byte
-			if _, err := io.ReadFull(r, p[:]); err != nil {
-				return err
+			if e.Value.Command.V == nil {
+				e.Value.Command.V = make(state.Value, 0)
 			}
-			e.Value.Command.Op = state.Operation(p[0])
-			e.Value.Command.K = state.Key(binary.LittleEndian.Uint64(p[1:9]))
-			size := binary.LittleEndian.Uint32(p[9:13])
-			total += int(size)
-			if e.Value.Command.Op > state.SCAN || size > 16<<20 || total > 32<<20 {
+			total += len(e.Value.Command.V)
+			if e.Value.Command.Op > state.SCAN || len(e.Value.Command.V) > 16<<20 || total > 32<<20 {
 				return fmt.Errorf("invalid FastPaxos payload")
-			}
-			e.Value.Command.V = make(state.Value, int(size))
-			if _, err := io.ReadFull(r, e.Value.Command.V); err != nil {
-				return err
 			}
 		}
 	}

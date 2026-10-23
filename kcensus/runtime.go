@@ -37,7 +37,7 @@ func (r *Replica) run() {
 	for !r.Shutdown {
 		select {
 		case raw := <-r.inbox:
-			protocol.Must(r.Handle(raw, time.Time{}))
+			protocol.Must(r.Step(raw, time.Time{}))
 		case p := <-r.ProposeChan:
 			protocol.Must(r.Propose(p, time.Time{}))
 		case now := <-ticker.C:
@@ -191,7 +191,7 @@ func (r *Replica) Propose(p *defs.GPropose, _ time.Time) error {
 	return nil
 }
 
-func (r *Replica) Handle(event any, _ time.Time) error {
+func (r *Replica) Step(event any, _ time.Time) error {
 	switch m := event.(type) {
 	case localMessage:
 		r.core.receive(m.message)

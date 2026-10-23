@@ -3,9 +3,6 @@ package fastpaxos
 // Protocol messages, identifiers, constants, and value helpers.
 import (
 	"time"
-
-	"github.com/hongzicong/ConsensusArena/replica/defs"
-	"github.com/hongzicong/ConsensusArena/state"
 )
 
 const (
@@ -36,28 +33,7 @@ const failureTimeout = 3 * time.Second
 // A fast quorum is any set strictly larger than three quarters of membership.
 func fastQuorumSize(n int) int { return 3*n/4 + 1 }
 
-type record struct {
-	ID      defs.RequestID
-	Command state.Command
-	Noop    bool
-}
-
 func sameValue(a, b record) bool { return a.Noop == b.Noop && (a.Noop || a.ID == b.ID) }
-
-type entry struct {
-	Slot             int
-	Epoch, Round     uint64
-	Value            record
-	Payload, Decided bool
-}
-
-type message struct {
-	Kind                     uint8
-	From                     int
-	Epoch                    uint64
-	Start, High, Page, Pages int
-	Entries                  []entry
-}
 
 type envelope struct {
 	To      int

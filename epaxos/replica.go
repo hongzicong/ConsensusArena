@@ -70,7 +70,7 @@ func New(alias string, replicaID int, addrs []string, executeEnabled, beacon, du
 		control:               make(chan leaderCall, 8),
 	}
 	r.core = newCore(corePorts{
-		N: r.N, F: r.F, ID: r.ID, Logger: r.Logger, M: &r.M, Stats: r.Stats,
+		n: r.N, f: r.F, id: r.ID, Logger: r.Logger, m: &r.M, stats: r.Stats,
 		rpcCodes: &r.rpcCodes,
 		send:     r.Send, broadcast: r.broadcast, replyResult: r.replyResult, requeueProposal: r.requeueProposal,
 		peerAlive:              r.peerAlive,

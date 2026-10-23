@@ -63,7 +63,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 	c.clock = time.Now
 	c.batching = true
 	c.trace = r.Printf
-	r.Printf("BODEGA_TIMING lease=%s margin=%s heartbeat=%s failure_min=%s failure_max=%s", opt.Lease, opt.Margin, opt.Heartbeat, opt.Failure, opt.FailureMax)
+	r.Printf("BODEGA_TIMING lease=%s margin=%s heartbeat=%s failure_min=%s failure_max=%s", opt.lease, opt.margin, opt.heartbeat, opt.failure, opt.failureMax)
 	c.execute = func(c state.Command) state.Value { return c.Execute(r.State) }
 
 	c.trySend = transport.trySend
@@ -79,9 +79,9 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 	}
 
 	if isLeader {
-		c.proposeRoster(c.id, opt.Responders, time.Now())
+		c.proposeRoster(c.id, opt.responders, time.Now())
 	}
-	ticker := time.NewTicker(opt.Heartbeat)
+	ticker := time.NewTicker(opt.heartbeat)
 	defer ticker.Stop()
 	batchTicker := time.NewTicker(batchInterval)
 	defer batchTicker.Stop()
@@ -91,9 +91,9 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 	for {
 		select {
 		case raw := <-inbox:
-			protocol.Must(r.Handle(raw, time.Now()))
+			protocol.Must(r.Step(raw, time.Now()))
 		case peer := <-transport.drained:
-			protocol.Must(r.Handle(promisesDrained(peer), time.Time{}))
+			protocol.Must(r.Step(promisesDrained(peer), time.Time{}))
 		case p := <-r.ProposeChan:
 			protocol.Must(r.Propose(p, time.Now()))
 		case <-batchTicker.C:
@@ -103,7 +103,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 		case done := <-r.rosterQueries:
 			done <- BodegaRosterReply{Ballot: c.current.Ballot, Leader: c.current.Leader, Ready: c.active(), Responders: c.current.Responders, Ranges: slices.Clone(c.current.Ranges)}
 		case call := <-r.control:
-			protocol.Must(r.Handle(call, time.Now()))
+			protocol.Must(r.Step(call, time.Now()))
 		case <-metrics.C:
 			var bytes, frames [kindCount]uint64
 			for i := range bytes {
@@ -149,7 +149,7 @@ func (r *Replica) Propose(p *defs.GPropose, now time.Time) error {
 	return nil
 }
 
-func (r *Replica) Handle(event any, now time.Time) error {
+func (r *Replica) Step(event any, now time.Time) error {
 	switch m := event.(type) {
 	case *message:
 		if m == nil {

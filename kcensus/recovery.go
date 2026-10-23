@@ -132,14 +132,14 @@ func (c *core) recoverySnapshot() string {
 		status.HeardMS = append(status.HeardMS, (c.now - at).Milliseconds())
 	}
 	for id, x := range c.active {
-		if id.Slot != c.executed(id.Key)+1 {
+		if id.slot != c.executed(id.key)+1 {
 			continue
 		}
 		status.Phases[x.phase]++
 		if c.graphPromiseQuorum(x) {
 			status.Quorums++
 		}
-		h := head{Key: id.Key, Slot: id.Slot, AgeMS: (c.now - x.created).Milliseconds(), Phase: x.phase, Ballot: x.ballot, Promise: x.promised, Reports: len(x.nodeReports), Acks: bits.OnesCount64(x.acks), Participants: x.participants}
+		h := head{Key: id.key, Slot: id.slot, AgeMS: (c.now - x.created).Milliseconds(), Phase: x.phase, Ballot: x.ballot, Promise: x.promised, Reports: len(x.nodeReports), Acks: bits.OnesCount64(x.acks), Participants: x.participants}
 		for _, r := range x.nodeReports {
 			if r.Ballot == x.ballot {
 				h.Frozen++

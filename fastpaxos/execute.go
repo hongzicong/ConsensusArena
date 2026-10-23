@@ -8,10 +8,10 @@ import (
 func (c *core) apply() {
 	for {
 		s := c.slots[c.executed+1]
-		if s == nil || s.Chosen == nil {
+		if s == nil || s.chosen == nil {
 			return
 		}
-		v := s.Chosen.Value
+		v := s.chosen.Value
 		if !v.Noop {
 			full, ok := c.known[v.ID]
 			if !ok {

@@ -27,13 +27,17 @@ or pass `-protocol` to select one of the registered implementations.
 
 ## Requirements
 
-- Go 1.20 or newer for building.
+- Go 1.23.2 or newer for building (required by the Protobuf dependencies).
 - Linux for running the cross-compiled cluster binary.
 - The system `ping` command on experiment nodes.
 - Python 3, SSH/SCP, and Slurm for the Jed benchmark workflow.
 
 The Linux cross-build uses `CGO_ENABLED=0` and produces a standalone executable;
 no container runtime is required.
+
+All seven protocols directly use Protobuf-generated message types and the shared data-plane framing. 
+See [wireproto/README.md](wireproto/README.md) for schemas, regeneration and validation.
+Every replica and client in a run must use the same codec version.
 
 ## Build
 

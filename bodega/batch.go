@@ -126,10 +126,10 @@ func (c *core) cancelRead(id defs.RequestID) {
 func (c *core) dropHeld(id defs.RequestID) {
 	if h, ok := c.held[id]; ok {
 		delete(c.held, id)
-		c.holdCounts[h.Slot]--
-		if c.holdCounts[h.Slot] == 0 {
-			delete(c.holdCounts, h.Slot)
-			delete(c.holdWaiters, h.Slot)
+		c.holdCounts[h.slot]--
+		if c.holdCounts[h.slot] == 0 {
+			delete(c.holdCounts, h.slot)
+			delete(c.holdWaiters, h.slot)
 		}
 	}
 }

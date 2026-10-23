@@ -187,6 +187,10 @@ func (c *BufferClient) loopOpen(getKey func() int64) {
 	// finish before READY. No client starts its warmup while peers still prepare.
 	c.sendScheduledRequest(scheduledRequest{key: getKey(), write: c.randomTrue(c.writes)})
 	<-c.Reply
+	if os.Getenv("CONSENSUSARENA_THROUGHPUT") == "1" && c.latency != nil {
+		c.throughput = newThroughputObserver(c.latency)
+		defer c.throughput.close()
+	}
 
 	requests := make(chan scheduledRequest, 1024)
 	stopReplies := make(chan struct{})
@@ -216,6 +220,9 @@ func (c *BufferClient) loopOpen(getKey func() int64) {
 				queueSum += queueMS
 				queueMax = math.Max(queueMax, queueMS)
 				completedRequests++
+				if c.throughput != nil {
+					c.throughput.latency(milliseconds)
+				}
 				operation := "READ"
 				if timing.write {
 					operation = "UPDATE"
@@ -237,6 +244,9 @@ func (c *BufferClient) loopOpen(getKey func() int64) {
 			default:
 			}
 			sentAt := time.Now()
+			if c.throughput != nil {
+				c.throughput.issue(sentAt)
+			}
 			issued = countArrival(issued, start, sentAt)
 			if request.measured {
 				timings.Store(int(c.seqnum+1), requestTiming{request.plannedAt, sentAt, request.write})
@@ -250,6 +260,9 @@ func (c *BufferClient) loopOpen(getKey func() int64) {
 		panic(err)
 	}
 	actualStart := time.Now()
+	if c.throughput != nil {
+		c.throughput.start(start)
+	}
 	warmupEnd := start.Add(c.warmup)
 	measurementEnd := warmupEnd.Add(c.duration)
 	c.Printf("LATENCY_WORKLOAD_START epoch_ns=%d actual_start_ns=%d warmup_s=%g ramp_s=%g measurement_s=%g arrival_rate=%g latency_origin=scheduled_arrival\n",
@@ -295,6 +308,9 @@ arrivalLoop:
 			sustainRequests++
 		}
 		offered = countArrival(offered, start, nextArrival)
+		if c.throughput != nil {
+			c.throughput.offer(time.Now())
+		}
 		request := scheduledRequest{key: getKey(), write: c.randomTrue(c.writes), measured: measured, plannedAt: nextArrival}
 		select {
 		case requests <- request:
