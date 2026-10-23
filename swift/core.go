@@ -3,7 +3,6 @@ package swift
 // Protocol state and normal-case transitions.
 import (
 	"github.com/hongzicong/ConsensusArena/dlog"
-	"github.com/hongzicong/ConsensusArena/hook"
 	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
@@ -152,9 +151,10 @@ type commandDesc struct {
 	propose    *proposal
 	proposeDep Dep
 
-	slowPathH      *MsgSet
-	fastPathH      *MsgSet
-	afterPropagate *hook.OptCondF
+	slowPathH *MsgSet
+	fastPathH *MsgSet
+	// Leader acknowledgements wait for the original proposal, in arrival order.
+	pendingLeaderAcks []*MFastAck
 
 	msgs     chan interface{}
 	active   bool
@@ -197,7 +197,7 @@ func (c *core) handlePropose(msg *proposal, desc *commandDesc, cmdID defs.Reques
 		// Keep its installed command/phase/dependencies and use recovery evidence;
 		// a restored descriptor has no normal-case hash proposal to broadcast.
 		finishAck := c.sendRecoveryAck(cmdID, desc.dep, msg, desc)
-		desc.afterPropagate.Recall()
+		c.replayPendingLeaderAcks(desc)
 		if !c.delivered.Has(cmdID.String()) {
 			finishAck()
 		}
@@ -206,13 +206,13 @@ func (c *core) handlePropose(msg *proposal, desc *commandDesc, cmdID defs.Reques
 	desc.cmd = msg.Command
 
 	if !c.fq.Contains(int(c.id)) || desc.deferFast {
-		desc.afterPropagate.Recall()
+		c.replayPendingLeaderAcks(desc)
 		return
 	}
 
 	desc.dep = desc.proposeDep
 	desc.phase = PRE_ACCEPT
-	if (desc.afterPropagate.Recall() && desc.slowPath) ||
+	if (c.replayPendingLeaderAcks(desc) && desc.slowPath) ||
 		c.delivered.Has(cmdID.String()) {
 		// in this case a process already sent an MSlowAck
 		// message, hence, no need to send MFastAck
@@ -260,70 +260,92 @@ func (c *core) handleFastAck(msg *MFastAck, desc *commandDesc) {
 }
 
 func (c *core) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
-	desc.afterPropagate.Call(func() {
-		if c.status != NORMAL || c.ballot != msg.Ballot {
+	if desc.propose == nil {
+		desc.pendingLeaderAcks = append(desc.pendingLeaderAcks, msg)
+		return
+	}
+	c.replayPendingLeaderAcks(desc)
+	c.processLeaderFastAck(msg, desc)
+}
+
+// replayPendingLeaderAcks runs at the original proposal-processing boundaries.
+// Its result reports pending work consumed, even if a stale ballot rejects it.
+func (c *core) replayPendingLeaderAcks(desc *commandDesc) bool {
+	if desc.propose == nil || len(desc.pendingLeaderAcks) == 0 {
+		return false
+	}
+	pending := desc.pendingLeaderAcks
+	desc.pendingLeaderAcks = nil
+	for _, msg := range pending {
+		c.processLeaderFastAck(msg, desc)
+	}
+	clear(pending)
+	return true
+}
+
+func (c *core) processLeaderFastAck(msg *MFastAck, desc *commandDesc) {
+	if c.status != NORMAL || c.ballot != msg.Ballot {
+		return
+	}
+
+	// TODO: make sure that
+	//    ∀ id' ∈ d. phase[id'] ∈ {ACCEPT, COMMIT}
+	//
+	// seems to be satisfied already
+
+	desc.phase = ACCEPT
+	dep := Dep(msg.Dep)
+	hs := desc.hs
+	neq := !desc.dep.Equals(dep)
+	fast := c.fq.Contains(int(c.id))
+	slow := c.sq.Contains(int(c.id))
+	sendSlowAck := c.leader() != c.id && (slow || (fast && neq))
+	msgCmdID := msg.CmdId
+	msgChecksum := msg.Checksum
+
+	defer func() {
+		if c.leader() == c.id || c.delivered.Has(msgCmdID.String()) {
 			return
 		}
-
-		// TODO: make sure that
-		//    ∀ id' ∈ d. phase[id'] ∈ {ACCEPT, COMMIT}
-		//
-		// seems to be satisfied already
-
-		desc.phase = ACCEPT
-		dep := Dep(msg.Dep)
-		hs := desc.hs
-		neq := !desc.dep.Equals(dep)
-		fast := c.fq.Contains(int(c.id))
-		slow := c.sq.Contains(int(c.id))
-		sendSlowAck := c.leader() != c.id && (slow || (fast && neq))
-		msgCmdID := msg.CmdId
-		msgChecksum := msg.Checksum
-
-		defer func() {
-			if c.leader() == c.id || c.delivered.Has(msgCmdID.String()) {
-				return
-			}
-			if !sendSlowAck && c.optExec && !SHashesEq(hs, msgChecksum) {
-				lightSlowAck := &MLightSlowAck{
-					Replica: c.id,
-					Ballot:  c.ballot,
-					CmdId:   msgCmdID,
-				}
-
-				c.sendClient(msgCmdID.Client, c.codes.lightSlowAckRPC, lightSlowAck)
-			}
-		}()
-
-		desc.slowPathH.Add(msg.Replica, true, msg)
-		delivered := c.delivered.Has(msgCmdID.String())
-		if !delivered {
-			desc.fastPathH.Add(msg.Replica, true, msg)
-			delivered = c.delivered.Has(msgCmdID.String())
-		}
-
-		if sendSlowAck {
-			if neq && !delivered {
-				desc.dep = dep
-			}
-			desc.slowPath = true
-
+		if !sendSlowAck && c.optExec && !SHashesEq(hs, msgChecksum) {
 			lightSlowAck := &MLightSlowAck{
 				Replica: c.id,
 				Ballot:  c.ballot,
 				CmdId:   msgCmdID,
 			}
 
-			if !c.optExec {
-				c.batcher.SendLightSlowAck(lightSlowAck)
-			} else {
-				c.batcher.SendLightSlowAckClient(lightSlowAck, msgCmdID.Client)
-			}
-			if !delivered {
-				c.handleLightSlowAck(lightSlowAck, desc)
-			}
+			c.sendClient(msgCmdID.Client, c.codes.lightSlowAckRPC, lightSlowAck)
 		}
-	})
+	}()
+
+	desc.slowPathH.Add(msg.Replica, true, msg)
+	delivered := c.delivered.Has(msgCmdID.String())
+	if !delivered {
+		desc.fastPathH.Add(msg.Replica, true, msg)
+		delivered = c.delivered.Has(msgCmdID.String())
+	}
+
+	if sendSlowAck {
+		if neq && !delivered {
+			desc.dep = dep
+		}
+		desc.slowPath = true
+
+		lightSlowAck := &MLightSlowAck{
+			Replica: c.id,
+			Ballot:  c.ballot,
+			CmdId:   msgCmdID,
+		}
+
+		if !c.optExec {
+			c.batcher.SendLightSlowAck(lightSlowAck)
+		} else {
+			c.batcher.SendLightSlowAckClient(lightSlowAck, msgCmdID.Client)
+		}
+		if !delivered {
+			c.handleLightSlowAck(lightSlowAck, desc)
+		}
+	}
 }
 
 func (c *core) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
@@ -451,9 +473,8 @@ func (c *core) newDesc() *commandDesc {
 		}
 	}
 
-	desc.afterPropagate = desc.afterPropagate.ReinitCondF(func() bool {
-		return desc.propose != nil
-	})
+	clear(desc.pendingLeaderAcks)
+	desc.pendingLeaderAcks = nil
 
 	acceptFastAndSlowAck := func(msg, leaderMsg interface{}) bool {
 		if leaderMsg == nil {

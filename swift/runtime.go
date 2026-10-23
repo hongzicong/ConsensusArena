@@ -106,6 +106,8 @@ func (r *Replica) allocDesc() *commandDesc {
 }
 
 func (r *Replica) freeDesc(desc *commandDesc) {
+	clear(desc.pendingLeaderAcks)
+	desc.pendingLeaderAcks = nil
 	if r.descriptorPoolLevel > 0 {
 		r.descriptorPool.Put(desc)
 	}

@@ -2,10 +2,8 @@ package swift
 
 // Replica state, configuration, RPC registration, and startup.
 import (
-	"fmt"
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/dlog"
-	"github.com/hongzicong/ConsensusArena/hook"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/replicaset"
@@ -139,23 +137,6 @@ func New(alias string, replicaID int, addrs []string, executeEnabled, fastRead, 
 	registerRPCs(&r.channels, r.RPC)
 
 	r.Println("the leader is:", r.core.leader(), "ballot is:", r.core.ballot)
-
-	hook.HookUser1(func() {
-		totalNum := 0
-		slowPaths := 0
-		for i := 0; i < HISTORY_SIZE; i++ {
-			if r.core.history[i].dep == nil {
-				continue
-			}
-			totalNum++
-			if r.core.history[i].slowPath {
-				slowPaths++
-			}
-		}
-
-		fmt.Printf("Total number of commands: %d\n", totalNum)
-		fmt.Printf("Number of slow paths: %d\n", slowPaths)
-	})
 
 	r.Println("SQ:", r.core.sq)
 	r.Println("FQ:", r.core.fq)
