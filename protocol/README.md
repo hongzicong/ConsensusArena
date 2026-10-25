@@ -89,6 +89,12 @@ The skeleton's core may return its own `effects`; its runtime adapter dispatches
 them within these same three methods. Other cores may use callbacks. The shared
 interface deliberately does not choose one protocol's output policy for another.
 
+New skeletons use native generated Protobuf messages and the same frame encoder
+and Sender as the baselines. Their package-local `wireproto.json` scopes codec
+generation, frame limits and validation hooks; it does not select scheduling,
+commit, retry or client-completion policy. Template creation and selected-package
+regeneration leave existing baseline codecs untouched. See `templates/README.md`.
+
 This is a uniform **runtime event boundary**, not a claim that all cores are pure
 state machines. Existing internal clock reads, workers, transport dependencies,
 construction and output capture still require protocol-specific setup for a

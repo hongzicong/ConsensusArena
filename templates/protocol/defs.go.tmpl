@@ -11,9 +11,8 @@ var ErrNotImplemented = errors.New("__PACKAGE__: implement the protocol design b
 
 type request struct { ID defs.RequestID; Command state.Command }
 
-// This is only a header example. Define ballot, instance, value, and evidence
-// fields from the finalized design, then extend wire.go accordingly.
-type message struct { From int32; Kind uint8 }
+// outbound carries the native Message through its generated local alias.
+// Wire fields belong in messages.proto.
 type outbound struct { To int; Message message }
 type completion struct { ID defs.RequestID; Value state.Value }
 

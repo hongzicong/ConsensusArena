@@ -101,3 +101,54 @@ Evidence is in the parent repository's `report/protobuf_direct_types_20261023/`:
 1,040 decoded-message comparisons, bidirectional compatibility with the prior
 implementation, and five-replica network smoke runs for all seven methods.
 These are functional checks, not performance benchmarks or a safety proof.
+
+## Independent protocol packages
+
+`python templates/new_protocol.py NAME` creates a schema, package-local
+`wireproto.json`, handwritten protocol skeleton and its generated codecs. The
+new message type implements both `rpc.Serializable` and the frame-encoding entry
+point consumed by `replica.Encode`/`replica.Sender` immediately. The skeleton still
+refuses to run until consensus, recovery, client completion and routing are
+implemented. See [the template workflow](../templates/README.md).
+
+Regenerate only an independent package with:
+
+```text
+python wireproto/generate.py --package xpaxos
+```
+
+`--package` is relative to the module root and can be repeated. Shared imports
+are read by protoc but their Go codecs are not regenerated. No arguments retain
+the original nine-package baseline/shared selection. The baseline manifest and
+its protocol-specific encoding/normalization rules are unchanged. `--plugin PATH`
+selects an explicit `protoc-gen-gogo` executable when it is not on PATH; use the
+pinned v1.7.2 plugin.
+
+An independent package uses this metadata instead of editing the central manifest:
+
+```json
+{
+  "roots": [{"type": "Message", "limit": 16777216, "validate": "validateProtoMessage"}],
+  "local_names": {"message": "Message"},
+  "aliases": {}
+}
+```
+
+Each root names a unique native generated type, with an optional positive payload
+limit up to 64 MiB and an optional Go validation function. Roots receive generated
+`New`, stream `Marshal`/`Unmarshal` and `MarshalProtoFrame` methods. A validator has
+signature `func(*Message) error`; it runs after structural checks, decoding and
+normalization, before assigning the result to the receiver. Omitting it leaves
+only structural validation. `local_names` maps private Go aliases to native
+message names; `aliases` maps locally defined cast types to scalar types for
+range-check generation, such as `"Kind": "uint8"`. These maps do not define new
+wire fields or allocate conversion objects. Additional roots must be explicitly
+registered with their receive queues in the implemented protocol.
+
+Independent schemas follow the template's top-level proto2 message conventions:
+PascalCase message names without underscores,
+optional/repeated fields, scalar values and imported/native message fields.
+The wire-shape generator rejects enums, oneof, maps, required fields and nested
+message declarations. Narrow signed casts use `sint32`; narrow unsigned casts
+use `uint32`/`uint64`. This keeps the structural checks aligned with generated
+decoding rather than silently generating incomplete validation.

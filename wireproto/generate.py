@@ -3,21 +3,30 @@
 Requires protoc, Python 3 and protoc-gen-gogo from cosmos/gogoproto v1.7.2.
 No protocol-to-protobuf conversion types or tests are generated.
 """
+import argparse
+import copy
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 ROOT=Path(__file__).resolve().parents[1]
 HERE=ROOT/'wireproto'
 PREFIX='github.com/hongzicong/ConsensusArena/'
 PACKAGES=['state','replica/defs','paxos','curp','epaxos','swift','fastpaxos','kcensus','bodega']
-MANIFEST=json.loads((HERE/'manifest.json').read_text(encoding='utf-8'))
+BASE_MANIFEST=json.loads((HERE/'manifest.json').read_text(encoding='utf-8'))
+MANIFEST=copy.deepcopy(BASE_MANIFEST)
+SOURCE_ROOT=ROOT
+OUTPUT_ROOT=ROOT
+SCHEMAS={}
+EXTENSIONS=set()
+SCALAR_TYPES={'bool','string','bytes','double','float','int32','int64','uint32','uint64','sint32','sint64','fixed32','fixed64','sfixed32','sfixed64'}
 LOCAL_FIELDS={('kcensus','Message'):'References bool // Local encoding policy; never transmitted.',('epaxos','PrepareReply'):'VBallot int32 // Local field, intentionally absent from the wire.'}
 
 
 def messages(pkg):
-    source=(ROOT/pkg/'messages.proto').read_text(encoding='utf-8')
+    source=(SOURCE_ROOT/pkg/'messages.proto').read_text(encoding='utf-8')
     out={}
     for match in re.finditer(r'message (\w+) \{(.*?)\n\}',source,re.S):
         fields=[]
@@ -28,7 +37,77 @@ def messages(pkg):
         out[match[1]]=fields
     return out
 
-SCHEMAS={p:messages(p) for p in PACKAGES}
+def package_path(value, root):
+    path=(root/value).resolve()
+    if not path.is_relative_to(root) or path==root:
+        raise ValueError('package must be a directory inside the source root')
+    if not (path/'messages.proto').is_file():
+        raise ValueError(f'{value}: messages.proto not found')
+    return path.relative_to(root).as_posix()
+
+
+def extension_config(pkg):
+    """Extend metadata only for an explicitly selected, independent package."""
+    source=(SOURCE_ROOT/pkg/'messages.proto').read_text(encoding='utf-8')
+    source=re.sub(r'/\*.*?\*/|//[^\n]*','',source,flags=re.S)
+    if not re.search(r'\bsyntax\s*=\s*"proto2"\s*;',source):
+        raise ValueError(f'{pkg}: use the template proto2 schema conventions')
+    structure=re.sub(r'"(?:\\.|[^"\\])*"','""',source)
+    if re.search(r'\b(?:enum|oneof|extend|group)\s+\w+|\bmap\s*<|\brequired\s+|\bextensions\s+',structure):
+        raise ValueError(f'{pkg}: enums, oneof, maps, required fields and extensions are not supported by the wire-shape generator')
+    depth=0
+    for token in re.finditer(r'\bmessage\s+\w+\s*\{|[{}]',structure):
+        value=token[0]
+        if value.startswith('message'):
+            if depth:raise ValueError(f'{pkg}: define messages at top level')
+            depth+=1
+        elif value=='{':depth+=1
+        else:depth-=1
+    if any(not re.fullmatch(r'[A-Z][A-Za-z0-9]*',name) for name in SCHEMAS[pkg]):
+        raise ValueError(f'{pkg}: use PascalCase message names without underscores')
+    path=SOURCE_ROOT/pkg/'wireproto.json'
+    if not path.is_file():raise ValueError(f'{pkg}: wireproto.json not found')
+    config=json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(config,dict) or set(config)-{'roots','local_names','aliases'}:
+        raise ValueError(f'{pkg}: expected roots, local_names and optional aliases')
+    roots=config.get('roots')
+    if not isinstance(roots,list) or not roots:raise ValueError(f'{pkg}: roots must be a nonempty list')
+    seen=set()
+    identifier=re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+    for entry in roots:
+        if not isinstance(entry,dict) or set(entry)-{'type','model','limit','validate'}:
+            raise ValueError(f'{pkg}: unsupported stream entry')
+        typ=entry.get('type');model=entry.get('model',typ)
+        if not isinstance(typ,str) or typ not in SCHEMAS[pkg] or model!=typ or typ in seen:
+            raise ValueError(f'{pkg}: each stream must name one unique native generated type')
+        seen.add(typ);entry['model']=model
+        limit=entry.get('limit',64<<20)
+        if type(limit) is not int or not 0<limit<=64<<20:
+            raise ValueError(f'{pkg}: frame limit must be 1..67108864 bytes')
+        entry['limit']=limit
+        validate=entry.get('validate')
+        if validate is not None and (not isinstance(validate,str) or not identifier.fullmatch(validate)):
+            raise ValueError(f'{pkg}: validate must name a Go function')
+    names=config.get('local_names',{})
+    if not isinstance(names,dict) or any(not isinstance(k,str) or not identifier.fullmatch(k) or k in SCHEMAS[pkg] or not isinstance(v,str) or v not in SCHEMAS[pkg] for k,v in names.items()):
+        raise ValueError(f'{pkg}: invalid local message aliases')
+    aliases=config.get('aliases',{})
+    allowed={'byte','uint8','uint16','int8','int16','int32','int64','uint32','uint64','int','bool','string','[]byte'}
+    if not isinstance(aliases,dict) or any(not isinstance(k,str) or not identifier.fullmatch(k) or not isinstance(v,str) or v not in allowed for k,v in aliases.items()):
+        raise ValueError(f'{pkg}: aliases must map local Go identifiers to scalar types')
+    MANIFEST['roots'][pkg]=roots
+    MANIFEST.setdefault('local_names',{})[pkg]=names
+    MANIFEST['aliases'].update({pkg+'.'+k:v for k,v in aliases.items()})
+    for fields in SCHEMAS[pkg].values():
+        for field in fields:
+            cast=field['cast']
+            short=cast.removeprefix(PREFIX) if cast else None
+            base=MANIFEST['aliases'].get(short,cast)
+            base=MANIFEST['aliases'].get(pkg+'.'+str(base),base)
+            if base in ('int8','int16') and field['type']!='sint32':
+                raise ValueError(f'{pkg}: narrow signed casts require sint32 fields')
+            if base in ('byte','uint8','uint16') and field['type'] not in ('uint32','uint64'):
+                raise ValueError(f'{pkg}: narrow unsigned casts require uint32/uint64 fields')
 
 
 def generated_functions(source, method):
@@ -42,7 +121,7 @@ def generated_functions(source, method):
 
 
 def patch_generated(pkg):
-    path=ROOT/pkg/'messages.pb.go'
+    path=OUTPUT_ROOT/pkg/'messages.pb.go'
     source=path.read_text(encoding='utf-8')
     # Serializable's stream API is distinct from the generated payload API.
     source=re.sub(r'\bMarshal\(', 'MarshalProto(', source)
@@ -119,7 +198,7 @@ def qualify_message(typ,pkg):
 
 def append_generated(pkg, imports, body):
     """Keep every generated declaration in the package's messages.pb.go."""
-    path=ROOT/pkg/'messages.pb.go'
+    path=OUTPUT_ROOT/pkg/'messages.pb.go'
     source=path.read_text(encoding='utf-8')
     block=re.search(r'^import \(\n(.*?)\n\)',source,re.M|re.S)
     if block is None:raise ValueError(f'{pkg}: generated import block missing')
@@ -133,6 +212,7 @@ def append_generated(pkg, imports, body):
         combined.setdefault((alias,parsed[2]),line)
     replacement='import (\n'+'\n'.join('\t'+line for line in combined.values())+'\n)'
     source=source[:block.start()]+replacement+source[block.end():]
+    if pkg in EXTENSIONS:body=re.sub(r'}\n(?=func )','}\n\n',body)
     path.write_text(source+'\n'+body+'\n',encoding='utf-8')
 
 
@@ -143,7 +223,7 @@ def rules(pkg):
         rows=[];norm=[]
         for field in fields:
             n=field['name'];t=field['type'];opts=[]
-            if t not in ['bool','string','bytes','uint32','uint64','sint32','sint64']:
+            if t not in SCALAR_TYPES:
                 p,child=qualify_message(t,pkg)
                 alias=p.split('/')[-1]+'.' if p!=pkg else ''
                 if p!=pkg:imports.add('"'+PREFIX+p+'"')
@@ -184,31 +264,64 @@ def streams(pkg):
     code=[]
     for r in roots:
         typ=r['type'];model=r['model'][0].upper()+r['model'][1:]
-        limit={'kcensus':'maxFrame','bodega':'maxFrame','paxos':'16<<20','curp':'16<<20'}.get(pkg,'wireproto.MaxFrame')
+        limit=r.get('limit',{'kcensus':'maxFrame','bodega':'maxFrame','paxos':'16<<20','curp':'16<<20'}.get(pkg,'wireproto.MaxFrame'))
         obj='&m.message' if typ=='wireMessage' else 'm'
         code.extend([f'func(m *{typ}) Marshal(w io.Writer){{wireproto.Write(w,{obj},{limit})}}',f'func(m *{typ}) MarshalProtoFrame(code uint8,tagged bool)([]byte,error){{return wireproto.Encode(code,tagged,{obj},{limit})}}',f'func(m *{typ}) Unmarshal(r io.Reader)error{{var value {model};if err:=wireproto.Read(r,&value,{limit});err!=nil{{return err}}'])
         if pkg in ['kcensus','bodega','fastpaxos']:code.append('if err:=validateProtoMessage(&value);err!=nil{return err}')
+        if pkg in EXTENSIONS and r.get('validate'):code.append(f"if err:={r['validate']}(&value);err!=nil{{return err}}")
         code.append('*m=wireMessage{message:value};return nil}' if typ=='wireMessage' else '*m=value;return nil}')
+        if pkg in EXTENSIONS:code.append(f'func(*{typ}) New()fastrpc.Serializable{{return &{typ}{{}}}}')
         if typ in MANIFEST.get('binary_sizes',{}).get(pkg,[]):code.append(f'func(m *{typ}) BinarySize()(int,bool){{return 0,false}}')
-    return {'"io"','"'+PREFIX+'wireproto"'}, '\n'.join(code)
+    imports={'"io"','"'+PREFIX+'wireproto"'}
+    if pkg in EXTENSIONS:imports.add('fastrpc "'+PREFIX+'rpc"')
+    return imports, '\n'.join(code)
 
 
-def main():
+def generate(packages=None, *, source_root=None, output_root=None, plugin=None):
+    """Generate selected packages; staging roots let templates publish atomically."""
+    global SOURCE_ROOT, OUTPUT_ROOT, SCHEMAS, MANIFEST, EXTENSIONS
+    SOURCE_ROOT=Path(source_root or ROOT).resolve()
+    OUTPUT_ROOT=Path(output_root or SOURCE_ROOT).resolve()
+    if not SOURCE_ROOT.is_relative_to(ROOT) or not OUTPUT_ROOT.is_relative_to(ROOT):
+        raise ValueError('source/output roots must stay inside ConsensusArena')
+    selected=[package_path(p,SOURCE_ROOT) for p in (PACKAGES if packages is None else packages)]
+    if not selected or len(selected)!=len(set(selected)):raise ValueError('select distinct packages')
+    MANIFEST=copy.deepcopy(BASE_MANIFEST)
+    SCHEMAS={p:messages(p) for p in selected}
+    EXTENSIONS=set(selected)-set(PACKAGES)
+    for pkg in EXTENSIONS:extension_config(pkg)
+    protoc=shutil.which('protoc')
+    gogo=Path(plugin).resolve() if plugin else shutil.which('protoc-gen-gogo')
+    if not protoc:raise ValueError('protoc not found on PATH')
+    if not gogo or not Path(gogo).is_file():
+        raise ValueError('protoc-gen-gogo not found; supply --plugin PATH or install cosmos/gogoproto v1.7.2 on PATH')
     dependency=json.loads(subprocess.check_output(['go','list','-m','-json','github.com/cosmos/gogoproto'],cwd=ROOT,text=True))['Dir']
-    schemas=[p+'/messages.proto' for p in PACKAGES]
-    command=['protoc','-I.', '-I'+dependency,'-I'+str(Path(dependency)/'protobuf'),'--gogo_out=paths=source_relative:.']
+    schemas=[p+'/messages.proto' for p in selected]
+    command=[protoc,'-I'+str(SOURCE_ROOT),'-I'+str(ROOT),'-I'+dependency,'-I'+str(Path(dependency)/'protobuf'),
+             '--plugin=protoc-gen-gogo='+str(gogo),'--gogo_out=paths=source_relative:'+str(OUTPUT_ROOT)]
     for schema in schemas:
         generated=subprocess.run(command+[schema],cwd=ROOT,capture_output=True,text=True)
         if generated.returncode:raise RuntimeError(generated.stderr)
-    for pkg in PACKAGES:
+    for pkg in selected:
         patch_generated(pkg)
         rule_imports,rule_body=rules(pkg)
         stream_imports,stream_body=streams(pkg)
         aliases=MANIFEST.get('local_names',{}).get(pkg,{})
         alias_body='\n'.join('type '+local+' = '+name for local,name in aliases.items())
         append_generated(pkg,rule_imports|stream_imports,'\n\n'.join([alias_body,rule_body,stream_body]))
-    paths=[str(ROOT/p/'messages.pb.go') for p in PACKAGES]
+    paths=[str(OUTPUT_ROOT/p/'messages.pb.go') for p in selected]
     subprocess.run(['gofmt','-w']+paths,check=True)
-    print(json.dumps(dict(packages=len(PACKAGES),generated_messages=sum(map(len,SCHEMAS.values())),conversion_adapters=0)))
+    result=dict(packages=len(selected),generated_messages=sum(map(len,SCHEMAS.values())),conversion_adapters=0)
+    print(json.dumps(result))
+    return result
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--package',action='append',dest='packages',help='Generate only this module-relative package; repeat to select several. Default: existing baseline/shared packages only.')
+    parser.add_argument('--plugin',help='Path to protoc-gen-gogo v1.7.2; otherwise use PATH')
+    args=parser.parse_args()
+    try:generate(args.packages,plugin=args.plugin)
+    except (ValueError,OSError,subprocess.CalledProcessError,RuntimeError) as exc:parser.exit(1,str(exc)+'\n')
 
 if __name__=='__main__':main()

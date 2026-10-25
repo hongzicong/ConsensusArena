@@ -1,0 +1,18 @@
+syntax = "proto2";
+package __PROTO_PACKAGE__;
+option go_package = "__IMPORT_PATH__;__PACKAGE__";
+import "gogoproto/gogo.proto";
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.goproto_getters_all) = false;
+option (gogoproto.goproto_unrecognized_all) = false;
+option (gogoproto.goproto_unkeyed_all) = false;
+option (gogoproto.goproto_sizecache_all) = false;
+
+// Extend from the finalized protocol design. No message kind or consensus
+// semantics is selected by this header. Never reuse released field numbers.
+message Message {
+  optional sint32 from = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "From"];
+  optional uint32 kind = 2 [(gogoproto.nullable) = false, (gogoproto.casttype) = "uint8", (gogoproto.customname) = "Kind"];
+}

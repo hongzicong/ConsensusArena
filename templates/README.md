@@ -3,19 +3,66 @@
 From `ConsensusArena/`, run:
 
 ```powershell
+go install github.com/cosmos/gogoproto/protoc-gen-gogo@v1.7.2
 python templates/new_protocol.py xpaxos
 go build ./xpaxos
+go vet ./xpaxos
 ```
 
-This creates a new independent package with nine Go files and a README.
+Python 3.10+, Go, `protoc`, `gofmt` and `protoc-gen-gogo` must be available. Use the
+pinned v1.7.2 plugin. If it is not on PATH, pass `--plugin PATH_TO_PROTOC_GEN_GOGO`
+to either Python generator.
+
+This creates a new independent package with nine handwritten Go files,
+`messages.proto`, `wireproto.json`, generated `messages.pb.go`, and a README.
 It refuses an existing destination and never edits a baseline,
-the registry, or experiment configuration. `--output` is available for checking a
-template under another directory inside this repository.
+the registry, or experiment configuration. Rendering, Protobuf generation and
+formatting finish in a private staging directory before the new package is
+published. Missing tools or generation failures leave the destination absent.
+`--output` selects another directory inside this repository; its path components
+must be identifiers. The generated Protobuf namespace, Go import path and
+regeneration command follow that destination.
 
 The generated package compiles but deliberately rejects startup and transitions
 until a protocol is implemented. It is not a baseline and cannot produce latency
 measurements. Read its README before replacing the guards. The generator does
 not choose a leader, quorum size, commit rule, recovery rule, or routing policy.
+
+## Native Protobuf and Sender integration
+
+The generated `Message` is the protocol message itself; `message` is a local Go
+alias, not a wrapper. `messages.proto` owns its fields. `wireproto.json` selects
+stream message types, optional semantic validators, local aliases and frame
+limits. The starter contains only `From` and a checked `uint8` `Kind`; add the
+design's ballots, commands and evidence in the schema. Shared fields can import
+`state/messages.proto` and `replica/defs/messages.proto` as the baselines do.
+
+After editing the schema or metadata, run from the module root:
+
+```powershell
+python wireproto/generate.py --package xpaxos
+```
+
+Alternatively, `go generate ./xpaxos` uses the generated directive when the plugin
+is on PATH. Selected-package generation writes only that package. It does not
+regenerate its shared imports or edit the central baseline manifest. Multiple
+`--package` arguments select several packages explicitly. The no-argument command
+continues to regenerate only the existing baseline/shared package set.
+
+Generated methods provide `New`, `Marshal`, `Unmarshal`, `MarshalProtoFrame`,
+payload bounds checks and normalization. The starter limits payloads to 16 MiB,
+below the shared 64 MiB ceiling. `wire.go` contains compile-time integration
+checks and the `validateProtoMessage` hook; it contains no alternate codec.
+The hook initially accepts decoded headers, so it is not a protocol validator.
+Define kind-specific rules before enabling an implementation.
+
+`transport.go` freezes messages with the common `replica.Encode` and enqueues
+frames through the existing per-connection `replica.Sender`. Stream methods use
+the shared CAP/v1 framing. Failed framing, schema checks or a semantic validator
+leave the receiving message unchanged. Frames retain FIFO queue admission and
+immutable byte ownership. The starter still rejects self-delivery and returns
+send-queue errors: choose local-delivery and retry semantics in the protocol
+design before removing those guards.
 
 ## Responsibility boundaries
 
@@ -39,7 +86,8 @@ not choose a leader, quorum size, commit rule, recovery rule, or routing policy.
 - `replica.go` constructs, validates, owns framework resources and request contexts,
   binds `execute`, drives transitions and owns timer
   lifecycle; `transport.go` dispatches outputs through the common `replica.Sender`
-  and reply infrastructure; `wire.go` encodes messages. Queue retry decisions stay
+  and reply infrastructure; generated code handles framing and `wire.go` supplies
+  protocol-specific wire validation. Queue retry decisions stay
   in core. Use `c` for core receivers and `r` for Replica receivers.
 - `client.go` chooses routing and validates completion, using the common client
   framework for workload, connections, timing and fault instrumentation.
