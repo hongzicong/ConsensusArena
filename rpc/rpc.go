@@ -34,6 +34,8 @@ func NewTableID(id uint8) *Table {
 	}
 }
 
+// Register assigns the next wire code. A nil notify retains the factory and
+// code without a delivery queue; Pair.Deliver ignores such decoded messages.
 func (t *Table) Register(obj Serializable, notify chan Serializable) uint8 {
 	id := t.id
 	t.id++

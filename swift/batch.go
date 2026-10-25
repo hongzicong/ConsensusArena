@@ -12,7 +12,6 @@ type messageBatcher struct {
 }
 
 type batchOperation struct {
-	cid          int32
 	msg          fastrpc.Serializable
 	sendToClient bool
 }
@@ -266,18 +265,16 @@ func (b *messageBatcher) SendLightSlowAck(s *MLightSlowAck) {
 	}
 }
 
-func (b *messageBatcher) SendFastAckClient(f *MFastAck, cid int32) {
+func (b *messageBatcher) SendFastAckClient(f *MFastAck) {
 	b.fastAcks <- batchOperation{
 		msg:          f,
-		cid:          cid,
 		sendToClient: true,
 	}
 }
 
-func (b *messageBatcher) SendLightSlowAckClient(s *MLightSlowAck, cid int32) {
+func (b *messageBatcher) SendLightSlowAckClient(s *MLightSlowAck) {
 	b.lightSlowAcks <- batchOperation{
 		msg:          s,
-		cid:          cid,
 		sendToClient: true,
 	}
 }

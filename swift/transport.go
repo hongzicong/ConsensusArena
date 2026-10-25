@@ -83,7 +83,6 @@ func registerRPCs(channels *transportChannels, t *fastrpc.Table) {
 }
 
 type replyArgs struct {
-	dep     Dep
 	hs      []SHash
 	val     state.Value
 	cmdID   defs.RequestID
@@ -92,7 +91,6 @@ type replyArgs struct {
 }
 
 type replyWorker struct {
-	rep  *defs.ProposeReplyTS
 	ok   chan struct{}
 	exit chan struct{}
 	args chan *replyArgs
@@ -100,9 +98,6 @@ type replyWorker struct {
 
 func newReplyWorker(r *Replica) *replyWorker {
 	rc := &replyWorker{
-		rep: &defs.ProposeReplyTS{
-			OK: defs.TRUE,
-		},
 		ok:   make(chan struct{}, 1),
 		exit: make(chan struct{}, 2),
 		args: make(chan *replyArgs, defs.CHAN_BUFFER_SIZE),
@@ -129,14 +124,10 @@ func (r *replyWorker) stop() {
 }
 
 func (r *replyWorker) reply(desc *commandDesc, cmdID defs.RequestID, val state.Value) {
-	dep := make([]defs.RequestID, len(desc.dep))
-	copy(dep, desc.dep)
-
 	hs := make([]SHash, len(desc.hs))
 	copy(hs, desc.hs)
 
 	r.args <- &replyArgs{
-		dep:     dep,
 		hs:      hs,
 		val:     val,
 		cmdID:   cmdID,

@@ -65,4 +65,12 @@ func Deliver[T any](channel chan<- T, msg T, stop <-chan struct{}) bool {
 	}
 }
 
-func (p Pair) Deliver() bool { return Deliver(p.Chan, p.Obj, nil) }
+// A nil destination keeps a registration available for decoding without
+// subscribing the generic dispatcher to that message type. Custom stream
+// consumers may still inspect Obj directly; subscribed queues keep backpressure.
+func (p Pair) Deliver() bool {
+	if p.Chan == nil {
+		return true
+	}
+	return Deliver(p.Chan, p.Obj, nil)
+}

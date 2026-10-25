@@ -83,7 +83,7 @@ func (c *core) sendRecoveryAck(cmdID defs.RequestID, dep Dep, propose *proposal,
 		}
 	} else {
 		ack := &MLightSlowAck{Replica: c.id, Ballot: c.ballot, CmdId: cmdID}
-		c.batcher.SendLightSlowAckClient(ack, propose.ClientId)
+		c.batcher.SendLightSlowAckClient(ack)
 		if desc != nil {
 			return func() { c.handleLightSlowAck(ack, desc) }
 		}

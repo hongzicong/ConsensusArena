@@ -106,6 +106,9 @@ var _ client.Adapter = (*Client)(nil)
 
 func (c *Client) WaitReplies(_ int) {
 	table := fastrpc.NewTableID(defs.RPC_TABLE)
+	c.channels.replyChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	c.channels.recordAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
+	c.channels.syncReplyChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
 	registerRPCs(&c.channels, table)
 	c.RegisterRPCTable(table)
 	go c.handleMsgs()

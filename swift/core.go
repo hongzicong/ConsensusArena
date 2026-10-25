@@ -42,9 +42,9 @@ type corePorts struct {
 }
 type ackBatcher interface {
 	SendFastAck(*MFastAck)
-	SendFastAckClient(*MFastAck, int32)
+	SendFastAckClient(*MFastAck)
 	SendLightSlowAck(*MLightSlowAck)
-	SendLightSlowAckClient(*MLightSlowAck, int32)
+	SendLightSlowAckClient(*MLightSlowAck)
 }
 
 // core owns protocol state, ordering, recovery decisions and completion semantics.
@@ -245,7 +245,7 @@ func (c *core) handlePropose(msg *proposal, desc *commandDesc, cmdID defs.Reques
 			// TODO: save old state
 			c.apply(desc, cmdID)
 		} else {
-			c.batcher.SendFastAckClient(fastAckSend, msg.ClientId)
+			c.batcher.SendFastAckClient(fastAckSend)
 		}
 	}
 	c.handleFastAck(fastAck, desc)
@@ -340,7 +340,7 @@ func (c *core) processLeaderFastAck(msg *MFastAck, desc *commandDesc) {
 		if !c.optExec {
 			c.batcher.SendLightSlowAck(lightSlowAck)
 		} else {
-			c.batcher.SendLightSlowAckClient(lightSlowAck, msgCmdID.Client)
+			c.batcher.SendLightSlowAckClient(lightSlowAck)
 		}
 		if !delivered {
 			c.handleLightSlowAck(lightSlowAck, desc)

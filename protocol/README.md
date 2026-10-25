@@ -33,6 +33,15 @@ goroutine, timer, cancellation branch or output barrier.
 Construction checks, RPC registration order, queue policies, synchronous local
 delivery, post-turn drains and execution/reply timing remain unchanged.
 
+RPC factory registration is separate from subscribing a receive queue. CURP
+retains all eight legacy message codes and factories in their original order;
+only clients allocate the three reply queues they consume. Its replica receives
+protocol traffic through the existing Packet inbox. A registration with no
+destination still decodes and validates its frame, then the generic dispatcher
+ignores it instead of waiting on a nil channel. Queues with consumers retain
+their capacities, FIFO delivery and blocking backpressure. EPaxos no longer
+allocates the unused preAcceptOKChan; its active phase queues are unchanged.
+
 The owner calls the methods on its existing event-loop goroutine. Calling them
 concurrently from another goroutine is not supported. `Step` accepts the
 protocol's decoded message types plus its explicitly recognized local control

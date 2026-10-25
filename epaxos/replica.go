@@ -26,7 +26,6 @@ type Replica struct {
 	commitChan            chan fastrpc.Serializable
 	prepareReplyChan      chan fastrpc.Serializable
 	preAcceptReplyChan    chan fastrpc.Serializable
-	preAcceptOKChan       chan fastrpc.Serializable
 	acceptReplyChan       chan fastrpc.Serializable
 	tryPreAcceptChan      chan fastrpc.Serializable
 	tryPreAcceptReplyChan chan fastrpc.Serializable
@@ -50,7 +49,6 @@ func New(alias string, replicaID int, addrs []string, executeEnabled, beacon, du
 		commitChan:            make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
 		prepareReplyChan:      make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
 		preAcceptReplyChan:    make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE*3),
-		preAcceptOKChan:       make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE*3),
 		acceptReplyChan:       make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE*2),
 		tryPreAcceptChan:      make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
 		tryPreAcceptReplyChan: make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
