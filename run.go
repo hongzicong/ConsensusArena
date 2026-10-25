@@ -10,15 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/imdea-software/swiftpaxos/config"
-	"github.com/imdea-software/swiftpaxos/curp"
-	"github.com/imdea-software/swiftpaxos/dlog"
-	"github.com/imdea-software/swiftpaxos/epaxos"
-	"github.com/imdea-software/swiftpaxos/fastpaxos"
-	"github.com/imdea-software/swiftpaxos/n2paxos"
-	"github.com/imdea-software/swiftpaxos/paxos"
-	"github.com/imdea-software/swiftpaxos/replica/defs"
-	"github.com/imdea-software/swiftpaxos/swift"
+	"github.com/hongzicong/ConsensusArena/config"
+	"github.com/hongzicong/ConsensusArena/dlog"
+	"github.com/hongzicong/ConsensusArena/paxos"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 )
 
 func runReplica(c *config.Config, logger *dlog.Logger) {
@@ -40,34 +35,12 @@ func runReplica(c *config.Config, logger *dlog.Logger) {
 	log.Printf("Tolerating %d max. failures", f)
 
 	switch strings.ToLower(c.Protocol) {
-	case "swiftpaxos":
-		log.Println("Starting SwiftPaxos replica...")
-		swift.MaxDescRoutines = 100
-		rep := swift.New(c.Alias, replicaId, nodeList, !c.Noop,
-			c.Optread, true, false, 1, f, c, logger, nil)
-		rpc.Register(rep)
-	case "curp":
-		log.Println("Starting optimized CURP replica...")
-		curp.MaxDescRoutines = 100
-		rep := curp.New(c.Alias, replicaId, nodeList, !c.Noop,
-			1, f, true, c, logger)
-		rpc.Register(rep)
-	case "fastpaxos":
-		log.Println("Starting Fast Paxos replica...")
-		rep := fastpaxos.New(c.Alias, replicaId, nodeList, !c.Noop, f, c, logger)
-		rpc.Register(rep)
-	case "n2paxos":
-		log.Println("Starting N²Paxos replica...")
-		rep := n2paxos.New(c.Alias, replicaId, nodeList, !c.Noop, 1, f, c, logger)
-		rpc.Register(rep)
 	case "paxos":
 		log.Println("Starting Paxos replica...")
 		rep := paxos.New(c.Alias, replicaId, nodeList, isLeader, f, c, logger)
 		rpc.Register(rep)
-	case "epaxos":
-		log.Println("Starting EPaxos replica...")
-		rep := epaxos.New(c.Alias, replicaId, nodeList, !c.Noop, false, false, 0, false, f, c, logger)
-		rpc.Register(rep)
+	default:
+		log.Fatalf("unsupported protocol %q; only Paxos is available", c.Protocol)
 	}
 
 	rpc.HandleHTTP()

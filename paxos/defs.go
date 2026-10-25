@@ -6,8 +6,8 @@ import (
 	"io"
 	"sync"
 
-	fastrpc "github.com/imdea-software/swiftpaxos/rpc"
-	"github.com/imdea-software/swiftpaxos/state"
+	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
+	"github.com/hongzicong/ConsensusArena/state"
 )
 
 type Prepare struct {

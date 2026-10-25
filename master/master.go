@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/imdea-software/swiftpaxos/config"
-	"github.com/imdea-software/swiftpaxos/dlog"
-	"github.com/imdea-software/swiftpaxos/replica/defs"
+	"github.com/hongzicong/ConsensusArena/config"
+	"github.com/hongzicong/ConsensusArena/dlog"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 )
 
 type Master struct {

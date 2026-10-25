@@ -5,18 +5,15 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/imdea-software/swiftpaxos/client"
-	"github.com/imdea-software/swiftpaxos/config"
-	"github.com/imdea-software/swiftpaxos/curp"
-	"github.com/imdea-software/swiftpaxos/dlog"
-	"github.com/imdea-software/swiftpaxos/master"
-	"github.com/imdea-software/swiftpaxos/replica/defs"
-	"github.com/imdea-software/swiftpaxos/swift"
+	"github.com/hongzicong/ConsensusArena/client"
+	"github.com/hongzicong/ConsensusArena/config"
+	"github.com/hongzicong/ConsensusArena/dlog"
+	"github.com/hongzicong/ConsensusArena/master"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
 )
 
 var (
@@ -45,6 +42,9 @@ func main() {
 
 	if *protocol != "" {
 		c.Protocol = *protocol
+	}
+	if !strings.EqualFold(c.Protocol, "paxos") {
+		log.Fatalf("unsupported protocol %q; only Paxos is available", c.Protocol)
 	}
 	defs.LatencyConf = *latency
 	if path := os.Getenv("CONSENSUSARENA_DIAL_MAP"); path != "" {
@@ -118,20 +118,10 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	}
 
 	switch strings.ToLower(c.Protocol) {
-	case "swiftpaxos":
-	case "curp":
-	case "fastpaxos":
-		c.Fast = true
-		c.WaitClosest = true
-	case "n2paxos":
-		c.Fast = true
-		c.WaitClosest = true
-	case "epaxos":
-		c.Leaderless = true
-		c.Fast = false
 	case "paxos":
 		c.WaitClosest = false
 		c.Fast = false
+		c.Leaderless = false
 	default:
 		fmt.Println("Unknown protocol")
 		os.Exit(1)
@@ -149,37 +139,6 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	if err := b.Connect(); err != nil {
 		log.Fatal(err)
 	}
-	if p := strings.ToLower(c.Protocol); p == "swiftpaxos" {
-		cl := swift.NewClient(b, len(c.ReplicaAddrs))
-		if cl == nil {
-			return
-		}
-		cl.Loop()
-	} else if p == "curp" {
-		cls := []string{}
-		for a := range c.ClientAddrs {
-			cls = append(cls, a)
-		}
-		sort.Slice(cls, func(i, j int) bool {
-			return cls[i] < cls[j]
-		})
-		pclients := 0
-		for i, a := range cls {
-			if a == c.Alias {
-				pclients = (c.Clones + 1) * i
-			}
-		}
-		cl := curp.NewClient(b, len(c.ReplicaAddrs), c.Reqs, pclients)
-		if cl == nil {
-			return
-		}
-		cl.Loop()
-	} else {
-		waitFrom := b.LeaderId
-		if b.Fast || b.Leaderless || c.WaitClosest {
-			waitFrom = b.ClosestId
-		}
-		b.WaitReplies(waitFrom)
-		b.Loop()
-	}
+	b.WaitReplies(b.LeaderId)
+	b.Loop()
 }

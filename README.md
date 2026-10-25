@@ -1,32 +1,23 @@
-SwiftPaxos: Fast Geo-Replicated State Machines
-==========
-<!-- [![Go Report Card](https://goreportcard.com/badge/github.com/imdea-software/swiftpaxos)](https://goreportcard.com/report/github.com/imdea-software/swiftpaxos) -->
+# ConsensusArena: Paxos baseline
 
-This repository contains the prototype implementation of SwiftPaxos, a new state-machine replication protocol for geo-distributed systems.
-SwiftPaxos is a _faster Paxos without compromises_.
-In the best case, it executes a state-machine command in two message delays (one round-trip), and three otherwise.
-SwiftPaxos was [presented](https://www.usenix.org/conference/nsdi24/presentation/ryabinin) at the 21st USENIX Symposium on Networked Systems Design and Implementation ([NSDI '24](https://www.usenix.org/conference/nsdi24)).
+This checkout retains the classic Paxos baseline and shared benchmark infrastructure.
+The Go module path matches the ConsensusArena repository.
 
 Installation
 ------------
 
-    git clone https://github.com/imdea-software/swiftpaxos.git
-    cd swiftpaxos
-    go install github.com/imdea-software/swiftpaxos
+From this checkout:
+
+    go build -o results/paxos .
+
+On Windows, use `go build -o results/paxos.exe .`.
 
 Implemented protocols
 ---------------------
 
-|  Protocol               | Comments                                          |
-|-------------------------|---------------------------------------------------|
-| SwiftPaxos              | See our NSDI'24 [paper](https://www.usenix.org/conference/nsdi24/presentation/ryabinin) for the full details.|
-| Paxos                   | The classic Paxos protocol.                       |
-| N<sup>2</sup>Paxos      | All-to-all variant of Paxos.                      |
-| CURP                    | CURP implemented over N<sup>2</sup>Paxos.         |
-| Fast Paxos              | Fast Paxos with uncoordinated collision recovery. |
-| EPaxos                  | A [corrected][epaxos_correct] version of EPaxos.  |
-
-This software is based on the [Egalitarian Paxos](https://github.com/otrack/epaxos) code base, as well as the corrections made [here](https://github.com/otrack/epaxos).
+| Protocol | Comments |
+| --- | --- |
+| Paxos | The classic Paxos protocol; the only available baseline. |
 
 Usage
 -----
@@ -43,15 +34,15 @@ See [aws.conf][config] for an example of configuration file for AWS EC2.
 
 Master:
     
-    swiftpaxos -run master -config conf.conf
+    results/paxos -run master -config conf.conf
 
 Server:
 
-    swiftpaxos -run server -config conf.conf -alias server_name
+    results/paxos -run server -config conf.conf -alias server_name
 
 Client:
 
-    swiftpaxos -run client -config conf.conf -alias client_name
+    results/paxos -run client -config conf.conf -alias client_name
 
 #### command line options
 
@@ -80,16 +71,13 @@ Flint takes as input a set of AWS regions.
 It computes the expected latencies and estimates how the protocols perform in such a deployment.
 
 [config]: aws.conf
-[epaxos_correct]: https://github.com/otrack/on-epaxos-correctness
 [quorum]: quorum.conf
 [latency]: latency.conf
 [flint]: https://github.com/vonaka/flint
 
-## ConsensusArena upstream Slurm branch
+## Slurm benchmarks
 
-This branch pins the upstream implementation and adds platform adapters for
-SCITAS Jed while retaining the original protocol packages and source structure.
-See [the Slurm implementation and operating notes](docs/SLURM.md) for building,
-submitting latency scenes, source provenance, and comparison limitations.
-Results use the upstream request-count workload; they are not matched Poisson
-benchmarks or crash-recovery promotion evidence.
+The shared Slurm adapter defaults to Paxos and rejects removed protocols.
+See [the Slurm operating notes](docs/SLURM.md) for building and running it.
+Historical validation records remain in `docs/validation/` with their original
+protocol names; they do not validate the current Paxos-only checkout.

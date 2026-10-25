@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/imdea-software/swiftpaxos/replica/defs"
-	"github.com/imdea-software/swiftpaxos/state"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/state"
 )
 
 type ReqReply struct {

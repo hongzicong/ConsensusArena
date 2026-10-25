@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=swiftpaxos-smoke
+#SBATCH --job-name=paxos-smoke
 #SBATCH --partition=standard
 #SBATCH --qos=serial
 #SBATCH --nodes=1

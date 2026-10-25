@@ -19,8 +19,9 @@ from master_placement import plan as master_plan
 
 ROOT = Path(__file__).resolve().parent.parent
 UPSTREAM = '35c69365f1c7737a08e237bfbaf828ee68897080'
-PROTOCOLS = ('swiftpaxos', 'paxos', 'n2paxos', 'curp', 'fastpaxos', 'epaxos')
-TIMEOUT = 7200
+BENCHMARK_REFERENCE_COMMIT = '34cb7b872ab6c8b8b4ede80d86e00398f4d7e345'
+PROTOCOLS = ('paxos',)
+TIMEOUT = 3600
 WRITES = {'A': 50, 'B': 5, 'C': 0}
 
 
@@ -50,15 +51,13 @@ def selection(env):
 
 
 def settings(env):
-    protocol = env.get('CONSENSUSARENA_PROTOCOL', 'swiftpaxos').lower()
+    protocol = env.get('CONSENSUSARENA_PROTOCOL', 'paxos').lower()
     if protocol not in PROTOCOLS:
         raise ValueError('unsupported upstream protocol: ' + protocol)
     mode = env.get('CONSENSUSARENA_BENCHMARK_MODE', 'matched')
     if mode not in ('matched', 'native'):
         raise ValueError('benchmark mode must be matched or native')
     if mode == 'matched':
-        if protocol == 'n2paxos':
-            raise ValueError('n2paxos has no master benchmark counterpart; use native mode')
         if env.get('CONSENSUSARENA_CLIENT_WEIGHTS'):
             raise ValueError('custom client weights are not supported by this adapter')
         if any(key.startswith('UPSTREAM_') and key in ('UPSTREAM_REQUESTS', 'UPSTREAM_COMMAND_SIZE',
@@ -89,8 +88,7 @@ def settings(env):
             raise ValueError('invalid matched workload setting')
         if options['placement_objective'] not in ('slow-first', 'fast-first'):
             raise ValueError('invalid placement objective')
-        reference = json.loads((ROOT / 'upstream-provenance.json').read_text())
-        options['benchmark_reference_commit'] = reference['benchmark_reference_commit']
+        options['benchmark_reference_commit'] = BENCHMARK_REFERENCE_COMMIT
         return options
     requests = int(env.get('UPSTREAM_REQUESTS', '1000'))
     payload = int(env.get('UPSTREAM_COMMAND_SIZE', '1000'))
@@ -125,13 +123,13 @@ def prepare(base, scene, addresses, options):
     text += f'\n-- Master --\nm0 {addresses[-1]}\n\nmasterPort: 7087\nport: 7070\n'
     matched = options['benchmark_mode'] == 'matched'
     policy = (master_plan(options['protocol'], replicas, clients, matrix, options['placement_objective'])
-              if matched else dict(leader=replicas[0], fast_quorum=replicas[:n//2+1],
+              if matched else dict(leader=replicas[0], fast_quorum=[],
                                   client_routes={a: replicas[min(range(n), key=lambda i: (matrix[a][replicas[i]], i))]
-                                                 for a in clients}, model='upstream-fixed-first-majority'))
+                                                 for a in clients}, model='upstream-first-leader-dynamic-majority'))
     text += f'protocol: {options["protocol"]}\n'
     if policy['leader'] is not None:
         text += f'leader: {endpoints[replicas.index(policy["leader"])]}\n'
-    text += 'noop: false\nthrifty: false\noptread: false\nleaderless: false\nfast: true\nwaitClosest: true\n'
+    text += 'noop: false\nleaderless: false\nfast: false\nwaitClosest: false\n'
     text += f'commandSize: {options["command_size"]}\nclones: 0\nwrites: {WRITES[scene["profile"]]}\n'
     if matched:
         text += 'benchmark: true\n'
@@ -527,7 +525,7 @@ def main():
         job = subprocess.check_output(cmd, env=env, cwd=ROOT, text=True, timeout=TIMEOUT).strip().split(';')[0]
         if not job.isdigit():
             raise ValueError('unexpected Slurm job ID: ' + job)
-        root = env.get('CONSENSUSARENA_RUN_DIR', '/scratch/' + env['USER'] + '/swiftpaxos-upstream-' + job)
+        root = env.get('CONSENSUSARENA_RUN_DIR', '/scratch/' + env['USER'] + '/paxos-upstream-' + job)
         print(f'Serial job: {job} | scenes: {len(plan)} | run directory: {root}', flush=True)
         return 0
     if args.command == 'collect':
@@ -544,7 +542,7 @@ def main():
         return 0
     if env.get('SLURM_ARRAY_TASK_ID'):
         raise ValueError('job arrays are unsupported')
-    root = Path(env.get('CONSENSUSARENA_RUN_DIR', '/scratch/' + env['USER'] + '/swiftpaxos-upstream-' + env['SLURM_JOB_ID']))
+    root = Path(env.get('CONSENSUSARENA_RUN_DIR', '/scratch/' + env['USER'] + '/paxos-upstream-' + env['SLURM_JOB_ID']))
     root.mkdir(parents=True, exist_ok=False)
     (root / 'scenes').mkdir()
     write_json(root / 'suite.json', dict(kind=args.kind, scenes=plan, settings=options, execution='serial-slurm',

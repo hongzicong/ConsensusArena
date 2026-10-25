@@ -3,8 +3,8 @@ package client
 
 import (
 	"encoding/binary"
-	"github.com/imdea-software/swiftpaxos/config"
-	"github.com/imdea-software/swiftpaxos/state"
+	"github.com/hongzicong/ConsensusArena/config"
+	"github.com/hongzicong/ConsensusArena/state"
 	"hash/fnv"
 	"math"
 	"math/rand"

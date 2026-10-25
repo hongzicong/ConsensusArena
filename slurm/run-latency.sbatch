@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=swiftpaxos-upstream
+#SBATCH --job-name=paxos-upstream
 #SBATCH --partition=standard
 #SBATCH --qos=parallel
 #SBATCH --nodes=3

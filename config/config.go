@@ -77,16 +77,11 @@ type Config struct {
 
 	// -- replica info --
 	// do not execute client commands
-	Noop bool
-	// epaxos thrifty mode
-	Thrifty bool
-	// optimized reads (when available)
-	Optread    bool
+	Noop       bool
 	Leaderless bool
 	// replicas send replies directly to clients
 	Fast bool
 	// address of the leader or nil
-	// this is ignored by Swift, as it uses its own quorum configuration file
 	// TODO: it would be better if we could use an alias instead of the address
 	Leader *string
 
@@ -252,12 +247,6 @@ func Read(filename, alias string) (*Config, error) {
 				ok = true
 			case "noop":
 				c.Noop, err = expectBool(words)
-				ok = true
-			case "thrifty":
-				c.Thrifty, err = expectBool(words)
-				ok = true
-			case "optread":
-				c.Optread, err = expectBool(words)
 				ok = true
 			case "leaderless":
 				c.Leaderless, err = expectBool(words)

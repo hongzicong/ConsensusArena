@@ -1,10 +1,8 @@
 """External startup policy equivalent to the pinned master's plan.go functions.
 
-No protocol implementation or registry is imported. The donor revision and
-source hashes are recorded in upstream-provenance.json.
+No protocol implementation or registry is imported. The benchmark reference
+revision is pinned in upstream_harness.py.
 """
-import itertools
-import math
 from decimal import Decimal
 
 
@@ -25,7 +23,7 @@ def compensated_mean(values):
 def plan(protocol, replicas, clients, matrix, objective='slow-first'):
     if objective not in ('slow-first', 'fast-first'):
         raise ValueError('unknown quorum objective: ' + objective)
-    if protocol not in ('swiftpaxos', 'paxos', 'curp', 'fastpaxos', 'epaxos'):
+    if protocol != 'paxos':
         raise ValueError('no master comparison policy for ' + protocol)
     clients = sorted(clients)  # master Config.Membership() order
     # Master parses the generated decimal RTT strings with time.ParseDuration:
@@ -43,52 +41,14 @@ def plan(protocol, replicas, clients, matrix, objective='slow-first'):
               for c, a in enumerate(clients)}
     result = dict(leader=None, fast_quorum=[], client_routes=routes,
                   fast_mean_ms=0.0, slow_mean_ms=0.0)
-    if protocol == 'epaxos':
-        return dict(result, model='nearest-replica-ingress')
-    if protocol == 'fastpaxos':
-        q = 3*n//4 + 1
-        fast = [min(max(to[c][j], kth([to[c][v]+d[v][j] for v in range(n)], q-1))
-                    + back[c][j] for j in range(n)) for c in range(len(clients))]
-        return dict(result, model='any-three-quarter-fast-quorum', fast_quorum_size=q,
-                    fast_mean_ms=compensated_mean(fast))
-    models = {'swiftpaxos': 'swift-c2-leader-fixed-majority',
-              'paxos': 'leader-roundtrip-dynamic-majority',
-              'curp': 'witness-fast-and-commit-relay'}
     best_key = None
     for leader in range(n):
-        if protocol == 'swiftpaxos':
-            slow = [max(rtt(c, leader), kth([max(to[c][r], to[c][leader]+d[leader][r])
-                    + back[c][r] for r in range(n) if r != leader], f-1))
-                    for c in range(len(clients))]
-            candidates = (q for q in itertools.combinations(range(n), f+1) if leader in q)
-        else:
-            majority = kth([d[leader][r]+d[r][leader] for r in range(n) if r != leader], f-1)
-            if protocol == 'paxos':
-                slow = [rtt(c, leader)+majority for c in range(len(clients))]
-                fast = slow
-            else:
-                slow, fast = [], []
-                for c in range(len(clients)):
-                    cost = math.inf
-                    for j in range(n):
-                        quorum = min(kth([to[c][leader]+d[leader][r]+d[r][j]
-                                          for r in range(n)], f),
-                                     to[c][leader]+majority+d[leader][j])
-                        cost = min(cost, max(to[c][j], to[c][leader]+d[leader][j], quorum)+back[c][j])
-                    slow.append(cost)
-                    fast.append(min(cost, max(rtt(c, leader), kth([rtt(c, r)
-                                for r in range(n) if r != leader], f+(f+1)//2-1))))
-            candidates = [()]
+        majority = kth([d[leader][r]+d[r][leader] for r in range(n) if r != leader], f-1)
+        slow = [rtt(c, leader)+majority for c in range(len(clients))]
         sm = compensated_mean(slow)
-        for quorum in candidates:
-            if protocol == 'swiftpaxos':
-                fast = [min(max(rtt(c, r) for r in quorum), slow[c]) for c in range(len(clients))]
-            fm = compensated_mean(fast)
-            aliases = sorted(replicas[r] for r in quorum)
-            key = replicas[leader] + ''.join('\0'+a for a in aliases)
-            score = (sm, fm, key) if objective == 'slow-first' else (fm, sm, key)
-            if best_key is None or score < best_key:
-                best_key = score
-                result.update(leader=replicas[leader], fast_quorum=aliases,
-                              fast_mean_ms=fm, slow_mean_ms=sm)
-    return dict(result, model=models[protocol], objective=objective)
+        # Paxos has one dynamic-majority path, so both objectives coincide.
+        score = (sm, sm, replicas[leader])
+        if best_key is None or score < best_key:
+            best_key = score
+            result.update(leader=replicas[leader], fast_mean_ms=sm, slow_mean_ms=sm)
+    return dict(result, model='leader-roundtrip-dynamic-majority', objective=objective)

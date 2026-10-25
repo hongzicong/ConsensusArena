@@ -6,12 +6,12 @@ import (
 	"math"
 	"time"
 
-	"github.com/imdea-software/swiftpaxos/config"
-	"github.com/imdea-software/swiftpaxos/dlog"
-	"github.com/imdea-software/swiftpaxos/replica"
-	"github.com/imdea-software/swiftpaxos/replica/defs"
-	fastrpc "github.com/imdea-software/swiftpaxos/rpc"
-	"github.com/imdea-software/swiftpaxos/state"
+	"github.com/hongzicong/ConsensusArena/config"
+	"github.com/hongzicong/ConsensusArena/dlog"
+	"github.com/hongzicong/ConsensusArena/replica"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
+	"github.com/hongzicong/ConsensusArena/state"
 )
 
 const CHAN_BUFFER_SIZE = 200000
