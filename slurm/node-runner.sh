@@ -61,6 +61,8 @@ else
         wait_marker replicas.ready
         quorum_args=()
         if [[ -s "$quorum" ]]; then quorum_args=(-quorum "$quorum"); fi
+        unset CONSENSUSARENA_FAULT_RUN
+        export CONSENSUSARENA_LATENCY_RUN="$run_dir"
         run_app -run client -config "$config" "${quorum_args[@]}" -alias "$alias" \
           -log "$run_dir/results/$alias-client.log" > "$run_dir/stdout/$alias-client.out" 2>&1 &
         client_pid=$!

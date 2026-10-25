@@ -345,7 +345,7 @@ func (r *Replica) bcastCommit(instance int32, ballot int32, command []state.Comm
 		if !r.Alive[r.PreferredPeerOrder[q]] {
 			continue
 		}
-		r.SendMsg(r.PreferredPeerOrder[q], r.commitShortRPC, args)
+		r.SendMsg(r.PreferredPeerOrder[q], r.commitRPC, args)
 		sent++
 	}
 
@@ -636,7 +636,7 @@ func (r *Replica) handleAcceptReply(areply *AcceptReply) {
 		lb.nacks++
 		if lb.nacks+1 >= r.Replica.WriteQuorumSize() {
 			if r.IsLeader {
-				r.makeBallot(areply.Ballot)
+				r.makeBallot(areply.Instance)
 				r.bcastPrepare(areply.Instance)
 			}
 		}

@@ -139,6 +139,14 @@ func runSingleClient(c *config.Config, i int, verbose bool) {
 	if err := b.Connect(); err != nil {
 		log.Fatal(err)
 	}
+	if err := b.ConfigureFaultRun(c.Alias, i); err != nil {
+		log.Fatal(err)
+	}
+	if c.Benchmark {
+		if err := b.ConfigureLatencyRun(c.Alias, i); err != nil {
+			log.Fatal(err)
+		}
+	}
 	b.WaitReplies(b.LeaderId)
 	b.Loop()
 }

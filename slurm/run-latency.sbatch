@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=paxos-upstream
+#SBATCH --job-name=paxos-latency
 #SBATCH --partition=standard
 #SBATCH --qos=parallel
 #SBATCH --nodes=3
@@ -13,4 +13,10 @@
 set -euo pipefail
 export LC_ALL=C
 repo_root=${CONSENSUSARENA_ROOT:-${SLURM_SUBMIT_DIR:?}}
-exec python3 "$repo_root/slurm/upstream_harness.py" run latency
+if [[ ${CONSENSUSARENA_SCENE_WORKER:-0} == 1 ]]; then
+    exec python3 "$repo_root/slurm/upstream_harness.py" run latency
+elif [[ -n ${SLURM_ARRAY_TASK_ID:-} ]]; then
+    exec python3 "$repo_root/slurm/benchmark-suite.py" task latency "$repo_root"
+else
+    exec python3 "$repo_root/slurm/benchmark-suite.py" serial latency "$repo_root"
+fi

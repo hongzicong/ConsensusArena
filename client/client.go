@@ -35,6 +35,7 @@ type Client struct {
 	Verbose    bool
 	Leaderless bool
 
+	fault   *faultTransport
 	master  *rpc.Client
 	servers []net.Conn
 	readers []*bufio.Reader
@@ -173,6 +174,10 @@ func (c *Client) Reconnect() error {
 }
 
 func (c *Client) SendProposal(cmd defs.Propose) {
+	if c.fault != nil {
+		c.sendFaultProposal(cmd)
+		return
+	}
 	d := c.LeaderId
 	if c.Leaderless {
 		d = c.ClosestId

@@ -75,9 +75,3 @@ It computes the expected latencies and estimates how the protocols perform in su
 [latency]: latency.conf
 [flint]: https://github.com/vonaka/flint
 
-## Slurm benchmarks
-
-The shared Slurm adapter defaults to Paxos and rejects removed protocols.
-See [the Slurm operating notes](docs/SLURM.md) for building and running it.
-Historical validation records remain in `docs/validation/` with their original
-protocol names; they do not validate the current Paxos-only checkout.
