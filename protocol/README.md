@@ -13,6 +13,26 @@ loops use these entry points; they are not unused adapters for a test harness.
 Paxos and CURP also embed it in their existing runtime adapter interfaces.
 Core data structures, ballots, evidence and commit rules remain protocol-local.
 
+## Replica and core ownership
+
+All seven baselines and the generated skeleton use `Replica -> core`. Replica
+directly owns protocol runtime resources and one core. `replica.go` contains its
+fields, public constructor, initialization helpers, event loop, timers and worker
+methods; no separate runtime object
+or forwarding facade is allocated. Existing exported fields and methods remain
+accessible, including EPaxos's durable/beacon resources and Send override.
+
+Event and control methods in `replica.go` use `*Replica` receivers.
+`transport.go` retains protocol transport helpers and RPC
+bindings on that same owner. `core` retains algorithm state and decisions.
+Paxos/CURP keep their shared EventLoop and protocolAdapter, now referencing
+Replica directly. Their core send/broadcast callbacks explicitly use EventLoop
+transport so synchronous self delivery and send-admission accounting are retained.
+The other five keep their native loops and workers. There is no new event queue,
+goroutine, timer, cancellation branch or output barrier.
+Construction checks, RPC registration order, queue policies, synchronous local
+delivery, post-turn drains and execution/reply timing remain unchanged.
+
 The owner calls the methods on its existing event-loop goroutine. Calling them
 concurrently from another goroutine is not supported. `Step` accepts the
 protocol's decoded message types plus its explicitly recognized local control
@@ -47,7 +67,7 @@ and SwiftPaxos's descriptor/batcher/reply workers. FastPaxos/KCensus retain thei
 post-turn drains, including the original order of local outputs. No extra
 goroutine, message queue, timer, codec, or network round trip is introduced here.
 
-The skeleton's core may return its own `effects`; its `Replica` adapter dispatches
+The skeleton's core may return its own `effects`; its runtime adapter dispatches
 them within these same three methods. Other cores may use callbacks. The shared
 interface deliberately does not choose one protocol's output policy for another.
 

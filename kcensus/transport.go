@@ -1,6 +1,5 @@
 package kcensus
 
-// Replica/client streams and output delivery.
 import (
 	"bufio"
 	"fmt"

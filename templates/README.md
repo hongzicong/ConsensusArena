@@ -7,7 +7,7 @@ python templates/new_protocol.py xpaxos
 go build ./xpaxos
 ```
 
-This creates a new independent package with the ten responsibility files.
+This creates a new independent package with nine Go files and a README.
 It refuses an existing destination and never edits a baseline,
 the registry, or experiment configuration. `--output` is available for checking a
 template under another directory inside this repository.
@@ -19,21 +19,25 @@ not choose a leader, quorum size, commit rule, recovery rule, or routing policy.
 
 ## Responsibility boundaries
 
-- The replica implements the shared `protocol.Machine` interface in `runtime.go`:
+- `Replica -> core` is the ownership chain used by the seven baselines and this
+  template. `replica.go` owns fields, construction, callback wiring and the
+  event-loop, timer and worker methods on `*Replica`; it introduces no
+  separate runtime type or forwarding facade. There is one framework host/state.
+- The replica implements the shared `protocol.Machine` interface in `replica.go`:
   `Propose(*defs.GPropose, time.Time) error`, `Step(any, time.Time) error`, and
   `Tick(protocol.Tick) error`. Live loops and external event drivers use the same
   entry points. See [the event contract](../protocol/README.md) for time, ownership,
   errors and output ordering.
 - `core.go` owns protocol state and normal transitions. Its private `submit`,
   `receive`, and `tick` entries have explicit inputs and return protocol-authorized
-  outputs; the public Replica adapters above call them.
+  outputs; the Replica adapters call them directly.
 - `recovery.go` owns recovery evidence and safe selection through `beginRecovery`;
   ordinary gap repair belongs here too. Recovery does not belong to the network writer.
 - `execute.go` owns order, deduplication, state-machine application and completion
   through `apply`.
   Committed, executable, executed, and client-completed are distinct conditions.
 - `replica.go` constructs, validates, owns framework resources and request contexts,
-  and binds the `execute` callback; `runtime.go` drives transitions and owns timer
+  binds `execute`, drives transitions and owns timer
   lifecycle; `transport.go` dispatches outputs through the common `replica.Sender`
   and reply infrastructure; `wire.go` encodes messages. Queue retry decisions stay
   in core. Use `c` for core receivers and `r` for Replica receivers.

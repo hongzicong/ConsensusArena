@@ -1,11 +1,22 @@
 package epaxos
 
-// Protocol broadcast policy and shared Sender integration.
 import (
 	"github.com/hongzicong/ConsensusArena/replica"
-
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 )
+
+type rpcCodes struct {
+	prepareRPC           uint8
+	prepareReplyRPC      uint8
+	preAcceptRPC         uint8
+	preAcceptReplyRPC    uint8
+	acceptRPC            uint8
+	acceptReplyRPC       uint8
+	commitRPC            uint8
+	tryPreAcceptRPC      uint8
+	tryPreAcceptReplyRPC uint8
+	requestRPC           uint8
+}
 
 // Each phase supplies its own recipient order and attempt limit. Failed queue
 // admission still consumes an attempt, just as the original loops did.

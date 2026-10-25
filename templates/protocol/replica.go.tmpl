@@ -5,13 +5,14 @@ import (
 
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/dlog"
+	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 )
 
-// Replica owns framework resources, request contexts, and core callback wiring.
+// Replica owns framework resources, request contexts, and one protocol core.
 type Replica struct {
 	*replica.Replica
 	core      *core
@@ -20,11 +21,6 @@ type Replica struct {
 	proposals map[defs.RequestID]*defs.GPropose
 	peers     []*replica.Sender
 }
-
-// Example plumbing interval/capacity, not protocol or quorum assumptions.
-// Replace with validated configuration before benchmarking a finished design.
-const runtimeInterval = 10 * time.Millisecond
-const queueCapacity = 4096
 
 func New(alias string, replicaID int, addrs []string, conf *config.Config, logger *dlog.Logger) (*Replica, error) {
 	c, err := newCore(replicaID, len(addrs))
@@ -43,4 +39,75 @@ func New(alias string, replicaID int, addrs []string, conf *config.Config, logge
 	r.code = r.RPC.Register(&message{}, r.inbox)
 	go r.run()
 	return r, nil
+}
+
+// Example plumbing interval/capacity, not protocol or quorum assumptions.
+// Replace with validated configuration before benchmarking a finished design.
+const runtimeInterval = 10 * time.Millisecond
+
+const queueCapacity = 4096
+
+// run owns event delivery and timer lifecycle. Protocol decisions stay in core.
+func (r *Replica) run() {
+	r.ClientReplyCapacity = 8192
+	r.ConnectToPeers()
+	r.peers = r.PeerSenders
+	defer r.CloseSenders()
+	go r.WaitForClientConnections()
+	ticker := time.NewTicker(runtimeInterval)
+	defer ticker.Stop()
+	for {
+		var err error
+		select {
+		case p := <-r.ProposeChan:
+			err = r.Propose(p, time.Now())
+		case raw := <-r.inbox:
+			err = r.Step(raw, time.Now())
+		case now := <-ticker.C:
+			err = r.Tick(protocol.Tick{Now: now})
+		}
+		if err != nil {
+			r.Printf("PROTOCOL_ERROR error=%q", err)
+			return
+		}
+	}
+}
+
+// Replica adapters validate inputs, call core, and dispatch its effects.
+var _ protocol.Machine = (*Replica)(nil)
+
+func (r *Replica) Propose(p *defs.GPropose, now time.Time) error {
+	if err := protocol.ValidateProposal(p); err != nil {
+		return err
+	}
+	id := p.RequestID()
+	r.proposals[id] = p
+	out, err := r.core.submit(request{ID: id, Command: p.Command}, now)
+	if err != nil {
+		return err
+	}
+	return r.dispatch(out)
+}
+
+func (r *Replica) Step(event any, now time.Time) error {
+	m, ok := event.(*message)
+	if !ok || m == nil {
+		return protocol.UnsupportedEvent("__PACKAGE__", event)
+	}
+	out, err := r.core.receive(*m, now)
+	if err != nil {
+		return err
+	}
+	return r.dispatch(out)
+}
+
+func (r *Replica) Tick(t protocol.Tick) error {
+	if t.Kind != protocol.Maintenance {
+		return protocol.UnsupportedTimer("__PACKAGE__", t.Kind)
+	}
+	out, err := r.core.tick(t.Now)
+	if err != nil {
+		return err
+	}
+	return r.dispatch(out)
 }

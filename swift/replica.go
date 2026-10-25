@@ -1,96 +1,21 @@
 package swift
 
-// Replica state, configuration, RPC registration, and startup.
 import (
+	"sync"
+	"time"
+
 	"github.com/hongzicong/ConsensusArena/config"
 	"github.com/hongzicong/ConsensusArena/dlog"
+	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/replicaset"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
 	cmap "github.com/orcaman/concurrent-map"
-	"sync"
-	"time"
 )
 
-var MaxDescRoutines = 100
-
-type transportChannels struct {
-	maxLatency time.Duration
-
-	fastAckChan       chan fastrpc.Serializable
-	fastAckClientChan chan fastrpc.Serializable
-	slowAckChan       chan fastrpc.Serializable
-	lightSlowAckChan  chan fastrpc.Serializable
-	acksChan          chan fastrpc.Serializable
-	optAcksChan       chan fastrpc.Serializable
-	replyChan         chan fastrpc.Serializable
-	newLeaderChan     chan fastrpc.Serializable
-	newLeaderAckNChan chan fastrpc.Serializable
-	shareStateChan    chan fastrpc.Serializable
-	syncChan          chan fastrpc.Serializable
-	pingChan          chan fastrpc.Serializable
-	pingRepChan       chan fastrpc.Serializable
-	collectChan       chan fastrpc.Serializable
-	acceptChan        chan fastrpc.Serializable
-
-	rpcCodes
-}
-
-type rpcCodes struct {
-	fastAckRPC       uint8
-	fastAckClientRPC uint8
-	slowAckRPC       uint8
-	lightSlowAckRPC  uint8
-	acksRPC          uint8
-	optAcksRPC       uint8
-	replyRPC         uint8
-	newLeaderRPC     uint8
-	newLeaderAckNRPC uint8
-	shareStateRPC    uint8
-	syncRPC          uint8
-	pingRPC          uint8
-	pingRepRPC       uint8
-	collectRPC       uint8
-	acceptRPC        uint8
-}
-
-func registerRPCs(channels *transportChannels, t *fastrpc.Table) {
-	channels.maxLatency = 0
-
-	channels.fastAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.fastAckClientChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.slowAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.lightSlowAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.acksChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.optAcksChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.replyChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.newLeaderChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.newLeaderAckNChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.syncChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.pingChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.pingRepChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.collectChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.acceptChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-
-	channels.fastAckRPC = t.Register(new(MFastAck), channels.fastAckChan)
-	channels.fastAckClientRPC = t.Register(new(MFastAckClient), channels.fastAckClientChan)
-	channels.slowAckRPC = t.Register(new(MSlowAck), channels.slowAckChan)
-	channels.lightSlowAckRPC = t.Register(new(MLightSlowAck), channels.lightSlowAckChan)
-	channels.acksRPC = t.Register(new(MAcks), channels.acksChan)
-	channels.optAcksRPC = t.Register(new(MOptAcks), channels.optAcksChan)
-	channels.replyRPC = t.Register(new(MReply), channels.replyChan)
-	channels.newLeaderRPC = t.Register(new(MNewLeader), channels.newLeaderChan)
-	channels.newLeaderAckNRPC = t.Register(new(MNewLeaderAckN), channels.newLeaderAckNChan)
-	channels.syncRPC = t.Register(new(MSync), channels.syncChan)
-	channels.pingRPC = t.Register(new(MPing), channels.pingChan)
-	channels.pingRepRPC = t.Register(new(MPingRep), channels.pingRepChan)
-	channels.collectRPC = t.Register(new(MCollect), channels.collectChan)
-	channels.acceptRPC = t.Register(new(MAccept), channels.acceptChan)
-}
-
-// Replica owns runtime resources and exposes the external protocol event boundary.
+// Replica owns runtime resources and one protocol core.
 type Replica struct {
 	*replica.Replica
 	core                *core
@@ -144,4 +69,194 @@ func New(alias string, replicaID int, addrs []string, executeEnabled, fastRead, 
 	go r.run()
 
 	return r
+}
+
+var MaxDescRoutines = 100
+
+type leaderCall struct{ done chan leaderDecision }
+
+func (r *Replica) BeTheLeader(_ *defs.BeTheLeaderArgs, reply *defs.BeTheLeaderReply) error {
+	done := make(chan leaderDecision, 1)
+	r.control <- leaderCall{done}
+	decision := <-done
+	if decision.recover {
+		// Keep recovery asynchronous and retain the existing queue admission:
+		// the RPC returns after enqueueing, not after recovery completes.
+		r.recover <- decision.ballot
+	}
+	*reply = decision.reply
+	return nil
+}
+
+func (r *Replica) run() {
+	// Swift has no admission-retry callback; retain pending frames per peer.
+	r.PeerSendOptions = replica.SenderOptions{Capacity: -1}
+	r.ConnectToPeers()
+	defer r.CloseSenders()
+	latencies := r.ComputeClosestPeers()
+	for _, l := range latencies {
+		d := time.Duration(l*1000*1000) * time.Nanosecond
+		if d > r.channels.maxLatency {
+			r.channels.maxLatency = d
+		}
+	}
+
+	go r.WaitForClientConnections()
+
+	for !r.Shutdown {
+		select {
+		case call := <-r.control:
+			protocol.Must(r.Step(call, time.Time{}))
+
+		case newBallot := <-r.recover:
+			protocol.Must(r.Step(recoveryEvent(newBallot), time.Time{}))
+
+		case cmdID := <-r.delivery:
+			protocol.Must(r.Step(cmdID, time.Time{}))
+
+		case propose := <-r.ProposeChan:
+			protocol.Must(r.Propose(propose, time.Time{}))
+
+		case m := <-r.channels.fastAckChan:
+			protocol.Must(r.Step(m, time.Time{}))
+
+		case m := <-r.channels.lightSlowAckChan:
+			protocol.Must(r.Step(m, time.Time{}))
+
+		case m := <-r.channels.acksChan:
+			protocol.Must(r.Step(m, time.Time{}))
+
+		case m := <-r.channels.optAcksChan:
+			protocol.Must(r.Step(m, time.Time{}))
+
+		case m := <-r.channels.newLeaderChan:
+			protocol.Must(r.Step(m, time.Time{}))
+
+		case m := <-r.channels.syncChan:
+			protocol.Must(r.Step(m, time.Time{}))
+
+		}
+	}
+}
+
+var _ protocol.Machine = (*Replica)(nil)
+
+type recoveryEvent int32
+
+func (r *Replica) Propose(p *defs.GPropose, _ time.Time) error {
+	if err := protocol.ValidateProposal(p); err != nil {
+		return err
+	}
+	additional := len(r.ProposeChan)
+	if additional > 255 {
+		additional = 255
+	}
+	r.core.beginProposalBatch(additional + 1)
+	r.core.submit(r.admitProposal(p))
+	for i := 0; i < additional; i++ {
+		r.core.submit(r.admitProposal(<-r.ProposeChan))
+	}
+	return nil
+}
+
+func (r *Replica) Step(event any, now time.Time) error { return r.core.receive(event, now) }
+
+func (r *Replica) Tick(t protocol.Tick) error { return r.core.tick(t) }
+
+func (r *Replica) allocDesc() *commandDesc {
+	if r.descriptorPoolLevel > 0 {
+		return r.descriptorPool.Get().(*commandDesc)
+	}
+	return &commandDesc{}
+}
+
+func (r *Replica) freeDesc(desc *commandDesc) {
+	clear(desc.pendingLeaderAcks)
+	desc.pendingLeaderAcks = nil
+	if r.descriptorPoolLevel > 0 {
+		r.descriptorPool.Put(desc)
+	}
+}
+
+func (r *Replica) runDescriptor(desc *commandDesc, cmdID defs.RequestID) {
+	defer func() {
+		for len(desc.stopChan) != 0 {
+			(<-desc.stopChan).Done()
+		}
+	}()
+
+	for desc.active {
+		select {
+		case wg := <-desc.stopChan:
+			desc.active = false
+			wg.Done()
+			return
+		case msg := <-desc.msgs:
+			if r.core.handleMsg(msg, desc, cmdID) {
+				r.descriptorCount--
+				return
+			}
+		}
+	}
+}
+
+func (r *Replica) awaitRecovery() {
+	// stop processing normal channels:
+	for r.core.status == RECOVERING {
+		select {
+		case call := <-r.control:
+			protocol.Must(r.Step(call, time.Time{}))
+
+		case m := <-r.channels.newLeaderChan:
+			protocol.Must(r.Step(m, time.Time{}))
+
+		case m := <-r.channels.newLeaderAckNChan:
+			protocol.Must(r.Step(m, time.Time{}))
+
+		case m := <-r.channels.syncChan:
+			protocol.Must(r.Step(m, time.Time{}))
+		}
+	}
+}
+
+func (r *Replica) stopDescriptors() {
+	var wg sync.WaitGroup
+	r.core.descriptors.IterCb(func(_ string, v interface{}) {
+		desc := v.(*commandDesc)
+		if desc.active && !desc.seq {
+			wg.Add(1)
+			desc.stopChan <- &wg
+		}
+	})
+	wg.Wait()
+
+	// TODO: maybe add to history even if stopped this way ?
+}
+
+func (r *Replica) awaitReply(desc *commandDesc, cmdID defs.RequestID) {
+	// wait for the slot number and ignore any other message
+	for {
+		switch slot := (<-desc.msgs).(type) {
+		case int:
+			r.core.handleMsg(slot, desc, cmdID)
+			return
+		}
+	}
+}
+
+func (r *Replica) admitProposal(p *defs.GPropose) *proposal {
+	return &proposal{Propose: p.Propose, Proxy: p.Proxy, Addr: p.Addr, context: p}
+}
+
+func (r *Replica) requeueProposal(p *proposal) {
+	go func() { r.ProposeChan <- p.context.(*defs.GPropose) }()
+}
+
+func (r *Replica) scheduleDelivery(id defs.RequestID) {
+	go func() { r.delivery <- id }()
+}
+
+func (r *Replica) startDescriptor(desc *commandDesc, id defs.RequestID) {
+	go r.runDescriptor(desc, id)
+	r.descriptorCount++
 }

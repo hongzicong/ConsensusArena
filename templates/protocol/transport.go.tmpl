@@ -1,8 +1,5 @@
 package __PACKAGE__
 
-// Stored outputs can use protocol.Drain to preserve reentrant FIFO delivery.
-// Late connections can use replica.PendingSender; tagged client streams can
-// use rpc.ReadStream with protocol-owned decoding and identity validation.
 import (
 	"fmt"
 

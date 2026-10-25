@@ -1,10 +1,11 @@
 package paxos
 
 import (
+	"time"
+
 	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
-	"time"
 )
 
 func newEventLoop(base *replica.Replica, machine replica.EventLoopMachine) *replica.EventLoop {

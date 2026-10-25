@@ -1,13 +1,13 @@
 package fastpaxos
 
-// Message sending, connection writers, and output queues.
 import (
+	"io"
+	"time"
+
 	"github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/replica"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
-	"io"
-	"time"
 )
 
 type replyJob struct {

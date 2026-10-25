@@ -13,17 +13,18 @@ design and the implementation below agree.
 | `core.go` | Local state, submit/receive/tick, unique voters, normal commit rule. |
 | `recovery.go` | beginRecovery: evidence collection, safe selection, fallback, missing-data repair. |
 | `execute.go` | apply: executable order, deduplication, result retention, client completion. |
-| `replica.go` | Configuration validation, stable replica IDs, resources, request contexts, callback setup, RPC registration. |
+| `replica.go` | Replica fields, configuration/resources, request contexts, core/callback wiring, RPC initialization, event/control methods, serialized event loop, timers, workers and observability. |
 | `plan.go` | Initial leader/quorum/responder/ingress policy from deployment inputs, including fixed policies. |
-| `runtime.go` | Serialized event delivery, public framework adapters, explicit time, timer lifecycle, observability. |
 | `transport.go` | Output dispatch, encoding and delivery, ownership of queued data, queue bounds, self-delivery. |
 | `client.go` | Ingress choice, routing, and exact completion evidence. |
 
 `Replica` implements the shared `protocol.Machine` event interface through
 `Propose(*defs.GPropose, time.Time) error`, `Step(any, time.Time) error`, and
-`Tick(protocol.Tick) error`. Its live loop uses these methods, which validate inputs
-and call the private core entries `submit`, `receive`, and `tick`. The core's private
-`effects` are dispatched inside the method; they are not a framework-wide output
+`Tick(protocol.Tick) error`. Replica directly owns one core and one framework host.
+Its methods in `replica.go` validate inputs and call the private core entries
+`submit`, `receive`, and `tick`. No separate runtime object or forwarding facade
+is generated. The core's private `effects` are dispatched inside the method;
+they are not a framework-wide output
 barrier. Match the ownership and timer rules in `protocol/README.md` at the
 repository root when replacing the guards.
 
@@ -33,12 +34,12 @@ choose retry policies before enabling
 the implementation. The membership check and `(n-1)/2` framework argument are not
 a substitute for the design's fault/quorum validation. Persistence, restart,
 reconnect, and complete process shutdown are not implemented by this skeleton;
-its runtime does close registered senders when the event loop exits.
+its event loop closes registered senders when it exits.
 
 Keep the protocol's state transitions free of sockets, goroutines, and wall-clock
 reads. Feed time into transitions and execute every transition on one event loop.
 Use `c` for core receivers and `r` for Replica receivers. `core` owns protocol
-decisions; runtime drives events and transport delivers the resulting effects.
+decisions; Replica drives events and transport delivers the resulting effects.
 The `proposals` map retains framework request contexts for replies, not protocol
 acceptance or completion state. Queue retry decisions belong to core; transport
 reports delivery errors.

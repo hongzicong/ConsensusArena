@@ -1,12 +1,13 @@
 package bodega
 
 import (
-	"github.com/hongzicong/ConsensusArena/replica"
-	"github.com/hongzicong/ConsensusArena/replica/defs"
-	"github.com/hongzicong/ConsensusArena/state"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/hongzicong/ConsensusArena/replica"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/state"
 )
 
 // Bodega owns admission and priority, including the promise-drained event.
