@@ -42,6 +42,15 @@ ignores it instead of waiting on a nil channel. Queues with consumers retain
 their capacities, FIFO delivery and blocking backpressure. EPaxos no longer
 allocates the unused preAcceptOKChan; its active phase queues are unchanged.
 
+SwiftPaxos also separates registration from queue allocation. Replicas allocate
+only FastAck, LightSlowAck, Acks, OptAcks, NewLeader, NewLeaderAckN and Sync queues;
+the NewLeaderAckN queue remains available to the recovery loop. Clients allocate
+only Reply, Accept, FastAck, FastAckClient, LightSlowAck, Acks and OptAcks queues.
+Both roles retain all fourteen original factories and wire codes in the same
+order. Unsubscribed messages are decoded and validated, then ignored instead of
+accumulating in unread queues. Subscribed queue capacities and delivery policies
+are unchanged.
+
 The owner calls the methods on its existing event-loop goroutine. Calling them
 concurrently from another goroutine is not supported. `Step` accepts the
 protocol's decoded message types plus its explicitly recognized local control

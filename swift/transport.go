@@ -13,18 +13,13 @@ type transportChannels struct {
 
 	fastAckChan       chan fastrpc.Serializable
 	fastAckClientChan chan fastrpc.Serializable
-	slowAckChan       chan fastrpc.Serializable
 	lightSlowAckChan  chan fastrpc.Serializable
 	acksChan          chan fastrpc.Serializable
 	optAcksChan       chan fastrpc.Serializable
 	replyChan         chan fastrpc.Serializable
 	newLeaderChan     chan fastrpc.Serializable
 	newLeaderAckNChan chan fastrpc.Serializable
-	shareStateChan    chan fastrpc.Serializable
 	syncChan          chan fastrpc.Serializable
-	pingChan          chan fastrpc.Serializable
-	pingRepChan       chan fastrpc.Serializable
-	collectChan       chan fastrpc.Serializable
 	acceptChan        chan fastrpc.Serializable
 
 	rpcCodes
@@ -49,26 +44,11 @@ type rpcCodes struct {
 }
 
 func registerRPCs(channels *transportChannels, t *fastrpc.Table) {
-	channels.maxLatency = 0
-
-	channels.fastAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.fastAckClientChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.slowAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.lightSlowAckChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.acksChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.optAcksChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.replyChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.newLeaderChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.newLeaderAckNChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.syncChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.pingChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.pingRepChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.collectChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-	channels.acceptChan = make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE)
-
+	// Each role allocates only its consumed queues before registration. Keep all
+	// factories in their original order; nil destinations remain decode-only.
 	channels.fastAckRPC = t.Register(new(MFastAck), channels.fastAckChan)
 	channels.fastAckClientRPC = t.Register(new(MFastAckClient), channels.fastAckClientChan)
-	channels.slowAckRPC = t.Register(new(MSlowAck), channels.slowAckChan)
+	channels.slowAckRPC = t.Register(new(MSlowAck), nil)
 	channels.lightSlowAckRPC = t.Register(new(MLightSlowAck), channels.lightSlowAckChan)
 	channels.acksRPC = t.Register(new(MAcks), channels.acksChan)
 	channels.optAcksRPC = t.Register(new(MOptAcks), channels.optAcksChan)
@@ -76,9 +56,9 @@ func registerRPCs(channels *transportChannels, t *fastrpc.Table) {
 	channels.newLeaderRPC = t.Register(new(MNewLeader), channels.newLeaderChan)
 	channels.newLeaderAckNRPC = t.Register(new(MNewLeaderAckN), channels.newLeaderAckNChan)
 	channels.syncRPC = t.Register(new(MSync), channels.syncChan)
-	channels.pingRPC = t.Register(new(MPing), channels.pingChan)
-	channels.pingRepRPC = t.Register(new(MPingRep), channels.pingRepChan)
-	channels.collectRPC = t.Register(new(MCollect), channels.collectChan)
+	channels.pingRPC = t.Register(new(MPing), nil)
+	channels.pingRepRPC = t.Register(new(MPingRep), nil)
+	channels.collectRPC = t.Register(new(MCollect), nil)
 	channels.acceptRPC = t.Register(new(MAccept), channels.acceptChan)
 }
 

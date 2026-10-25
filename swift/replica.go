@@ -59,6 +59,16 @@ func New(alias string, replicaID int, addrs []string, executeEnabled, fastRead, 
 	r.core.batcher = newMessageBatcher(r, 16)
 	r.replyWorker = newReplyWorker(r)
 
+	// Include recovery-only input, but leave client-only messages unsubscribed.
+	r.channels = transportChannels{
+		fastAckChan:       make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		lightSlowAckChan:  make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		acksChan:          make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		optAcksChan:       make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		newLeaderChan:     make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		newLeaderAckNChan: make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		syncChan:          make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+	}
 	registerRPCs(&r.channels, r.RPC)
 
 	r.Println("the leader is:", r.core.leader(), "ballot is:", r.core.ballot)

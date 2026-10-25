@@ -315,6 +315,15 @@ var _ client.Adapter = (*Client)(nil)
 
 func (c *Client) WaitReplies(_ int) {
 	t := fastrpc.NewTableID(defs.RPC_TABLE)
+	c.channels = transportChannels{
+		replyChan:         make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		acceptChan:        make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		fastAckChan:       make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		fastAckClientChan: make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		lightSlowAckChan:  make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		acksChan:          make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+		optAcksChan:       make(chan fastrpc.Serializable, defs.CHAN_BUFFER_SIZE),
+	}
 	registerRPCs(&c.channels, t)
 	c.RegisterRPCTable(t)
 
