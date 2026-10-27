@@ -7,38 +7,25 @@ import (
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
-	cmap "github.com/orcaman/concurrent-map"
-	"sync"
 	"time"
 )
 
 // corePorts exposes runtime observations, output and scheduling capabilities.
-// Worker lifetimes and ingress queues remain owned by Replica.
+// Ingress queues and output delivery remain owned by Replica.
 type corePorts struct {
 	n  int
 	id int32
 	*dlog.Logger
-	codes                *rpcCodes
-	send                 func(int, uint8, fastrpc.Serializable) error
-	broadcast            func(fastrpc.Serializable, uint8) int
-	sendClient           func(int32, uint8, fastrpc.Serializable)
-	peerAlive            func(int) bool
-	executeEnabled       func() bool
-	replyAfterExecution  func() bool
-	requeueProposal      func(*proposal)
-	scheduleDelivery     func(defs.RequestID)
-	startDescriptor      func(*commandDesc, defs.RequestID)
-	stopDescriptors      func()
-	resetDescriptors     func()
-	sequentialDescriptor func() bool
-	allocDesc            func() *commandDesc
-	freeDesc             func(*commandDesc)
-	stopReplies          func()
-	resetReplies         func()
-	queueReply           func(*commandDesc, defs.RequestID, state.Value)
-	awaitReply           func(*commandDesc, defs.RequestID)
-	awaitRecovery        func()
-	batcher              ackBatcher
+	codes               *rpcCodes
+	send                func(int, uint8, fastrpc.Serializable) error
+	broadcast           func(fastrpc.Serializable, uint8) int
+	sendClient          func(int32, uint8, fastrpc.Serializable)
+	peerAlive           func(int) bool
+	executeEnabled      func() bool
+	replyAfterExecution func() bool
+	allocDesc           func() *commandDesc
+	freeDesc            func(*commandDesc)
+	batcher             ackBatcher
 }
 type ackBatcher interface {
 	SendFastAck(*MFastAck)
@@ -56,8 +43,11 @@ type core struct {
 	cballot int32
 	status  int
 
-	descriptors cmap.ConcurrentMap
-	delivered   cmap.ConcurrentMap
+	descriptors map[defs.RequestID]*commandDesc
+	delivered   map[defs.RequestID]struct{}
+	localWork   []localWork
+	localHead   int
+	generation  uint64
 
 	keys map[state.Key]keyInfo
 	hlog map[state.Key]*HashLog
@@ -102,8 +92,8 @@ func newCore(ports corePorts, fastRead, optExec bool, slowAddrs []string, initia
 		cballot: 0,
 		status:  NORMAL,
 
-		descriptors: cmap.New(),
-		delivered:   cmap.New(),
+		descriptors: make(map[defs.RequestID]*commandDesc),
+		delivered:   make(map[defs.RequestID]struct{}),
 
 		keys:             make(map[state.Key]keyInfo),
 		hlog:             make(map[state.Key]*HashLog),
@@ -156,14 +146,11 @@ type commandDesc struct {
 	// Leader acknowledgements wait for the original proposal, in arrival order.
 	pendingLeaderAcks []*MFastAck
 
-	msgs     chan interface{}
-	active   bool
-	slowPath bool
-	seq      bool
-	stopChan chan *sync.WaitGroup
+	active     bool
+	slowPath   bool
+	generation uint64
 
-	successors  []defs.RequestID
-	successorsL sync.Mutex
+	successors []defs.RequestID
 
 	// execute before sending an MSync message
 	defered func()
@@ -198,7 +185,7 @@ func (c *core) handlePropose(msg *proposal, desc *commandDesc, cmdID defs.Reques
 		// a restored descriptor has no normal-case hash proposal to broadcast.
 		finishAck := c.sendRecoveryAck(cmdID, desc.dep, msg, desc)
 		c.replayPendingLeaderAcks(desc)
-		if !c.delivered.Has(cmdID.String()) {
+		if !c.hasDelivered(cmdID) {
 			finishAck()
 		}
 		return
@@ -213,7 +200,7 @@ func (c *core) handlePropose(msg *proposal, desc *commandDesc, cmdID defs.Reques
 	desc.dep = desc.proposeDep
 	desc.phase = PRE_ACCEPT
 	if (c.replayPendingLeaderAcks(desc) && desc.slowPath) ||
-		c.delivered.Has(cmdID.String()) {
+		c.hasDelivered(cmdID) {
 		// in this case a process already sent an MSlowAck
 		// message, hence, no need to send MFastAck
 		return
@@ -304,7 +291,7 @@ func (c *core) processLeaderFastAck(msg *MFastAck, desc *commandDesc) {
 	msgChecksum := msg.Checksum
 
 	defer func() {
-		if c.leader() == c.id || c.delivered.Has(msgCmdID.String()) {
+		if c.leader() == c.id || c.hasDelivered(msgCmdID) {
 			return
 		}
 		if !sendSlowAck && c.optExec && !SHashesEq(hs, msgChecksum) {
@@ -319,10 +306,10 @@ func (c *core) processLeaderFastAck(msg *MFastAck, desc *commandDesc) {
 	}()
 
 	desc.slowPathH.Add(msg.Replica, true, msg)
-	delivered := c.delivered.Has(msgCmdID.String())
+	delivered := c.hasDelivered(msgCmdID)
 	if !delivered {
 		desc.fastPathH.Add(msg.Replica, true, msg)
-		delivered = c.delivered.Has(msgCmdID.String())
+		delivered = c.hasDelivered(msgCmdID)
 	}
 
 	if sendSlowAck {
@@ -356,7 +343,7 @@ func (c *core) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
 	msgCmdID := msg.CmdId
 	if msg.Dep == nil {
 		desc.slowPathH.Add(msg.Replica, msg.Replica == c.leader(), msg)
-		if c.delivered.Has(msgCmdID.String()) {
+		if c.hasDelivered(msgCmdID) {
 			return
 		}
 	}
@@ -379,9 +366,7 @@ func getFastAndSlowAcksHandler(c *core, desc *commandDesc) MsgSetHandler {
 			if depDesc == nil {
 				continue
 			}
-			depDesc.successorsL.Lock()
 			depDesc.successors = append(depDesc.successors, leaderFastAck.CmdId)
-			depDesc.successorsL.Unlock()
 		}
 
 		c.apply(desc, leaderFastAck.CmdId)
@@ -398,50 +383,27 @@ func (c *core) handleLightSlowAck(msg *MLightSlowAck, desc *commandDesc) {
 }
 
 func (c *core) getCmdDesc(cmdID defs.RequestID, msg interface{}, dep Dep) *commandDesc {
-	return c.getCmdDescSeq(cmdID, msg, dep, nil, false)
+	return c.getCmdDescWithHashes(cmdID, msg, dep, nil)
 }
 
-func (c *core) getCmdDescSeq(cmdID defs.RequestID, msg interface{}, dep Dep, hs []SHash, seq bool) *commandDesc {
-	key := cmdID.String()
-	if c.delivered.Has(key) {
+func (c *core) getCmdDescWithHashes(cmdID defs.RequestID, msg interface{}, dep Dep, hs []SHash) *commandDesc {
+	if c.hasDelivered(cmdID) {
 		return nil
 	}
-
-	var desc *commandDesc
-
-	c.descriptors.Upsert(key, nil,
-		func(exists bool, mapV, _ interface{}) interface{} {
-			defer func() {
-				if dep != nil && desc.proposeDep == nil {
-					desc.proposeDep = dep
-					if hs != nil {
-						desc.hs = hs
-					}
-				}
-			}()
-
-			if exists {
-				desc = mapV.(*commandDesc)
-				return desc
-			}
-
-			desc = c.newDesc()
-			desc.seq = seq || desc.seq
-			if !desc.seq {
-				c.startDescriptor(desc, cmdID)
-			}
-
-			return desc
-		})
-
-	if msg != nil {
-		if desc.seq {
-			c.handleMsg(msg, desc, cmdID)
-		} else {
-			desc.msgs <- msg
+	desc := c.descriptors[cmdID]
+	if desc == nil {
+		desc = c.newDesc()
+		c.descriptors[cmdID] = desc
+	}
+	if dep != nil && desc.proposeDep == nil {
+		desc.proposeDep = dep
+		if hs != nil {
+			desc.hs = hs
 		}
 	}
-
+	if msg != nil {
+		c.localWork = append(c.localWork, localWork{kind: descriptorWork, desc: desc, generation: desc.generation, cmdID: cmdID, message: msg})
+	}
 	return desc
 }
 
@@ -449,29 +411,16 @@ func (c *core) newDesc() *commandDesc {
 	desc := c.allocDesc()
 	desc.dep = nil
 	desc.hs = nil
-	if desc.msgs == nil {
-		desc.msgs = make(chan interface{}, 8)
-	} else {
-		for len(desc.msgs) != 0 {
-			<-desc.msgs
-		}
-	}
 	desc.active = true
+	c.generation++
+	desc.generation = c.generation
 	desc.phase = START
 	desc.successors = nil
 	desc.slowPath = false
 	desc.deferFast = false
-	desc.seq = c.sequentialDescriptor()
 	desc.defered = func() {}
 	desc.propose = nil
 	desc.proposeDep = nil
-	if desc.stopChan == nil {
-		desc.stopChan = make(chan *sync.WaitGroup, 8)
-	} else {
-		for len(desc.stopChan) != 0 {
-			<-desc.stopChan
-		}
-	}
 
 	clear(desc.pendingLeaderAcks)
 	desc.pendingLeaderAcks = nil
@@ -493,7 +442,7 @@ func (c *core) newDesc() *commandDesc {
 	return desc
 }
 
-func (c *core) handleMsg(m interface{}, desc *commandDesc, cmdID defs.RequestID) bool {
+func (c *core) handleMsg(m interface{}, desc *commandDesc, cmdID defs.RequestID) {
 	switch msg := m.(type) {
 
 	case *proposal:
@@ -517,22 +466,7 @@ func (c *core) handleMsg(m interface{}, desc *commandDesc, cmdID defs.RequestID)
 			c.apply(desc, cmdID)
 		}
 
-	case int:
-		c.history[msg].cmdID = cmdID
-		c.history[msg].phase = desc.phase
-		c.history[msg].cmd = desc.cmd
-		c.history[msg].dep = desc.dep
-		c.history[msg].slowPath = desc.slowPath
-		c.history[msg].defered = desc.defered
-		desc.active = false
-		desc.slowPathH.Free()
-		desc.fastPathH.Free()
-		c.descriptors.Remove(cmdID.String())
-		c.freeDesc(desc)
-		return true
 	}
-
-	return false
 }
 
 func (c *core) leader() int32 {
@@ -635,7 +569,7 @@ func (c *core) submit(propose *proposal) {
 	if _, recovered := c.recoveryCmds[cmdID]; recovered {
 		// Sync already installed this command's dependencies. Do not append
 		// a hash proposal before handlePropose takes the recovery branch.
-		c.getCmdDescSeq(cmdID, propose, nil, nil, c.leader() == c.id)
+		c.getCmdDescWithHashes(cmdID, propose, nil, nil)
 		return
 	}
 	upd, deferred := c.pendingHashUpds[cmdID]
@@ -659,13 +593,11 @@ func (c *core) submit(propose *proposal) {
 		delete(c.pendingHashUpds, cmdID)
 		c.recordLeaderHash(cmdID, upd.seqnum, upd.hash)
 	}
-	// FIXME: leader can receive fastAck before Propose,
-	//        in this case desc is not seq
 	var message interface{} = propose
 	if deferFast {
 		message = &deferredProposal{propose: propose}
 	}
-	desc := c.getCmdDescSeq(cmdID, message, dep, hs, c.leader() == c.id)
+	desc := c.getCmdDescWithHashes(cmdID, message, dep, hs)
 	if desc == nil {
 		c.Fatal("Got proposal for the delivered command", cmdID)
 	}

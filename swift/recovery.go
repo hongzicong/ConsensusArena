@@ -8,7 +8,6 @@ import (
 
 	"github.com/hongzicong/ConsensusArena/replica/defs"
 	"github.com/hongzicong/ConsensusArena/state"
-	cmap "github.com/orcaman/concurrent-map"
 )
 
 func (c *core) handleNewLeader(msg *MNewLeader) {
@@ -21,8 +20,7 @@ func (c *core) handleNewLeader(msg *MNewLeader) {
 	c.ballot = msg.Ballot
 	c.recStart = time.Now()
 
-	c.stopReplies()
-	c.stopDescriptors()
+	c.pauseLocalWork()
 
 	newLeaderAckN := &MNewLeaderAckN{
 		Replica: c.id,
@@ -37,7 +35,6 @@ func (c *core) handleNewLeader(msg *MNewLeader) {
 		c.handleNewLeaderAckN(newLeaderAckN)
 	}
 
-	c.awaitRecovery()
 }
 
 func (c *core) handleNewLeaderAckN(msg *MNewLeaderAckN) {
@@ -99,8 +96,7 @@ func (c *core) fillNewLeaderAckN(newLeaderAckN *MNewLeaderAckN) {
 	deps := []SDep{}
 	seen := make(map[defs.RequestID]struct{})
 
-	c.descriptors.IterCb(func(_ string, v interface{}) {
-		desc := v.(*commandDesc)
+	for _, desc := range c.descriptors {
 		if desc.propose != nil {
 			cmdID := desc.propose.RequestID()
 			if _, exists := seen[cmdID]; !exists {
@@ -111,10 +107,10 @@ func (c *core) fillNewLeaderAckN(newLeaderAckN *MNewLeaderAckN) {
 				deps = append(deps, SDep{desc.dep})
 			}
 		}
-	})
+	}
 
 	for cmdID := range c.proposes {
-		if _, exists := seen[cmdID]; exists || c.delivered.Has(cmdID.String()) {
+		if _, exists := seen[cmdID]; exists || c.hasDelivered(cmdID) {
 			continue
 		}
 		cmdIDs = append(cmdIDs, cmdID)
@@ -137,29 +133,25 @@ func (c *core) handleSync(msg *MSync) {
 
 	if c.status == NORMAL {
 		c.recStart = time.Now()
-		c.stopReplies()
-		c.stopDescriptors()
+		c.pauseLocalWork()
 	}
 
 	// clear descriptors:
-	c.descriptors.IterCb(func(_ string, v interface{}) {
-		desc := v.(*commandDesc)
+	for _, desc := range c.descriptors {
 		if desc.propose != nil {
 			cmdID := desc.propose.RequestID()
 			if _, exists := phases[cmdID]; !exists {
 				c.requeueProposal(desc.propose)
 			}
 		}
-		desc.msgs = nil
-		desc.stopChan = nil
+		desc.active = false
 		desc.slowPathH.Free()
 		desc.fastPathH.Free()
 		c.freeDesc(desc)
-	})
+	}
 
 	c.keys = make(map[state.Key]keyInfo)
-	c.resetDescriptors()
-	c.descriptors = cmap.New()
+	c.descriptors = make(map[defs.RequestID]*commandDesc)
 	c.status = NORMAL
 	c.ballot = msg.Ballot
 	c.cballot = msg.Ballot
@@ -167,7 +159,6 @@ func (c *core) handleSync(msg *MSync) {
 	if c.fixedMajority {
 		c.fq = c.qs.AQ(c.ballot)
 	}
-	c.resetReplies()
 	c.historySize = 0
 
 	i := 0
@@ -248,7 +239,7 @@ type leaderDecision struct {
 
 func (c *core) handleLeaderCall() leaderDecision {
 	decision := leaderDecision{}
-	if !c.delivered.IsEmpty() {
+	if len(c.delivered) != 0 {
 		decision.recover = true
 		decision.ballot = c.qs.BallotAt(1)
 		decision.reply.Leader = c.id

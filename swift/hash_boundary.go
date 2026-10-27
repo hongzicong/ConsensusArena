@@ -64,7 +64,7 @@ func (c *core) receiveFastAck(msg *MFastAck) {
 		return
 	}
 	c.recordLeaderAck(msg)
-	c.getCmdDescSeq(msg.CmdId, msg, nil, nil, c.leader() == c.id)
+	c.getCmdDescWithHashes(msg.CmdId, msg, nil, nil)
 }
 
 // Send the same recovery acknowledgements whether the proposal was present at
