@@ -342,12 +342,30 @@ def collect(kind, root):
                     rows = list(csv.DictReader(source))
                 if len(rows) != 1 or any(str(rows[0][key]) != str(scene[key]) for key in scene):
                     raise ValueError('latency measurement identity mismatch')
-                if rows[0].get('workload_model') == 'synchronized-ramp-sustain-v1':
-                    runs = [path.parent.parent for path in base.rglob('repetition-01/config/cluster.conf')]
-                    if len(runs) != 1:
-                        raise ValueError('missing or duplicate synchronized latency run')
-                    subprocess.run([sys.executable, str(Path(__file__).with_name('latency-barrier.py')),
-                                    'validate', str(runs[0])], check=True, timeout=TIMEOUT)
+                if rows[0].get('workload_model') != 'synchronized-ramp-fixed-sustain-v2':
+                    raise ValueError('latency requires the fixed-sustain measurement policy')
+                if rows[0].get('latency_sample_policy') != 'completed_measured_requests':
+                    raise ValueError('latency requires completed-request statistics')
+                runs = [path.parent.parent for path in base.rglob('repetition-01/config/cluster.conf')]
+                if len(runs) != 1:
+                    raise ValueError('missing or duplicate synchronized latency run')
+                subprocess.run([sys.executable, str(Path(__file__).with_name('latency-barrier.py')),
+                                'validate', str(runs[0])], check=True, timeout=TIMEOUT)
+                validated = json.loads((runs[0] / 'workload-validation.json').read_text())
+                if validated.get('workload_model') != rows[0]['workload_model']:
+                    raise ValueError('exported and measured workload policies differ')
+                if (validated.get('latency_sample_policy') != rows[0]['latency_sample_policy'] or
+                        validated['completed_requests'] != int(rows[0]['count']) or
+                        validated['completed_rps'] != float(rows[0]['completed_rps']) or
+                        str(validated['timed_out']) != rows[0]['timed_out'] or
+                        validated['status'] != rows[0]['status'] or
+                        str(validated['all_requests_drained']) != rows[0]['all_requests_drained']):
+                    raise ValueError('exported and measured completed-request metrics differ')
+                status.update(timed_out=validated['timed_out'],
+                              completed_requests=validated['completed_requests'],
+                              cohort_complete=validated['cohort_complete'],
+                              latency_valid=validated['completed_requests'] > 0,
+                              throughput_valid=validated['throughput_valid'])
             status['complete'] = outcome['returncode'] == 0 and 'error' not in status
             if status['complete']:
                 for filename, paths in files.items():
@@ -363,6 +381,8 @@ def collect(kind, root):
     complete = all(status['complete'] for status in statuses)
     suite_status = dict(complete=complete, expected_scenes=len(plan),
                         completed_scenes=sum(s['complete'] for s in statuses), scenes=statuses)
+    if kind == 'latency':
+        suite_status['timed_out_scenes'] = sum(s.get('timed_out', False) for s in statuses)
     if (root / 'serial-error.json').exists():
         complete = False
         suite_status.update(complete=False, error=json.loads((root / 'serial-error.json').read_text())['error'])

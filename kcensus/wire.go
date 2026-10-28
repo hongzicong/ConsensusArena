@@ -114,7 +114,7 @@ func validateProtoValue(v *Value) error {
 }
 
 func validateProtoMessage(m *message) error {
-	if m.Kind < spread || m.Kind > resultQuery || len(m.Knowledge) > 63 || len(m.Reports) > 63 || len(m.UIDs) > maxBatch || len(m.Values) > maxBatch || len(m.Result) > 65535 {
+	if m.Kind < spread || m.Kind > checkpointAck || len(m.Knowledge) > 63 || len(m.Reports) > 63 || len(m.UIDs) > maxBatch || len(m.Values) > maxBatch || len(m.Result) > 65535 {
 		return fmt.Errorf("invalid KCensus frame")
 	}
 	if err := validateProtoValue(m.Value); err != nil {

@@ -16,61 +16,69 @@ type slotID struct {
 	slot  uint64
 }
 
-// Slot and shard objects keep their identity for the lifetime of the core.
-// Retirement is recorded by instance.decided; the active map remains an index.
+// Retry entries are validated against the active index and shard generation.
+// Physical shard objects can be reused after the enclosing transition returns.
 type retryItem struct {
-	id       slotID
-	instance *slotState
-	owner    *shard
+	id         slotID
+	instance   *slotState
+	owner      *shard
+	generation uint64
 }
 
 type slotState struct {
-	fast                                *Value
-	values                              map[int]*Value
-	graphs                              map[int]*graphRun
-	nodeReports                         map[int]nodeReport
-	classicValues                       map[uint64]*Value
-	payloadRelayed                      map[graphEdge]bool
-	conflictAnnounced                   bool
-	fetchSent                           bool
-	fetchTarget                         int
-	nextRetry, retryDelay               time.Duration
-	knowledge                           []replicaset.Set
-	knowledgeTime                       time.Duration
-	frozen                              bool
-	participants, announcedParticipants uint64
-	promised, acceptedBallot            uint64
-	classic, decided                    *Value
-	local                               *Value
-	ballot                              uint64
-	phase                               uint8 // 0: evidence; 1: census/prepare; 2: accept
-	reports                             map[int]message
-	selected                            *Value
-	acks                                uint64
-	prepareSent, acceptSent             replicaset.Set
-	followedBallot                      uint64
-	created, lastSend                   time.Duration
+	fast                     *Value
+	values                   map[int]*Value
+	graphs                   map[int]*graphRun
+	nodeReports              map[int]nodeReport
+	classicValues            map[uint64]*Value
+	conflictAnnounced        bool
+	fetchSent                bool
+	nextRetry, retryDelay    time.Duration
+	knowledge                []replicaset.Set
+	knowledgeTime            time.Duration
+	frozen                   bool
+	participants             uint64
+	promised, acceptedBallot uint64
+	classic, decided         *Value
+	local                    *Value
+	ballot                   uint64
+	phase                    uint8 // 0: evidence; 1: census/prepare; 2: accept
+	reports                  map[int]message
+	selected                 *Value
+	acceptNewValue           bool
+	recoveryPayload          bool // abnormal census must repair interrupted payload trees
+	acks                     uint64
+	prepareSent, acceptSent  replicaset.Set
+	created                  time.Duration
 }
 
 type shard struct {
-	high, executed uint64
-	slots          map[uint64]*slotState
-	pending        []defs.RequestID
-	queued         map[defs.RequestID]bool
-	shared         map[defs.RequestID]bool
-	objects        map[uint64]*Value
-	nextUID        uint64
-	pendingValue   *Value
-	scheduled      bool
-	gapScheduled   bool
-	nextOffer      time.Duration
+	physicalIndex          int
+	inUse                  bool
+	generation             uint64
+	lastUID                uint64
+	hasLast                bool
+	peakObjects, peakSlots int
+	high, executed         uint64
+	slots                  map[uint64]*slotState
+	pending                []defs.RequestID
+	queued                 map[defs.RequestID]bool
+	shared                 map[defs.RequestID]bool
+	objects                map[uint64]*Value
+	nextUID                uint64
+	pendingValue           *Value
+	scheduled              bool
+	gapScheduled           bool
+	nextOffer              time.Duration
 }
 
 type Stats struct {
+	encodingStats
+	ShardsAllocated, ShardsReused, ShardsSlept                            uint64
 	FastCommits, FallbackCommits, Conflicts, Prepares, Retries, Fetches   uint64
 	SpreadMessages, KnowledgeUpdates, Executed, Deduplicated              uint64
 	Reads, ReadWaits, ReadWaitNanos, Decisions                            uint64
-	AcceptanceEdges, WitnessEdges, RetryDeferred                          uint64
+	RetryDeferred                                                         uint64
 	OfferedCommands, BatchCommands, MaxBatchCommands                      uint64
 	LocalWrites, LocalWriteNanos, LocalWriteMaxNanos, LocalSlotWaits      uint64
 	LocalWriteLatencyBuckets                                              [9]uint64
@@ -78,28 +86,37 @@ type Stats struct {
 	OriginalProposals, BusyProposalSlots, SharedProposalDeferrals         uint64
 	GraphMessages, GraphPayloads, GraphStates, FrozenRelays               uint64
 	ReadyReadReplies, BufferedReadReplies                                 uint64
-	ReferenceMessages, PayloadQueries, PayloadRepairs, PayloadWaits       uint64
+	ReferenceMessages, PayloadWaits                                       uint64
 	NodeStateRelays                                                       uint64
 	HeartbeatReplies, StaleHeartbeatReplies, FailedPeers, WrongBatchSlots uint64
 	ReadTimerVisits, GapTimerVisits, TickNanos, TickMaxNanos              uint64
 	FailedGraphBypasses, RecoveryResultReplies                            uint64
 	SuppressedRecoveryRequests, RetiredRecoveryReplies                    uint64
 	SuppressedReadRequests, DuplicateReadReplies                          uint64
-	SuppressedFetches, SuppressedRepairOffers                             uint64
+	SuppressedRepairOffers                                                uint64
 	ImmediateFetches, DeadlineFetches, DeferredInFlightFetches            uint64
 	RecoveryAdmissionWaits                                                uint64
-	EncodedFrames, EncodedBytes, EncodingSamples, EncodingNanos           uint64
-	ReusedEncodings                                                       uint64
-	InputMessages, InputSamples, InputSampleNanos                         [resultQuery + 1]uint64
+	CheckpointTransfers, CheckpointInstalls, CheckpointChunks             uint64
+	CheckpointRequests, CheckpointMerged, CheckpointSwitches              uint64
+	CheckpointHints, CheckpointSuppressed                                 uint64
+	ResultQueries                                                         uint64
+	InputMessages, InputSamples, InputSampleNanos                         [checkpointAck + 1]uint64
 }
 
 // core owns protocol state, ordering, recovery decisions and completion semantics.
 type core struct {
-	id, n, m, f         int
-	plan                Plan
-	priority            []int
-	shardCount          state.Key
-	shards              map[state.Key]*shard
+	id, n, m, f     int
+	plan            Plan
+	priority        []int
+	shardCount      state.Key
+	shards          map[state.Key]*shard
+	pool            *shardPool
+	shardGeneration uint64
+	turnDepth       int
+	touched         map[state.Key]bool
+	retiredSlots    []*slotState
+	completed       map[int32]*completedSequences
+
 	active              map[slotID]*slotState
 	retryQueue          []retryItem
 	retryHead           int
@@ -107,16 +124,15 @@ type core struct {
 	activeCensuses      int
 	known               map[defs.RequestID]Record
 	commandUIDs         map[defs.RequestID]uint64
-	results             map[defs.RequestID]state.Value
-	ordered             map[defs.RequestID]bool
 	reads               map[defs.RequestID]*pendingRead
 	readQueue           []defs.RequestID
 	readHead            int
 	readsByShard        map[state.Key]map[defs.RequestID]*pendingRead
 	gaps                map[state.Key]bool
-	gapQueue            []state.Key
+	gapQueue            []shardTask
 	gapHead             int
 	out                 []envelope
+	clientPlanSent      uint64 // fingerprint piggybacked once per FIFO client stream
 	now, lastBeat       time.Duration
 	heard               []time.Duration
 	failed              []bool
@@ -129,21 +145,37 @@ type core struct {
 	reply               func(defs.RequestID, state.Value) bool
 	stats               Stats
 	localWrites         map[defs.RequestID]writeArrival
-	pendingShards       []state.Key
+	pendingShards       []shardTask
 	pendingHead         int
 	future              map[state.Key][]message
 	payloadWaiting      map[payloadWaitKey]*payloadWait
 	payloadDependencies map[payloadObject]map[payloadWaitKey]bool
 	payloadReady        []payloadObject
-	payloadRotation     []*payloadWait
-	payloadHead         int
-	payloadRetry        time.Duration
 	payloadDraining     bool
-	payloadSeen         map[payloadEdgeID]bool
+	payloadSeen         map[payloadObject]map[payloadEdgeID]bool
+	payloadByShard      map[state.Key]map[payloadWaitKey]*payloadWait
 	repairHandoffs      map[payloadObject]uint64 // key/Single UID -> reliable-stream destinations
+	checkpoints         map[state.Key]*shardCheckpoint
+	snapshotInputs      map[state.Key]*snapshotInput
+	snapshotSequence    uint64
+	checkpointRequests  map[state.Key]*checkpointRequest
+	checkpointQueue     []*checkpointRequest
+	checkpointHead      int
+	checkpointActive    int
+	checkpointDonors    [64]checkpointDonor
+	snapshotOutputs     map[snapshotTarget]*snapshotOutput
+	snapshotQueue       []*snapshotOutput
+	snapshotHead        int
+	snapshotActive      int
+	snapshotBytes       int
+	resultWaiters       map[defs.RequestID]state.Key
+	resultByShard       map[state.Key]map[defs.RequestID]bool
+	resultQueue         []defs.RequestID
+	resultHead          int
+	checkpointProbes    map[state.Key]time.Duration
 }
 
-func newCore(id int, plan Plan, failure time.Duration, shardCount int) *core {
+func newCore(id int, plan Plan, failure time.Duration, shardCount, keyCount int) *core {
 	if shardCount < 0 {
 		panic("KCensus shard count must not be negative")
 	}
@@ -155,22 +187,20 @@ func newCore(id int, plan Plan, failure time.Duration, shardCount int) *core {
 	if len(plan.Graphs) != m {
 		panic("KCensus requires a synthesized propagation graph")
 	}
-	if id < 0 || id >= m {
+	if id < 0 || id >= n {
 		panic("invalid replica ID")
 	}
 	if failure <= 0 {
 		failure = 1500 * time.Millisecond
 	}
-	return &core{shardCount: state.Key(shardCount), id: id, n: n, m: m, f: n / 2, plan: plan, priority: plan.leaderPriority(), shards: make(map[state.Key]*shard), active: make(map[slotID]*slotState), known: make(map[defs.RequestID]Record), commandUIDs: make(map[defs.RequestID]uint64), results: make(map[defs.RequestID]state.Value), ordered: make(map[defs.RequestID]bool), reads: make(map[defs.RequestID]*pendingRead), readsByShard: make(map[state.Key]map[defs.RequestID]*pendingRead), gaps: make(map[state.Key]bool), heard: make([]time.Duration, m), failure: failure, retry: failure / 3, localWrites: make(map[defs.RequestID]writeArrival), future: make(map[state.Key][]message)}
-}
-
-func (c *core) shard(k state.Key) *shard {
-	s := c.shards[k]
-	if s == nil {
-		s = &shard{objects: make(map[uint64]*Value), nextUID: uint64(2 * c.id), slots: make(map[uint64]*slotState), queued: make(map[defs.RequestID]bool), shared: make(map[defs.RequestID]bool)}
-		c.shards[k] = s
+	logicalShards := keyCount
+	if shardCount > 0 {
+		logicalShards = shardCount
 	}
-	return s
+	pool := newShardPool(logicalShards, id)
+	c := &core{shardCount: state.Key(shardCount), id: id, n: n, m: m, f: n / 2, plan: plan, priority: plan.leaderPriority(), shards: make(map[state.Key]*shard, pool.initialSize), pool: pool, active: make(map[slotID]*slotState), known: make(map[defs.RequestID]Record), commandUIDs: make(map[defs.RequestID]uint64), touched: make(map[state.Key]bool), completed: make(map[int32]*completedSequences), reads: make(map[defs.RequestID]*pendingRead), readsByShard: make(map[state.Key]map[defs.RequestID]*pendingRead), gaps: make(map[state.Key]bool), heard: make([]time.Duration, n), failure: failure, retry: failure / 3, localWrites: make(map[defs.RequestID]writeArrival), future: make(map[state.Key][]message)}
+	c.stats.ShardsAllocated = uint64(pool.initialSize)
+	return c
 }
 
 func (c *core) slot(k state.Key, i uint64) *slotState {
@@ -186,10 +216,14 @@ func (c *core) slot(k state.Key, i uint64) *slotState {
 	}
 	x := s.slots[i]
 	if x == nil {
-		x = &slotState{knowledge: make([]replicaset.Set, c.m), created: c.now, nextRetry: c.now + c.retry, retryDelay: c.retry}
+		x = &slotState{created: c.now, nextRetry: c.now + c.retry, retryDelay: c.retry}
+		x.knowledge = make([]replicaset.Set, c.m)
 		s.slots[i] = x
+		if len(s.slots) > s.peakSlots {
+			s.peakSlots = len(s.slots)
+		}
 		c.active[slotID{k, i}] = x
-		c.retryQueue = append(c.retryQueue, retryItem{slotID{k, i}, x, s})
+		c.retryQueue = append(c.retryQueue, retryItem{slotID{k, i}, x, s, s.generation})
 	}
 	return x
 }
@@ -204,6 +238,13 @@ func (c *core) sendShared(to int, m message, encoded *[]byte) {
 
 func (c *core) emit(e envelope) {
 	e.Message.From = c.id
+	c.attachLastValue(&e.Message)
+	if e.Count == 0 && e.To >= c.n && e.To < c.m && c.clientPlanSent&(uint64(1)<<e.To) == 0 {
+		e.Message.Digest = c.plan.Digest
+		// A broadcast's other recipients may reuse the ordinary wire image.
+		e.Encoded = nil
+		c.clientPlanSent |= uint64(1) << e.To
+	}
 	count := e.Count
 	if count == 0 {
 		count = 1
@@ -221,34 +262,29 @@ func (c *core) broadcast(m message) {
 	c.emit(envelope{Count: c.n, Message: m})
 }
 
-func (c *core) broadcastAll(m message) {
-	c.emit(envelope{Count: c.m, Message: m})
-}
-
+// Only the deciding process emits Commit. Like upstream Commit {slot, v},
+// it carries the chosen UID, never a second copy of the command payload.
 func (c *core) broadcastCommit(m message) {
-	var encoded, fullEncoded []byte
-	full := m
-	if m.Ballot != 0 {
-		full = c.valuePayload(m)
+	if m.Value == nil {
+		return
 	}
+	uid, proposer := m.Value.UID, m.Value.Proposer
+	m = message{Kind: commit, Shard: m.Shard, Slot: m.Slot, References: true,
+		Value: &Value{UID: uid, Proposer: proposer, Reference: true}}
+	var encoded []byte
 	send := func(to int) {
-		packet := m
-		image := &encoded
-		if to >= c.n {
-			packet = full
-			image = &fullEncoded
+		if to != c.id {
+			c.sendShared(to, m, &encoded)
 		}
-		c.sendShared(to, packet, image)
 	}
-	// Native prioritizes a Single's requester on commit dissemination.
 	first := -1
-	if m.Value != nil && m.Value.UID&1 == 0 {
-		first = int((m.Value.UID >> 1) % uint64(c.m))
+	if uid&1 == 0 {
+		first = int((uid >> 1) % uint64(c.m))
 		send(first)
 	}
-	for i := 0; i < c.m; i++ {
-		if i != first {
-			send(i)
+	for id := 0; id < c.m; id++ {
+		if id != first {
+			send(id)
 		}
 	}
 }
@@ -265,20 +301,19 @@ func (c *core) remember(r Record) {
 }
 
 func (c *core) submit(r Record) error {
+	c.beginTurn()
+	defer c.endTurn()
 	if err := commandPolicy.Validate(r.Command); err != nil {
 		return err
 	}
-	c.remember(r)
-	k := c.shardFor(r.Command.K)
-	if v, ok := c.results[r.ID]; ok {
-		c.complete(r.ID, v)
+	if c.requestCompleted(r.ID) {
 		return nil
 	}
+	c.remember(r)
+	k := c.shardFor(r.Command.K)
 	if r.Command.Op == state.GET {
-		if c.id >= c.n {
-			return fmt.Errorf("non-voting GET requires a delegate")
-		}
 		if c.reads[r.ID] == nil {
+			c.shard(k)
 			q := &pendingRead{record: r, started: c.now, lastSend: c.now, fences: make(map[int]uint64)}
 			c.reads[r.ID] = q
 			c.readQueue = append(c.readQueue, r.ID)
@@ -308,7 +343,7 @@ func (c *core) submit(r Record) error {
 func (c *core) propose(k state.Key) {
 	s := c.shard(k)
 	for len(s.pending) > 0 {
-		if !c.ordered[s.pending[0]] {
+		if s.queued[s.pending[0]] {
 			break
 		}
 		delete(s.queued, s.pending[0])
@@ -334,14 +369,14 @@ func (c *core) propose(k state.Key) {
 	isShared := true
 	// Only the selected reproposer may propose shared backlog. Avoid sorting
 	// that backlog at every non-owner before making this same scheduling check.
-	if len(s.shared) > 0 && c.reproposer() != c.id {
+	if len(s.shared) > 0 && c.coordinator() != c.id {
 		c.stats.SharedProposalDeferrals++
 		return
 	}
 	shared := c.pendingRecords(k, &isShared)
 	var v *Value
 	if len(shared) > 0 {
-		if c.reproposer() != c.id {
+		if c.coordinator() != c.id {
 			return
 		}
 		v = c.makePendingValue(k, shared)
@@ -403,6 +438,11 @@ func (c *core) canCommit(x *slotState) bool {
 }
 
 func (c *core) learn(k state.Key, i uint64, v *Value) {
+	c.beginTurn()
+	defer c.endTurn()
+	if i <= c.executed(k) {
+		return
+	}
 	x := c.slot(k, i)
 	if x.decided != nil {
 		if !sameValue(x.decided, v) {
@@ -437,6 +477,7 @@ func (c *core) learn(k state.Key, i uint64, v *Value) {
 	for _, r := range v.Records {
 		c.remember(r)
 	}
+
 	c.apply(k)
 }
 
@@ -445,8 +486,13 @@ func (c *core) receive(m message) {
 }
 
 func (c *core) receiveMessage(m message, replayed bool) {
+	c.beginTurn()
+	defer c.endTurn()
 	if m.From < 0 || m.From >= c.m {
 		return
+	}
+	if m.Kind == payloadQuery || m.Kind == payloadReply {
+		return // Reserved legacy RPCs; all prefix repair uses Fetch/checkpoints.
 	}
 	if m.Kind == heartbeat {
 		c.receiveHeartbeat(m)
@@ -456,26 +502,44 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		return
 	}
 	if m.Kind == delegateRead {
-		if c.id >= c.n || m.From < c.n || m.Request == nil || m.Request.ID.Client != int32(m.From) || m.Request.Command.Op != state.GET || c.shardFor(m.Request.Command.K) != m.Shard {
-			return
-		}
-		if err := c.submit(*m.Request); err != nil {
-			panic(err)
-		}
+		c.receiveDelegatedRead(m)
 		return
 	}
 	if m.Kind == resultQuery {
-		if c.id >= c.n || m.ID.Client != int32(m.From) {
-			return
-		}
-		if v, ok := c.results[m.ID]; ok {
-			c.send(m.From, message{Kind: executedResult, Shard: m.Shard, ID: m.ID, Result: v})
-		}
+		c.receiveResultQuery(m)
 		return
 	}
+	if m.Kind == snapshotPart {
+		c.receiveSnapshot(m)
+		return
+	}
+	if m.Kind == checkpointStatus {
+		c.receiveCheckpointStatus(m)
+		return
+	}
+	if m.Kind == checkpointAck {
+		c.receiveCheckpointAck(m)
+		return
+	}
+	// An executed result alone is never a vote or protocol-prefix evidence.
 	if m.Kind == executedResult {
 		return
 	}
+	// These requests must reach the checkpoint before retired-slot filtering.
+	if m.Kind == fetch && m.From < c.n {
+		if m.Ballot == 0 || m.From == c.id {
+			return
+		}
+		if m.Slot > 0 && m.Slot <= c.executed(m.Shard) {
+			c.queueSnapshot(m)
+			return
+		}
+		c.send(m.From, message{Kind: checkpointStatus, Shard: m.Shard, Slot: c.executed(m.Shard), Ballot: m.Ballot})
+		if m.Explicit { // Result recovery probes do not invent empty instances.
+			return
+		}
+	}
+
 	if m.Kind == readReply && m.Value == nil && m.Fast == nil && len(m.Values) == 0 && len(m.Reports) == 0 && len(m.Knowledge) == 0 && len(m.UIDs) == 0 {
 		q := c.reads[m.ID]
 		if q == nil || c.shardFor(q.record.Command.K) != m.Shard {
@@ -486,33 +550,28 @@ func (c *core) receiveMessage(m message, replayed bool) {
 			return
 		}
 	}
-	// A learned old Commit needs neither its payload nor another slot transition.
-	if m.Kind == commit && m.Slot > 0 && m.Slot <= c.executed(m.Shard) {
+	if m.From < c.n && m.Slot > 0 && m.Slot <= c.executed(m.Shard) &&
+		(m.Kind == prepare || m.Kind == accept) {
+		// A lagging coordinator may be waiting for promises, not issuing Fetch.
+		c.hintCheckpoint(m.From, m.Shard)
 		return
 	}
-	if m.Slot > 0 && m.Slot <= c.executed(m.Shard) && (m.Kind == promise || m.Kind == accepted || m.Kind == nack) {
+	// Retired evidence is filtered before reference resolution or slot allocation.
+	if m.Slot > 0 && m.Slot <= c.executed(m.Shard) {
+		if (m.Kind == spread || m.Kind == offer) && m.Value != nil && !m.Value.Reference {
+			c.receiveLatePayload(m)
+		}
 		c.stats.RetiredRecoveryReplies++
 		return
 	}
-	if m.Kind == payloadQuery {
-		c.answerPayload(m)
+	c.checkLastValue(m)
+	if m.Kind == offer && c.valueCompleted(m.Value) {
 		return
 	}
-	if m.Kind == payloadReply {
-		for _, v := range m.Values {
-			if err := c.storeValue(m.Shard, v); err != nil {
-				panic(err)
-			}
-			resolved, ready := c.materialize(m.Shard, v)
-			if ready {
-				c.enqueueValue(resolved)
-			}
-		}
-		c.stats.PayloadRepairs++
-		c.drainPayload()
-		c.propose(m.Shard)
+	if m.Value != nil && m.Value.Batch != nil && m.Value.Batch.Slot <= c.executed(m.Shard) {
 		return
 	}
+
 	if m.Kind == prepare || m.Kind == promise || m.Kind == accept || m.Kind == commit {
 		for _, v := range m.Values {
 			if v == nil || v.Batch != nil || v.Reference {
@@ -534,9 +593,6 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		}
 	}
 	if m.Kind == readQuery {
-		if c.id >= c.n {
-			return
-		}
 		reply := message{Kind: readReply, Shard: m.Shard, ID: m.ID}
 		reply.High = c.readFence(m.Shard)
 		c.send(m.From, reply)
@@ -549,13 +605,6 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		q := c.reads[m.ID]
 		if q == nil || c.shardFor(q.record.Command.K) != m.Shard {
 			return
-		}
-		if m.Value != nil && m.Slot > 0 && c.validValue(m.Shard, m.Value, false) {
-			c.learn(m.Shard, m.Slot, m.Value)
-			q = c.reads[m.ID]
-			if q == nil {
-				return
-			}
 		}
 		// The first response from a voter describes that read's observation.
 		// Retransmissions cannot raise its fence or count it a second time.
@@ -611,17 +660,9 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		return
 	}
 	if x.decided != nil {
-		if m.Kind == spread && m.Value != nil {
-			c.relayPayload(m)
-		}
-		if m.Kind == fetch || m.Kind == prepare || m.Kind == accept || m.Kind == spread {
-			// Prefix catch-up must not depend on the bounded UID cache repair
-			// timer when a survivor never received the original phase-2 body.
-			c.send(m.From, c.valuePayload(message{Kind: commit, Shard: m.Shard, Slot: m.Slot, Value: x.decided}))
-		}
-		c.propose(m.Shard)
 		return
 	}
+
 	switch m.Kind {
 	case resumeCensus:
 		c.completeCensus(m.Shard, m.Slot, x)
@@ -631,7 +672,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		x.participants |= m.Mask & ((uint64(1) << c.m) - 1)
 		c.freezeConflict(m.Shard, m.Slot, x)
 	case prepare:
-		if c.id >= c.n || m.From >= c.n {
+		if m.From >= c.n {
 			return
 		}
 		if m.Ballot == 0 || int(m.Ballot%uint64(c.n)) != m.From {
@@ -643,10 +684,8 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		}
 		x.promised = m.Ballot
 		c.freezeFor(x, m.Ballot)
-		x.followedBallot = m.Ballot
 		if !x.conflictAnnounced {
 			x.conflictAnnounced = true
-			x.announcedParticipants = x.participants
 			c.broadcast(message{Kind: abandon, Shard: m.Shard, Slot: m.Slot, Mask: x.participants})
 		}
 		r := x.nodeReports[c.id]
@@ -656,7 +695,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		}
 		c.send(m.From, c.valuePayload(message{Kind: promise, Shard: m.Shard, Slot: m.Slot, Ballot: m.Ballot, AcceptedBallot: x.acceptedBallot, Value: x.classic, Fast: fast, Mask: r.Mask, StateTime: r.Time}))
 	case promise:
-		if c.id >= c.n || m.From >= c.n {
+		if m.From >= c.n {
 			return
 		}
 		c.cachePromise(x, m)
@@ -672,7 +711,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		x.reports[m.From] = m
 		c.completeCensus(m.Shard, m.Slot, x)
 	case accept:
-		if c.id >= c.n || m.From >= c.n {
+		if m.From >= c.n {
 			return
 		}
 		if m.Value == nil || m.Ballot == 0 || int(m.Ballot%uint64(c.n)) != m.From {
@@ -688,7 +727,6 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		x.frozen = true
 		x.promised = m.Ballot
 		x.acceptedBallot = m.Ballot
-		x.followedBallot = m.Ballot
 		x.classic = m.Value
 		c.freezeFor(x, m.Ballot)
 		for _, r := range m.Value.Records {
@@ -696,7 +734,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		}
 		c.send(m.From, message{Kind: accepted, Shard: m.Shard, Slot: m.Slot, Ballot: m.Ballot})
 	case accepted:
-		if c.id >= c.n || m.From >= c.n {
+		if m.From >= c.n {
 			return
 		}
 		if x.phase != 2 || m.Ballot != x.ballot || x.promised > x.ballot || (m.Value != nil && !sameValue(x.selected, m.Value)) {
@@ -707,7 +745,7 @@ func (c *core) receiveMessage(m message, replayed bool) {
 		if bits.OnesCount64(x.acks) >= c.n-c.f {
 			c.stats.FallbackCommits++
 			v := x.selected
-			c.broadcastCommit(message{Kind: commit, Shard: m.Shard, Slot: m.Slot, Ballot: x.ballot, Value: v, References: true})
+			c.broadcastCommit(message{Kind: commit, Shard: m.Shard, Slot: m.Slot, Value: v})
 			c.learn(m.Shard, m.Slot, v)
 		}
 	case nack:
@@ -723,18 +761,21 @@ func (c *core) receiveMessage(m message, replayed bool) {
 }
 
 func (c *core) tick(now time.Duration) {
+	c.beginTurn()
+	defer c.endTurn()
 	c.now = now
 	c.heard[c.id] = now
 	if now-c.lastBeat >= c.retry {
 		c.probeSequence++
 		c.probes[c.probeSequence%uint64(len(c.probes))] = heartbeatProbe{c.probeSequence, now}
-		c.broadcastAll(message{Kind: heartbeat, Digest: c.plan.Digest, High: c.probeSequence})
+		probe := message{Kind: heartbeat, Digest: c.plan.Digest, High: c.probeSequence}
+		c.broadcast(probe)
 		c.lastBeat = now
 	}
 	c.retryBudget = 256
 	c.retryPending()
-	c.retryPayload()
 	coord := c.coordinator()
+	c.retryResultWaiters()
 	// Round-robin bounded traversal: large backlogs cannot monopolize the loop
 	// or starve slots behind the budget. Retired slots leave the rotation.
 	remaining := len(c.retryQueue) - c.retryHead
@@ -746,16 +787,10 @@ func (c *core) tick(now time.Duration) {
 		c.retryQueue[c.retryHead] = retryItem{}
 		c.retryHead++
 		id, x := item.id, item.instance
-		if x.decided != nil {
+		if c.active[id] != x || c.shards[id.shard] != item.owner || item.owner.generation != item.generation {
 			continue
 		}
 		c.retryQueue = append(c.retryQueue, item)
-		// Non-voters retain/repair their input and query execution results;
-		// voter recovery broadcasts each learned slot back to every participant.
-		// They do not run a second global per-shard Fetch workload.
-		if c.id >= c.n {
-			continue
-		}
 		if now < x.nextRetry {
 			continue
 		}
@@ -780,7 +815,7 @@ func (c *core) tick(now time.Duration) {
 				c.sendMissingAccept(id.shard, id.slot, x)
 			}
 		} else {
-			c.fetchPrefix(id.shard, id.slot, x, coord, false)
+			c.fetchPrefix(id.shard, id.slot, x, false)
 		}
 	}
 	if c.retryHead > 4096 && c.retryHead*2 >= len(c.retryQueue) {
@@ -820,29 +855,32 @@ func (c *core) tick(now time.Duration) {
 		c.readHead = 0
 	}
 	// A decided suffix can arrive before its prefix even without a local read.
-	if c.id < c.n {
-		gapCount := len(c.gapQueue) - c.gapHead
-		if gapCount > 256 {
-			gapCount = 256
+	gapCount := len(c.gapQueue) - c.gapHead
+	if gapCount > 256 {
+		gapCount = 256
+	}
+	for ; gapCount > 0; gapCount-- {
+		task := c.gapQueue[c.gapHead]
+		k := task.key
+		c.gapHead++
+		s := c.shards[k]
+		if s == nil || s.generation != task.generation {
+			continue
 		}
-		for ; gapCount > 0; gapCount-- {
-			k := c.gapQueue[c.gapHead]
-			c.gapHead++
-			s := c.shards[k]
-			if !c.gaps[k] {
-				s.gapScheduled = false
-				continue
-			}
-			c.gapQueue = append(c.gapQueue, k)
-			c.stats.GapTimerVisits++
-			if s.executed < s.high {
-				c.repairPrefix(k, s.high, false)
-			}
+		if !c.gaps[k] {
+			s.gapScheduled = false
+			continue
 		}
-		if c.gapHead > 4096 && c.gapHead*2 >= len(c.gapQueue) {
-			copy(c.gapQueue, c.gapQueue[c.gapHead:])
-			c.gapQueue = c.gapQueue[:len(c.gapQueue)-c.gapHead]
-			c.gapHead = 0
+		c.gapQueue = append(c.gapQueue, task)
+		c.stats.GapTimerVisits++
+		if s.executed < s.high {
+			c.repairPrefix(k, s.high, false)
 		}
 	}
+	if c.gapHead > 4096 && c.gapHead*2 >= len(c.gapQueue) {
+		copy(c.gapQueue, c.gapQueue[c.gapHead:])
+		c.gapQueue = c.gapQueue[:len(c.gapQueue)-c.gapHead]
+		c.gapHead = 0
+	}
+	c.tickCheckpoints()
 }

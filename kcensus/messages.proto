@@ -56,6 +56,7 @@ message Message {
   repeated Value values = 21 [(gogoproto.customname) = "Values", (gogoproto.jsontag) = "Values"];
   optional Record request = 22 [(gogoproto.customname) = "Request", (gogoproto.jsontag) = "Request"];
   optional bytes result = 23 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Value", (gogoproto.customname) = "Result", (gogoproto.jsontag) = "Result"];
+  optional uint64 last_v = 24 [(gogoproto.customname) = "LastV", (gogoproto.jsontag) = "LastV,omitempty"];
 }
 
 message NodeReport {

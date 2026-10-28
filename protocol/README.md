@@ -28,10 +28,60 @@ bindings on that same owner. `core` retains algorithm state and decisions.
 Paxos/CURP keep their shared EventLoop and protocolAdapter, now referencing
 Replica directly. Their core send/broadcast callbacks explicitly use EventLoop
 transport so synchronous self delivery and send-admission accounting are retained.
-The other five keep their native loops and workers. There is no new event queue,
-goroutine, timer, cancellation branch or output barrier.
-Construction checks, RPC registration order, queue policies, synchronous local
-delivery, post-turn drains and execution/reply timing remain unchanged.
+FastPaxos, EPaxos, Bodega and KCensus keep their native loops and workers.
+SwiftPaxos's protocol work now runs on its replica event-loop owner, as described
+below. Construction checks, RPC registration order and network receive queues are
+unchanged. Swift's local scheduling and ACK flush boundaries change with this
+serialization; the other baselines' scheduling is unchanged.
+
+### SwiftPaxos serial protocol work
+
+The owner handles proposals and decoded messages, descriptor advancement,
+dependency wakeups, state-machine execution, reply/history handoff and recovery.
+Descriptor and reply workers no longer run concurrently with the core. Descriptor
+and delivered indexes are ordinary maps owned by this loop. A pooled descriptor's
+generation prevents stale local tasks from acting on a later use of that object.
+
+`swift/events.go` holds a FIFO of local descriptor, reply and proposal-retry
+tasks. Each drain processes at most 256 tasks before returning to input selection;
+a coalesced `localReady` notification continues remaining work. Replies and
+descriptor retirement are deferred until their authorizing transition has
+returned. The existing proposal admission batch still takes at most 256 proposals
+that are already ready; it does not wait to fill a batch.
+
+ACK aggregation also belongs to this owner. The two ACK queues retain capacity
+16 and per-kind FIFO order. A full queue is flushed before admission, and each
+turn flushes pending ACKs. This avoids waiting for a consumer on the same loop.
+The existing mixed-ballot fallback, compact ACK representation, client SlowAck
+precedence and send targets remain in use. Batch membership and flush timing can
+change because there is no independent batcher goroutine.
+
+Recovery uses the outer event loop rather than a nested wait. While recovering,
+it gates normal proposals and ACK inputs, accepts recovery acknowledgements and
+leader/sync control, and pauses descriptor/reply tasks. Proposal retries survive
+the pause and resume after Sync. Recovery evidence selection, hash restoration,
+quorum rules and command execution conditions are unchanged. No periodic protocol
+timer was added. Network readers, connection management and the common Sender's
+socket writers remain concurrent; they do not advance Swift's core state.
+
+### KCensus per-key logs
+
+KCensus defaults to one logical shard per application key. This mode can also
+be selected explicitly in the deployment configuration:
+
+```text
+kcensusShards: 0
+```
+
+With zero (including when omitted), `Message.Shard` is the original `Command.K`,
+including zero and negative keys. Each key has independent slots, payload UIDs,
+pending batches and read fences. Shards are allocated lazily when used; zero
+selects identity mapping, not zero shards or one shared shard.
+
+The `kcensusShards` configuration remains supported. Positive values select the
+existing fixed-count modulo mapping; they are optional grouped-shard experiments,
+not the per-key mode. Every process in a deployment must use the same setting;
+positive counts remain included in the peer digest. Negative values are rejected.
 
 RPC factory registration is separate from subscribing a receive queue. CURP
 retains all eight legacy message codes and factories in their original order;
@@ -81,9 +131,11 @@ in each runtime. Read-only control/status RPCs keep their existing synchronizati
 Outputs use the existing callbacks and queues. They are not collected into a
 universal effects list and released at the end of the method. This preserves
 Paxos/CURP's reentrant local delivery, Bodega's immediate send-admission feedback,
-and SwiftPaxos's descriptor/batcher/reply workers. FastPaxos/KCensus retain their
-post-turn drains, including the original order of local outputs. No extra
-goroutine, message queue, timer, codec, or network round trip is introduced here.
+and protocol-specific send policies. SwiftPaxos drains owner-local work and ACK
+aggregation as described above; some local work can remain pending after a
+`Propose`, `Step` or `Tick` call and continue through `localReady` on the owner.
+FastPaxos/KCensus retain their post-turn drains, including the original order of
+local outputs. There is no universal output barrier or extra network round trip.
 
 The skeleton's core may return its own `effects`; its runtime adapter dispatches
 them within these same three methods. Other cores may use callbacks. The shared

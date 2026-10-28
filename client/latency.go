@@ -18,19 +18,34 @@ type latencyRun struct {
 	dir, label string
 }
 
+const (
+	latencyWarmup        = 5 * time.Second
+	latencyMeasurement   = 10 * time.Second
+	latencySustain       = 2 * time.Second
+	latencyTimeout       = 19 * time.Second
+	latencyWorkloadModel = "synchronized-ramp-fixed-sustain-v2"
+)
+
 type latencyReport struct {
+	WorkloadModel     string  `json:"workload_model"`
 	EpochNS           int64   `json:"epoch_ns"`
 	ActualStartNS     int64   `json:"actual_start_ns"`
 	MeasurementEndNS  int64   `json:"measurement_end_ns"`
 	MeasuredDoneNS    int64   `json:"measured_done_ns"`
 	LoadStopNS        int64   `json:"load_stop_ns"`
+	DrainDoneNS       int64   `json:"drain_done_ns"`
+	DeadlineNS        int64   `json:"deadline_ns"`
 	WarmupS           float64 `json:"warmup_s"`
 	RampS             float64 `json:"ramp_s"`
 	MeasurementS      float64 `json:"measurement_s"`
+	SustainS          float64 `json:"sustain_s"`
+	TimeoutS          float64 `json:"experiment_timeout_s"`
 	ArrivalRate       float64 `json:"arrival_rate"`
 	WarmupRequests    int     `json:"warmup_requests"`
 	MeasuredRequests  int     `json:"measured_requests"`
 	CompletedRequests int     `json:"completed_requests"`
+	IssuedRequests    int     `json:"issued_requests"`
+	AllCompleted      int     `json:"all_completed_requests"`
 	SustainRequests   int     `json:"sustain_requests"`
 	OfferedPerSecond  []int   `json:"offered_per_second"`
 	IssuedPerSecond   []int   `json:"issued_per_second"`
@@ -97,6 +112,8 @@ func (c *BufferClient) latencyStart() (time.Time, error) {
 	if err := latencyWrite(r.status("client-"+r.label+".ready"), map[string]interface{}{
 		"ready_ns": time.Now().UnixNano(), "arrival_rate": c.arrivalRate,
 		"warmup_s": c.warmup.Seconds(), "measurement_s": c.duration.Seconds(),
+		"sustain_s": latencySustain.Seconds(), "experiment_timeout_s": latencyTimeout.Seconds(),
+		"workload_model": latencyWorkloadModel,
 	}); err != nil {
 		return time.Time{}, err
 	}
@@ -116,25 +133,23 @@ func (c *BufferClient) latencyStart() (time.Time, error) {
 	return epoch, nil
 }
 
-func (c *BufferClient) latencyStop(done time.Time) (time.Time, error) {
+func (c *BufferClient) latencyDrain(done time.Time) error {
 	if c.latency == nil {
-		return done, nil
+		return nil
 	}
 	r := c.latency
-	if err := latencyWrite(r.status("client-"+r.label+".measured"), map[string]int64{"done_ns": done.UnixNano()}); err != nil {
-		return time.Time{}, err
+	if err := latencyWrite(r.status("client-"+r.label+".drained"), map[string]int64{"done_ns": done.UnixNano()}); err != nil {
+		return err
 	}
-	epoch, err := r.waitEpoch("load-stop-unix-ns")
+	// Keep every client's streams alive until all generators have drained.
+	epoch, err := r.waitEpoch("drain-complete-unix-ns")
 	if err != nil {
-		return time.Time{}, err
+		return err
 	}
-	if epoch.Before(done) || time.Since(epoch) > 100*time.Millisecond {
-		return time.Time{}, fmt.Errorf("invalid or late shared load-stop epoch")
+	if epoch.Before(done) {
+		return fmt.Errorf("shared drain completed before this client")
 	}
-	if delay := time.Until(epoch); delay > 0 {
-		time.Sleep(delay)
-	}
-	return epoch, nil
+	return nil
 }
 
 func (c *BufferClient) writeLatencyReport(report latencyReport) error {
@@ -142,24 +157,6 @@ func (c *BufferClient) writeLatencyReport(report latencyReport) error {
 		return nil
 	}
 	return latencyWrite(filepath.Join(c.latency.dir, "results", c.latency.label+"-workload.json"), report)
-}
-
-func waitArrival(at time.Time, stop <-chan struct{}) bool {
-	select {
-	case <-stop:
-		return false
-	default:
-	}
-	if delay := time.Until(at); delay > 0 {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-stop:
-			return false
-		case <-timer.C:
-		}
-	}
-	return true
 }
 
 func countArrival(buckets []int, epoch, at time.Time) []int {
@@ -177,9 +174,11 @@ func countArrival(buckets []int, epoch, at time.Time) []int {
 type requestTiming struct {
 	plannedAt, sentAt time.Time
 	write             bool
+	measured          bool
 }
 
 func (c *BufferClient) loopOpen(getKey func() int64) {
+	c.warmup, c.duration = latencyWarmup, latencyMeasurement
 	c.Printf("Workload seed %d\n", c.workloadSeed)
 	c.Printf("Open-loop Poisson arrival rate %v requests/second\n", c.arrivalRate)
 	c.Printf("Warm-up %v, measurement duration %v\n", c.warmup, c.duration)
@@ -194,14 +193,14 @@ func (c *BufferClient) loopOpen(getKey func() int64) {
 
 	requests := make(chan scheduledRequest, 1024)
 	stopReplies := make(chan struct{})
-	stopArrivals := make(chan struct{})
 	measurementEnqueued := make(chan struct{})
-	var senders, replies, receiver sync.WaitGroup
+	measurementFinished := make(chan struct{})
+	var senders, replies, allReplies, receiver sync.WaitGroup
 	var timings sync.Map
-	var start, measuredDone, loadStop time.Time
-	var stopErr error
+	var start, measuredDone time.Time
 	var offered, issued []int
 	measuredRequests, warmupRequests, sustainRequests, completedRequests := 0, 0, 0, 0
+	issuedRequests, allCompleted := 0, 0
 	var queueSum, queueMax float64
 
 	receiver.Add(1)
@@ -212,9 +211,14 @@ func (c *BufferClient) loopOpen(getKey func() int64) {
 			case reply := <-c.Reply:
 				value, exists := timings.LoadAndDelete(reply.Seqnum)
 				if !exists {
-					continue // Warmup/background and duplicate replies are unmeasured.
+					continue // Bootstrap and duplicate replies are not outstanding work.
 				}
 				timing := value.(requestTiming)
+				allCompleted++
+				if !timing.measured {
+					allReplies.Done()
+					continue
+				}
 				milliseconds := float64(reply.Time.Sub(timing.plannedAt)) / float64(time.Millisecond)
 				queueMS := float64(timing.sentAt.Sub(timing.plannedAt)) / float64(time.Millisecond)
 				queueSum += queueMS
@@ -229,6 +233,7 @@ func (c *BufferClient) loopOpen(getKey func() int64) {
 				}
 				c.Printf("latency %s %v\n", operation, milliseconds)
 				replies.Done()
+				allReplies.Done()
 			case <-stopReplies:
 				return
 			}
@@ -238,19 +243,13 @@ func (c *BufferClient) loopOpen(getKey func() int64) {
 	go func() {
 		defer senders.Done()
 		for request := range requests {
-			select {
-			case <-stopArrivals:
-				return // Only background requests remain after all measured replies.
-			default:
-			}
 			sentAt := time.Now()
 			if c.throughput != nil {
 				c.throughput.issue(sentAt)
 			}
 			issued = countArrival(issued, start, sentAt)
-			if request.measured {
-				timings.Store(int(c.seqnum+1), requestTiming{request.plannedAt, sentAt, request.write})
-			}
+			issuedRequests++
+			timings.Store(int(c.seqnum+1), requestTiming{request.plannedAt, sentAt, request.write, request.measured})
 			c.sendScheduledRequest(request)
 		}
 	}()
@@ -265,19 +264,23 @@ func (c *BufferClient) loopOpen(getKey func() int64) {
 	}
 	warmupEnd := start.Add(c.warmup)
 	measurementEnd := warmupEnd.Add(c.duration)
-	c.Printf("LATENCY_WORKLOAD_START epoch_ns=%d actual_start_ns=%d warmup_s=%g ramp_s=%g measurement_s=%g arrival_rate=%g latency_origin=scheduled_arrival\n",
-		start.UnixNano(), actualStart.UnixNano(), c.warmup.Seconds(), (c.warmup / 2).Seconds(), c.duration.Seconds(), c.arrivalRate)
+	loadStop := measurementEnd.Add(latencySustain)
+	deadline := start.Add(latencyTimeout)
+	watchdog := time.AfterFunc(time.Until(deadline), func() {
+		panic("latency experiment timed out: requests did not drain within 19s of the workload epoch")
+	})
+	defer watchdog.Stop()
+	c.Printf("LATENCY_WORKLOAD_START epoch_ns=%d actual_start_ns=%d warmup_s=%g ramp_s=%g measurement_s=%g sustain_s=2 experiment_timeout_s=19 load_stop_ns=%d arrival_rate=%g latency_origin=scheduled_arrival workload_model=%s\n",
+		start.UnixNano(), actualStart.UnixNano(), c.warmup.Seconds(), (c.warmup / 2).Seconds(), c.duration.Seconds(), loadStop.UnixNano(), c.arrivalRate, latencyWorkloadModel)
 	go func() {
 		// Wait begins only once the producer has added every measured request.
 		<-measurementEnqueued
 		replies.Wait()
 		measuredDone = time.Now()
-		loadStop, stopErr = c.latencyStop(measuredDone)
-		close(stopArrivals)
+		close(measurementFinished)
 	}()
 	arrivalClock := 0.0
 	measurementClosed := false
-arrivalLoop:
 	for {
 		// Invert integrated intensity for a linear ramp followed by constant rate.
 		// Scheduled timestamps survive scheduler lag and a full sender queue.
@@ -289,15 +292,15 @@ arrivalLoop:
 		}
 		nextArrival := start.Add(time.Duration(elapsed * float64(time.Second)))
 		if !measurementClosed && !nextArrival.Before(measurementEnd) {
-			if !waitArrival(measurementEnd, stopArrivals) {
-				break
-			}
+			time.Sleep(time.Until(measurementEnd))
 			close(measurementEnqueued)
 			measurementClosed = true
 		}
-		if !waitArrival(nextArrival, stopArrivals) {
+		if !nextArrival.Before(loadStop) {
+			time.Sleep(time.Until(loadStop))
 			break
 		}
+		time.Sleep(time.Until(nextArrival))
 		measured := !nextArrival.Before(warmupEnd) && nextArrival.Before(measurementEnd)
 		if measured {
 			measuredRequests++
@@ -312,37 +315,41 @@ arrivalLoop:
 			c.throughput.offer(time.Now())
 		}
 		request := scheduledRequest{key: getKey(), write: c.randomTrue(c.writes), measured: measured, plannedAt: nextArrival}
-		select {
-		case requests <- request:
-		case <-stopArrivals:
-			break arrivalLoop
-		}
+		allReplies.Add(1)
+		requests <- request
 	}
 	close(requests)
-	// The measured cohort is complete. Interrupt any blocked background write;
-	// no background reply is needed for the latency sample to be valid.
-	for _, conn := range c.servers {
-		if conn != nil {
-			_ = conn.SetWriteDeadline(time.Now())
-		}
-	}
+	// Drain every queued request, including warmup and sustain, without dropping
+	// measured arrivals that were delayed in the sender queue past second 17.
 	senders.Wait()
+	allReplies.Wait()
+	<-measurementFinished
 	close(stopReplies)
 	receiver.Wait()
-	if stopErr != nil {
-		panic(stopErr)
+	drainDone := time.Now()
+	if !drainDone.Before(deadline) {
+		panic("latency experiment exceeded its 19s deadline")
 	}
-	if measuredRequests != completedRequests {
-		panic("measured requests did not all complete")
+	watchdog.Stop()
+	if measuredRequests != completedRequests || issuedRequests != allCompleted ||
+		issuedRequests != warmupRequests+measuredRequests+sustainRequests {
+		panic("latency requests did not all drain")
 	}
 	report := latencyReport{
-		EpochNS: start.UnixNano(), ActualStartNS: actualStart.UnixNano(), MeasurementEndNS: measurementEnd.UnixNano(),
+		WorkloadModel: latencyWorkloadModel,
+		EpochNS:       start.UnixNano(), ActualStartNS: actualStart.UnixNano(), MeasurementEndNS: measurementEnd.UnixNano(),
 		MeasuredDoneNS: measuredDone.UnixNano(), LoadStopNS: loadStop.UnixNano(),
+		DrainDoneNS: drainDone.UnixNano(), DeadlineNS: deadline.UnixNano(),
 		WarmupS: c.warmup.Seconds(), RampS: (c.warmup / 2).Seconds(), MeasurementS: c.duration.Seconds(), ArrivalRate: c.arrivalRate,
+		SustainS: latencySustain.Seconds(), TimeoutS: latencyTimeout.Seconds(),
 		WarmupRequests: warmupRequests, MeasuredRequests: measuredRequests, CompletedRequests: completedRequests, SustainRequests: sustainRequests,
+		IssuedRequests: issuedRequests, AllCompleted: allCompleted,
 		OfferedPerSecond: offered, IssuedPerSecond: issued, QueueSumMS: queueSum, QueueMaxMS: queueMax,
 	}
 	if err := c.writeLatencyReport(report); err != nil {
+		panic(err)
+	}
+	if err := c.latencyDrain(drainDone); err != nil {
 		panic(err)
 	}
 	c.Printf("Warm-up requests %d\n", warmupRequests)

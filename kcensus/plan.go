@@ -72,7 +72,7 @@ func Synthesize(latency [][]time.Duration, weights []float64) (Plan, error) {
 }
 
 // Each client chooses a voting delegate jointly with all compatible requirements.
-// The objective includes the direct delegate-to-proposer executed-result delay.
+// The objective includes the deciding leader-to-proposer Commit return delay.
 func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float64) (Plan, error) {
 	m := len(latency)
 	if voters < 3 || voters > m || voters%2 != 1 || m > 63 {
@@ -105,7 +105,7 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 	if weightSum == 0 {
 		return Plan{}, fmt.Errorf("all weights zero")
 	}
-	d, _ := planningPaths(latency)
+	d, _ := planningPaths(latency, voters)
 	levels := make([][]candidate, m)
 	// heads[p] holds the first (least-knowledge) level of each of p's delegate chains.
 	heads := make([][]Requirement, m)
@@ -440,6 +440,7 @@ func SynthesizeProcesses(latency [][]time.Duration, voters int, weights []float6
 	}
 	plan := Plan{Voters: voters, Leaders: make([]int, m), Returns: make([]time.Duration, m), Requirements: make([]Requirement, m), Budgets: make([]time.Duration, m), Mean: time.Duration(bestCost / weightSum)}
 	h := sha256.New()
+	h.Write([]byte("kcensus-voter-links-v2"))
 	var b [8]byte
 	binary.LittleEndian.PutUint64(b[:], uint64(voters))
 	h.Write(b[:])

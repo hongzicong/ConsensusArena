@@ -47,6 +47,12 @@ for region in "${regions[@]}"; do
                     printf "Expected %d rows for %s/%s but found %d\n", expected, region, operation, repetitions > "/dev/stderr"
                     exit 1
                 }
+                if (samples == 0) {
+                    printf "%s,%s,%d,0", region, operation, repetitions
+                    for (column = 4; column <= 9; column++) printf ",,"
+                    printf ",NA,NA\n"
+                    exit 0
+                }
                 if (fallbackRepetitions != 0 && fallbackRepetitions != expected) {
                     printf "Expected fallback ratios for all or none of %s/%s repetitions but found %d/%d\n", region, operation, fallbackRepetitions, expected > "/dev/stderr"
                     exit 1

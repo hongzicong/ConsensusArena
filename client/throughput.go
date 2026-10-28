@@ -14,7 +14,7 @@ type throughputObserver struct {
 	mu                         sync.Mutex
 	run                        *latencyRun
 	epoch                      time.Time
-	offered, issued, completed [15]int64
+	offered, issued, completed [19]int64
 	hist                       map[int64]int64
 	done                       chan struct{}
 	wg                         sync.WaitGroup
@@ -45,7 +45,7 @@ func (o *throughputObserver) start(epoch time.Time) {
 	}()
 }
 
-func (o *throughputObserver) count(at time.Time, buckets *[15]int64) {
+func (o *throughputObserver) count(at time.Time, buckets *[19]int64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.epoch.IsZero() {
@@ -73,6 +73,7 @@ func (o *throughputObserver) snapshot(finished bool) {
 	row := map[string]interface{}{
 		"epoch_ns": o.epoch.UnixNano(), "snapshot_ns": time.Now().UnixNano(),
 		"warmup_s": 5, "measurement_s": 10, "finished": finished,
+		"sustain_s": 2, "experiment_timeout_s": 19, "workload_model": latencyWorkloadModel,
 		"offered_per_second": o.offered, "issued_per_second": o.issued,
 		"completed_per_second": o.completed, "cohort_latency_histogram_ms_ceil": hist,
 		"latency_origin": "scheduled_arrival", "completion_origin": "deduplicated_protocol_authorized_reply",

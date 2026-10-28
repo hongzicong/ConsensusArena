@@ -12,7 +12,7 @@ import (
 func (c *core) readFence(k state.Key) uint64 {
 	s := c.shards[k]
 	if s == nil {
-		return 0
+		return c.executed(k)
 	}
 	fence := s.executed
 	// Mirror upstream's current slot + get_my_v().is_some(). Metadata,
@@ -89,10 +89,30 @@ func (c *core) releaseFuture(k state.Key) {
 
 type pendingRead struct {
 	record            Record
+	delegated         bool
 	replies           uint64
 	target            uint64
 	quorum            bool
 	fences            map[int]uint64
 	waited            bool
 	started, lastSend time.Duration
+}
+
+// GET alone needs an explicit delegation request. PUT already travels through
+// its proposer/delegate graph and returns a result after ordered execution.
+func (c *core) receiveDelegatedRead(m message) {
+	if m.From < c.n || m.Request == nil || m.Slot != 0 ||
+		m.Request.ID.Client != int32(m.From) || m.ID != m.Request.ID ||
+		m.Request.Command.Op != state.GET || c.shardFor(m.Request.Command.K) != m.Shard {
+		return
+	}
+	if err := commandPolicy.Validate(m.Request.Command); err != nil {
+		return
+	}
+	if err := c.submit(*m.Request); err != nil {
+		panic(err)
+	}
+	if q := c.reads[m.ID]; q != nil {
+		q.delegated = true
+	}
 }

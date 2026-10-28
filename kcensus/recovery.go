@@ -25,6 +25,9 @@ const recoveryPipeline = 8192
 // Receipt of queued protocol traffic is not proof of current liveness. Only a
 // response to our own recent probe refreshes suspicion, at the probe's send time.
 func (c *core) receiveHeartbeat(m message) {
+	if m.From >= c.n {
+		return // Only voting replicas participate in heartbeat probes/replies.
+	}
 	if m.Digest != c.plan.Digest {
 		panic("KCensus requirement fingerprint mismatch")
 	}
@@ -83,22 +86,26 @@ func (c *core) markFailed(id int) {
 		if c.failedGraphs == nil {
 			c.failedGraphs = make([]bool, c.m)
 		}
-		for p, g := range c.plan.Graphs {
-			if c.plan.Leaders[p] == id || c.plan.Requirements[p].Quorum().Contains(id) {
-				c.failedGraphs[p] = true
-				continue
-			}
-			for edge := range g.Edges {
-				if edge.From == id || edge.To == id {
-					c.failedGraphs[p] = true
-					break
-				}
-			}
+		for p := range c.plan.Graphs {
+			c.failedGraphs[p] = c.failedGraphs[p] || graphNeedsPeer(c.plan, p, id)
 		}
 	}
 }
 
 func (c *core) graphUsable(p int) bool { return c.failedGraphs == nil || !c.failedGraphs[p] }
+
+func graphNeedsPeer(plan Plan, proposer, peer int) bool {
+	if plan.Leaders[proposer] == peer || plan.Requirements[proposer].Quorum().Contains(peer) {
+		return true
+	}
+	for edge := range plan.Graphs[proposer].Edges {
+		// Foreign clients are payload leaves, never required relay dependencies.
+		if edge.From == peer || edge.To == peer && peer < plan.Voters {
+			return true
+		}
+	}
+	return false
+}
 
 // Periodic diagnostics only; never used as protocol evidence.
 func (c *core) recoverySnapshot() string {
@@ -179,20 +186,7 @@ func (c *core) recoverySnapshot() string {
 	return string(b)
 }
 
-func (c *core) reproposer() int {
-	for _, i := range c.priority {
-		if i == c.id || c.peerEligible(i) {
-			if !c.graphUsable(i) {
-				// A failed fast graph cannot be retried by a non-voting proposer.
-				// Its retained input belongs to the live fallback coordinator.
-				return c.coordinator()
-			}
-			return i
-		}
-	}
-	return c.id
-}
-
+// The first eligible voter owns both shared-input reproposal and recovery.
 func (c *core) coordinator() int {
 	for _, i := range c.priority {
 		if i >= c.n {
@@ -206,9 +200,6 @@ func (c *core) coordinator() int {
 }
 
 func (c *core) startRecovery(k state.Key, i uint64) {
-	if c.id >= c.n {
-		return
-	}
 	x := c.slot(k, i)
 	if x.decided != nil {
 		return
@@ -217,6 +208,7 @@ func (c *core) startRecovery(k state.Key, i uint64) {
 		c.stats.RecoveryAdmissionWaits++
 		return
 	}
+	x.recoveryPayload = true
 	b := uint64(c.n + c.id)
 	if x.promised > b {
 		b = (x.promised/uint64(c.n)+1)*uint64(c.n) + uint64(c.id)
@@ -252,9 +244,35 @@ func (c *core) sendMissingPrepare(k state.Key, i uint64, x *slotState) {
 
 func (c *core) sendMissingAccept(k state.Key, i uint64, x *slotState) {
 	var encoded []byte
-	m := c.valuePayload(message{Kind: accept, Shard: k, Slot: i, Ballot: x.ballot, Value: x.selected})
-	for voter := 0; voter < c.n; voter++ {
-		if c.peerFailed(voter) || x.acks&(uint64(1)<<voter) != 0 {
+	// Upstream sends a newly-created fallback batch descriptor to every
+	// participant. An already-disseminated value needs only its UID at voters.
+	limit := c.n
+	value := &Value{UID: x.selected.UID, Proposer: x.selected.Proposer, Reference: true}
+	if x.acceptNewValue {
+		limit = c.m
+		copyValue := *x.selected
+		copyValue.Records = nil // Batch members travel on their existing value trees.
+		value = &copyValue
+	}
+	m := message{Kind: accept, Shard: k, Slot: i, Ballot: x.ballot, Value: value, References: !x.acceptNewValue}
+	repair := x.recoveryPayload
+	for _, r := range x.selected.Records {
+		repair = repair || !c.graphUsable(int(r.ID.Client))
+	}
+	if repair {
+		// A timed/faulted census cannot rely on the original value tree still
+		// delivering to all acceptors. Ordinary conflict Accepts retain their
+		// existing UID-only representation and recipients.
+		m.Value = x.selected
+		if m.Value.Batch != nil {
+			copyValue := *m.Value
+			copyValue.Records = nil // Singles are supplied by valuePayload below.
+			m.Value = &copyValue
+		}
+		m = c.valuePayload(m)
+	}
+	for voter := 0; voter < limit; voter++ {
+		if c.peerFailed(voter) || voter < c.n && x.acks&(uint64(1)<<voter) != 0 {
 			c.stats.SuppressedRecoveryRequests++
 			continue
 		}
@@ -277,7 +295,7 @@ func (c *core) beginCensus(k state.Key, i uint64, x *slotState, b uint64) {
 	x.acks = 0
 	x.prepareSent, x.acceptSent = 0, 0
 	x.selected = nil
-	x.lastSend = c.now
+	x.acceptNewValue = false
 	x.nextRetry = c.now + c.retry
 	x.retryDelay = c.retry
 	c.stats.Prepares++
@@ -316,57 +334,42 @@ func (c *core) repairPrefix(k state.Key, high uint64, waitingRead bool) {
 	}
 	if (immediate || c.now >= x.nextRetry) && c.retryBudget > 0 {
 		c.deferRetry(x)
-		if c.fetchPrefix(k, i, x, c.coordinator(), immediate) {
-			c.retryBudget--
-		}
+		c.fetchPrefix(k, i, x, immediate)
+		c.retryBudget--
 	}
 }
 
 // The deployed transport retains a frame until it is written or the stream
-// definitively fails; there is no reconnect. One Fetch makes this slot active at
-// the coordinator, which drives its own census timer and returns a full decision.
-// Repeating it while that same stream is live only creates catch-up backlog.
-// Pure transition models without established streams retain timed retries.
+// definitively fails; there is no reconnect. Prepare/Accept handoffs can use
+// that guarantee. A Fetch may need another donor after the first one fails or
+// after peers advance, so prefix requests keep the existing bounded retry timer.
 func (c *core) reliableTarget(id int) bool {
 	return c.connected != nil && !c.peerFailed(id) && (id == c.id || c.connected[id])
 }
 
-func (c *core) fetchPrefix(k state.Key, i uint64, x *slotState, target int, immediate bool) bool {
-	// This coordinator already owns the census and broadcasts its decision to
-	// every voter. A live lossless stream needs no second Fetch per follower.
-	if x.followedBallot != 0 && x.followedBallot == x.promised && int(x.followedBallot%uint64(c.n)) == target && c.reliableTarget(target) {
-		c.stats.SuppressedFetches++
-		return false
-	}
-	if x.fetchSent && x.fetchTarget == target && c.reliableTarget(target) {
-		c.stats.SuppressedFetches++
-		return false
-	}
-	x.fetchSent, x.fetchTarget = true, target
+func (c *core) fetchPrefix(k state.Key, i uint64, x *slotState, immediate bool) {
+	x.fetchSent = true
 	c.stats.Fetches++
 	if immediate {
 		c.stats.ImmediateFetches++
 	} else {
 		c.stats.DeadlineFetches++
 	}
-	c.send(target, message{Kind: fetch, Shard: k, Slot: i})
-	return true
+	// Merge this gap with existing shard catch-up. A single donor supplies an
+	// executed prefix; stalled attempts rotate without changing census quorums.
+	c.requestCheckpoint(k, i, false)
 }
 
 func (c *core) markGap(k state.Key) {
 	c.gaps[k] = true
-	if c.id >= c.n {
-		return
-	}
 	s := c.shard(k)
 	if !s.gapScheduled {
 		s.gapScheduled = true
-		c.gapQueue = append(c.gapQueue, k)
+		c.gapQueue = append(c.gapQueue, shardTask{k, s.generation})
 	}
 }
 
 func (c *core) deferRetry(x *slotState) {
-	x.lastSend = c.now
 	x.nextRetry = c.now + x.retryDelay
 	x.retryDelay *= 2
 	if x.retryDelay > 2*time.Second {
@@ -468,9 +471,6 @@ func (c *core) freezeFor(x *slotState, ballot uint64) {
 }
 
 func (c *core) saveOwnState(x *slotState) {
-	if c.id >= c.n {
-		return
-	}
 	r := nodeReport{From: c.id, Proposer: -1, Ballot: x.promised, AcceptedBallot: x.acceptedBallot}
 	if x.acceptedBallot > 0 {
 		r.Value = x.classic
@@ -588,8 +588,10 @@ func (c *core) completeCensus(k state.Key, i uint64, x *slotState) {
 		return
 	}
 	v := c.adoptGraph(x)
+	newValue := false
 	if v == nil {
 		v = c.conflictBatch(k, x)
+		newValue = v != nil && v.Batch != nil
 	}
 	if v == nil || len(v.Records) == 0 && !v.Reference {
 		return
@@ -600,7 +602,8 @@ func (c *core) completeCensus(k state.Key, i uint64, x *slotState) {
 		return
 	}
 	v = resolved
-	x.selected, x.phase, x.acks, x.lastSend = v, 2, 0, c.now
+	x.selected, x.phase, x.acks = v, 2, 0
+	x.acceptNewValue = newValue
 	c.sendMissingAccept(k, i, x)
 }
 

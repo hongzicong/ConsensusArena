@@ -42,7 +42,7 @@ func New(alias string, replicaID int, addrs []string, conf *config.Config, logge
 	plan := topology.Plan
 	logger.Printf("KCENSUS_PLAN replica=%d digest=%x processes=%v delegates=%v predicted_mean=%s budgets=%v returns=%v synthesis=%s requirements=%v", replicaID, plan.Digest, topology.Aliases, plan.Leaders, plan.Mean, plan.Budgets, plan.Returns, time.Since(start), plan.Requirements)
 	logger.Printf("KCENSUS_PRIORITY replica=%d order=%v", replicaID, plan.leaderPriority())
-	r := &Replica{topology: topology, Replica: replica.New(alias, replicaID, n/2, addrs, true, conf, logger), core: newCore(replicaID, plan, conf.KCensusFailure, conf.KCensusShards), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[defs.RequestID]*defs.GPropose), pendingReplies: make(map[defs.RequestID]replyJob)}
+	r := &Replica{topology: topology, Replica: replica.New(alias, replicaID, n/2, addrs, true, conf, logger), core: newCore(replicaID, plan, conf.KCensusFailure, conf.KCensusShards, conf.KeyCount), inbox: make(chan fastrpc.Serializable, 65536), proposals: make(map[defs.RequestID]*defs.GPropose), pendingReplies: make(map[defs.RequestID]replyJob)}
 	logger.Printf("KCENSUS_SHARDS replica=%d count=%d mapping=identity-if-zero-otherwise-modulo-v1", replicaID, conf.KCensusShards)
 	r.core.execute = func(cmd state.Command) state.Value { return cmd.Execute(r.State) }
 	r.core.reply = r.queueReply
@@ -88,6 +88,8 @@ func (r *Replica) run() {
 				r.Printf("KCENSUS_STATS replica=%d stats=%s active_slots=%d pending_reads=%d", r.ID, data, len(r.core.active), len(r.core.reads))
 				r.Printf("KCENSUS_RECOVERY replica=%d status=%s", r.ID, r.core.recoverySnapshot())
 				r.Printf("KCENSUS_RECEIVE replica=%d pending=%d", r.ID, len(r.inbox))
+				lifecycle, _ := json.Marshal(r.core.lifecycleSnapshot())
+				r.Printf("KCENSUS_LIFECYCLE replica=%d state=%s", r.ID, lifecycle)
 				lastStats = t
 			}
 		}
@@ -124,91 +126,6 @@ func (r *Replica) receive(m message, connection *fastrpc.ClientConnection) {
 		m.From = id
 	}
 	r.core.receive(m)
-}
-
-func (c *Client) run() {
-	start := time.Now()
-	c.core.connected = make([]bool, c.core.m)
-	for id := 0; id < c.core.n; id++ {
-		if c.Connection(id) != nil && !c.PeerFailed(id) {
-			c.core.markConnected(id)
-		}
-	}
-	receive := func(m message) {
-		c.core.markConnected(m.From)
-		c.core.receive(m)
-	}
-	lastStats := time.Duration(0)
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		for count := 0; count < 4*c.core.m; count++ {
-			select {
-			case m := <-c.control:
-				receive(m)
-			default:
-				count = 4 * c.core.m
-			}
-		}
-		select {
-		case m := <-c.control:
-			receive(m)
-		case <-c.stop:
-			return
-		case r := <-c.proposals:
-			if c.requests[r.ID] != nil || c.ReplyCompleted(r.ID) {
-				continue
-			}
-			delegate := c.selectedDelegate()
-			q := &clientRequest{record: r, delegate: delegate, nextQuery: c.core.now + c.core.failure, queryDelay: c.core.retry, queryPeer: delegate}
-			c.requests[r.ID] = q
-			c.queryQueue = append(c.queryQueue, r.ID)
-			if r.Command.Op == state.PUT {
-				if err := c.core.submit(r); err != nil {
-					panic(err)
-				}
-			} else if r.Command.Op == state.GET {
-				c.sendRead(q)
-			}
-		case m := <-c.inbox:
-			receive(m)
-		case m := <-c.resultInbox:
-			c.receiveResult(m)
-		case now := <-ticker.C:
-			c.peers.Failed().Range(func(id int) bool { c.core.markFailed(id); return true })
-			for id := 0; id < c.core.n; id++ {
-				if c.PeerFailed(id) {
-					c.core.markFailed(id)
-				}
-			}
-			c.core.tick(now.Sub(start))
-			if c.core.now-lastStats >= 5*time.Second {
-				data, _ := json.Marshal(c.core.stats)
-				c.Printf("KCENSUS_CLIENT_STATS pid=%d pending=%d completed=%d write_replies=%d write_reply_ns=%d graph_messages=%d payload_waits=%d graph_usable=%t stats=%s", c.core.id, len(c.requests), c.CompletedReplies(), c.core.stats.LocalWrites, c.core.stats.LocalWriteNanos, c.core.stats.GraphMessages, c.core.stats.PayloadWaits, c.core.graphUsable(c.core.id), data)
-				lastStats = c.core.now
-			}
-			c.queryResults()
-		}
-		// Drain a bounded group of already-arrived evidence before generating
-		// another timer's repairs. All protocol transitions remain serialized.
-		for count := 0; count < 64; count++ {
-			select {
-			case m := <-c.inbox:
-				receive(m)
-			default:
-				count = 64
-			}
-		}
-		for count := 0; count < 32; count++ {
-			select {
-			case m := <-c.resultInbox:
-				c.receiveResult(m)
-			default:
-				count = 32
-			}
-		}
-		c.drain()
-	}
 }
 
 var _ protocol.Machine = (*Replica)(nil)

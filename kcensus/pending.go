@@ -17,10 +17,10 @@ type writeArrival struct {
 func recordBytes(r Record) int { return 21 + len(r.Command.V) }
 
 func (c *core) enqueue(r Record, shared bool) {
-	c.remember(r)
-	if c.ordered[r.ID] {
+	if c.requestCompleted(r.ID) {
 		return
 	}
+	c.remember(r)
 	k := c.shardFor(r.Command.K)
 	s := c.shard(k)
 	if !s.queued[r.ID] {
@@ -33,7 +33,7 @@ func (c *core) enqueue(r Record, shared bool) {
 	if !s.scheduled {
 		s.scheduled = true
 		s.nextOffer = c.now + 4*c.retry
-		c.pendingShards = append(c.pendingShards, k)
+		c.pendingShards = append(c.pendingShards, shardTask{k, s.generation})
 	}
 }
 
@@ -86,11 +86,7 @@ func (c *core) pendingSingle(k state.Key) *Value {
 		if !s.queued[id] || !s.shared[id] {
 			continue
 		}
-		// Non-voters repair their own original input. Voters still retain and
-		// relay any received input, including that of a failed input owner.
-		if c.id >= c.n && id.Client != int32(c.id) {
-			continue
-		}
+		// Voters repair retained input, including a failed owner's input.
 		uid := c.commandUIDs[id]
 		if !found || uid < lowest {
 			chosen, lowest, found = id, uid, true
@@ -116,13 +112,8 @@ func (c *core) offerValue(k state.Key, v *Value, repair bool) {
 	m := message{Kind: offer, Shard: k, ID: v.Records[0].ID, Proposer: v.Proposer, Value: v}
 	if repair {
 		m.GraphTime = -1
-		// Make retained input available at the live reproposer and coordinator.
-		// Broadcasting it from every holder causes quadratic repair traffic.
-		proposer, coordinator := c.reproposer(), c.coordinator()
-		if proposer != c.id {
-			c.offerRepair(proposer, m)
-		}
-		if coordinator != proposer && coordinator != c.id {
+		// The same voting coordinator owns recovery and shared-input reproposal.
+		if coordinator := c.coordinator(); coordinator != c.id {
 			c.offerRepair(coordinator, m)
 		}
 		return
@@ -166,15 +157,20 @@ func (c *core) retryPending() {
 		count = 256
 	}
 	for ; count > 0; count-- {
-		k := c.pendingShards[c.pendingHead]
+		task := c.pendingShards[c.pendingHead]
+		k := task.key
 		c.pendingHead++
-		s := c.shard(k)
+		s := c.shards[k]
+		if s == nil || s.generation != task.generation {
+			continue
+		}
+		c.touched[k] = true
 		if len(s.queued) == 0 {
 			s.scheduled = false
 			s.pending = nil
 			continue
 		}
-		c.pendingShards = append(c.pendingShards, k)
+		c.pendingShards = append(c.pendingShards, task)
 		c.propose(k)
 		// Reserve three quarters of each tick for active-slot recovery and reads.
 		// A large payload backlog must not prevent the census that drains it.

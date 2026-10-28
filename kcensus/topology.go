@@ -10,19 +10,16 @@ import (
 	"net"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/hongzicong/ConsensusArena/config"
 )
 
-const clientPortBase = 7170
-
 type processTopology struct {
-	Plan                           Plan
-	Aliases, Identities, Listeners []string
-	Latency                        [][]time.Duration
+	Plan                Plan
+	Aliases, Identities []string
+	Latency             [][]time.Duration
 }
 
 // Replicas retain configuration order; non-voters use sorted alias/clone order.
@@ -70,21 +67,15 @@ func configuredTopology(conf *config.Config) (processTopology, error) {
 			return processTopology{}, err
 		}
 	}
-	t := processTopology{Aliases: append([]string(nil), conf.ReplicaAliases...), Identities: append([]string(nil), baseEndpoints[:n]...), Listeners: make([]string, n)}
+	t := processTopology{Aliases: append([]string(nil), conf.ReplicaAliases...), Identities: append([]string(nil), baseEndpoints[:n]...)}
 	location := make([]int, n)
 	for i := range location {
 		location[i] = i
 	}
 	for j, a := range clients {
-		host := membership.ClientEndpoint(a)
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
 		for clone := 0; clone <= conf.Clones; clone++ {
-			ordinal := j*(conf.Clones+1) + clone
 			t.Aliases = append(t.Aliases, fmt.Sprintf("%s#%d", a, clone))
 			t.Identities = append(t.Identities, membership.ClientEndpoint(a))
-			t.Listeners = append(t.Listeners, net.JoinHostPort(host, strconv.Itoa(clientPortBase+ordinal)))
 			location = append(location, n+j)
 		}
 	}
@@ -102,7 +93,7 @@ func configuredTopology(conf *config.Config) (processTopology, error) {
 		h.Write(t.Plan.Digest[:])
 		var length [8]byte
 		for i, a := range t.Aliases {
-			for _, identity := range []string{a, t.Identities[i], t.Listeners[i]} {
+			for _, identity := range []string{a, t.Identities[i]} {
 				binary.LittleEndian.PutUint64(length[:], uint64(len(identity)))
 				h.Write(length[:])
 				h.Write([]byte(identity))

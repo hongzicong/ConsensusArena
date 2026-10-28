@@ -2,6 +2,7 @@
 """Export one latency sweep in the report's explicit topology CSV format."""
 import csv
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -25,20 +26,34 @@ def export(base, cases=None):
         plan = json.loads((run/'plan.json').read_text())
         with (run/'results/summary.csv').open(newline='') as source:
             overall = [row for row in csv.DictReader(source) if row['Region']=='OVERALL' and row['Operation']=='ALL']
-        if len(overall) != 1 or int(overall[0]['Count']) <= 0:
+        if len(overall) != 1 or int(overall[0]['Count']) < 0:
             raise ValueError('missing overall latency measurement: '+str(run))
         row = overall[0]
-        synchronized = (run/'status/start-unix-ns').exists()
-        if synchronized:
-            validation = json.loads((run/'workload-validation.json').read_text())
-            if validation.get('valid') is not True or validation.get('latency_origin') != 'scheduled_arrival':
-                raise ValueError('invalid synchronized workload: '+str(run))
+        if not (run/'status/start-unix-ns').exists():
+            raise ValueError('missing fixed-sustain workload barrier: '+str(run))
+        validation = json.loads((run/'workload-validation.json').read_text())
+        if (validation.get('valid') is not True or validation.get('latency_origin') != 'scheduled_arrival' or
+                validation.get('workload_model') != 'synchronized-ramp-fixed-sustain-v2' or
+                validation.get('sustain_s') != 2 or validation.get('experiment_timeout_s') != 19 or
+                validation.get('latency_sample_policy') != 'completed_measured_requests' or
+                validation.get('throughput_valid') is not True):
+            raise ValueError('invalid fixed-sustain workload: '+str(run))
+        count = int(row['Count'])
+        if count != validation['completed_requests']:
+            raise ValueError('completed latency sample count differs from workload: '+str(run))
+        if count and any(not math.isfinite(float(row[k])) or float(row[k]) < 0 for k in ('MeanMs','P99Ms')):
+            raise ValueError('invalid completed-request latency: '+str(run))
+        if not count and (row['MeanMs'] or row['P99Ms']):
+            raise ValueError('zero replies must have missing latency: '+str(run))
         rows.append(dict(replicas=topology['replica_count'],protocol=plan['protocol'].lower(),
                          profile=run.parent.name.removeprefix('ycsb-'),topology_id=topology['topology_id'],
-                         repetition=1,status='complete',
+                         repetition=1,status=validation['status'],
                          count=row['Count'],mean_ms=row['MeanMs'],p99_ms=row['P99Ms'],
-                         workload_model='synchronized-ramp-sustain-v1' if synchronized else 'unspecified',
-                         latency_origin='scheduled_arrival' if synchronized else 'unspecified'))
+                         completed_rps=validation['completed_rps'], throughput_valid=True, latency_valid=count > 0,
+                         timed_out=validation['timed_out'], all_requests_drained=validation['all_requests_drained'],
+                         expected_measured_count=validation['measured_requests'], cohort_complete=validation['cohort_complete'],
+                         workload_model=validation['workload_model'], latency_origin='scheduled_arrival',
+                         latency_sample_policy='completed_measured_requests'))
         if 'case' in topology:
             rows[-1].update(clients=len(topology['clients']), case=topology['case'],
                             case_sha256=topology['case_sha256'])
