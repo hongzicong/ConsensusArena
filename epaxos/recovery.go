@@ -94,15 +94,16 @@ func (c *core) startRecoveryForInstance(replica int32, instance int32) {
 
 	inst.bal = lb.lastTriedBallot
 	preply := &PrepareReply{
-		c.id,
-		replica,
-		instance,
-		inst.bal,
-		inst.vbal,
-		inst.Status,
-		inst.Cmds,
-		inst.Seq,
-		inst.Deps}
+		AcceptorId: c.id,
+		Replica:    replica,
+		Instance:   instance,
+		Ballot:     inst.bal,
+		VBallot:    inst.vbal,
+		Status:     inst.Status,
+		Command:    inst.Cmds,
+		Seq:        inst.Seq,
+		Deps:       inst.Deps,
+	}
 
 	lb.prepareVoters.Add(int(c.id))
 	lb.prepareReplies = append(lb.prepareReplies, preply)
@@ -132,15 +133,16 @@ func (c *core) handlePrepare(prepare *Prepare) {
 	}
 
 	preply = &PrepareReply{
-		c.id,
-		prepare.Replica,
-		prepare.Instance,
-		inst.bal,
-		inst.vbal,
-		inst.Status,
-		inst.Cmds,
-		inst.Seq,
-		inst.Deps}
+		AcceptorId: c.id,
+		Replica:    prepare.Replica,
+		Instance:   prepare.Instance,
+		Ballot:     inst.bal,
+		VBallot:    inst.vbal,
+		Status:     inst.Status,
+		Command:    inst.Cmds,
+		Seq:        inst.Seq,
+		Deps:       inst.Deps,
+	}
 	c.send(prepare.LeaderId, c.prepareReplyRPC, preply)
 }
 
