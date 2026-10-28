@@ -1,0 +1,5 @@
+{
+  "roots": [{"type": "Message", "limit": 67108864, "validate": "validateMessage", "project": "wireFields"}],
+  "local_names": {"message": "Message", "entry": "Entry", "request": "Request", "roster": "Roster", "coldScanRef": "ColdScanRef"},
+  "aliases": {"kind": "uint8"}
+}

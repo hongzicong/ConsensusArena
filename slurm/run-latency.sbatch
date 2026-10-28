@@ -246,7 +246,7 @@ run_scale() {
     fi
     if [[ -n "${CONSENSUSARENA_PROTOCOL:-}" ]]; then
         case "${CONSENSUSARENA_PROTOCOL,,}" in
-            swiftpaxos|curp|fastpaxos|paxos|epaxos|bodega|kcensus|pql) ;;
+            swiftpaxos|curp|fastpaxos|paxos|epaxos|bodega|kcensus|pql|agreement) ;;
             *) echo "Unsupported protocol: $CONSENSUSARENA_PROTOCOL" >&2; exit 1 ;;
         esac
         awk -v protocol="$CONSENSUSARENA_PROTOCOL" \

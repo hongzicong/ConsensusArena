@@ -40,6 +40,10 @@ type File struct {
 type Profile struct {
 	File   File
 	SHA256 string
+	// Optional derived tables used by Agreement. Unobserved raw keys have rank
+	// -1; probabilities are indexed by empirical rank and padded with zeros.
+	Ranks         []int32
+	Probabilities []float64
 }
 
 func CanonicalKeys(keys []KeyCount) {

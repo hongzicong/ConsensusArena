@@ -24,6 +24,7 @@ or pass `-protocol` to select one of the registered implementations.
 | `EPaxos` | Corrected EPaxos implementation. |
 | `Bodega` | Roster leases for local reads; see the [Bodega implementation notes](docs/bodega.md). |
 | `KCensus` | KCensus prototype in [kcensus/](kcensus/). |
+| `PQL` | Paxos Quorum Leases with sampled per-key majority holder sets; see [pql/](pql/). |
 
 ## Requirements
 
@@ -35,7 +36,7 @@ or pass `-protocol` to select one of the registered implementations.
 The Linux cross-build uses `CGO_ENABLED=0` and produces a standalone executable;
 no container runtime is required.
 
-All seven protocols directly use Protobuf-generated message types and the shared data-plane framing. 
+All protocols directly use Protobuf-generated message types and the shared data-plane framing.
 See [wireproto/README.md](wireproto/README.md) for schemas, regeneration and validation.
 Every replica and client in a run must use the same codec version.
 

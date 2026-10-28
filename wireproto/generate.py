@@ -75,7 +75,7 @@ def extension_config(pkg):
     seen=set()
     identifier=re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
     for entry in roots:
-        if not isinstance(entry,dict) or set(entry)-{'type','model','limit','validate'}:
+        if not isinstance(entry,dict) or set(entry)-{'type','model','limit','validate','project'}:
             raise ValueError(f'{pkg}: unsupported stream entry')
         typ=entry.get('type');model=entry.get('model',typ)
         if not isinstance(typ,str) or typ not in SCHEMAS[pkg] or model!=typ or typ in seen:
@@ -88,6 +88,9 @@ def extension_config(pkg):
         validate=entry.get('validate')
         if validate is not None and (not isinstance(validate,str) or not identifier.fullmatch(validate)):
             raise ValueError(f'{pkg}: validate must name a Go function')
+        project=entry.get('project')
+        if project is not None and (not isinstance(project,str) or not identifier.fullmatch(project)):
+            raise ValueError(f'{pkg}: project must name a native-message method')
     names=config.get('local_names',{})
     if not isinstance(names,dict) or any(not isinstance(k,str) or not identifier.fullmatch(k) or k in SCHEMAS[pkg] or not isinstance(v,str) or v not in SCHEMAS[pkg] for k,v in names.items()):
         raise ValueError(f'{pkg}: invalid local message aliases')
@@ -266,7 +269,11 @@ def streams(pkg):
         typ=r['type'];model=r['model'][0].upper()+r['model'][1:]
         limit=r.get('limit',{'kcensus':'maxFrame','bodega':'maxFrame','paxos':'16<<20','curp':'16<<20'}.get(pkg,'wireproto.MaxFrame'))
         obj='&m.message' if typ=='wireMessage' else 'm'
-        code.extend([f'func(m *{typ}) Marshal(w io.Writer){{wireproto.Write(w,{obj},{limit})}}',f'func(m *{typ}) MarshalProtoFrame(code uint8,tagged bool)([]byte,error){{return wireproto.Encode(code,tagged,{obj},{limit})}}',f'func(m *{typ}) Unmarshal(r io.Reader)error{{var value {model};if err:=wireproto.Read(r,&value,{limit});err!=nil{{return err}}'])
+        projection=''
+        if r.get('project'):
+            projection=f"value:=m.{r['project']}();"
+            obj='&value'
+        code.extend([f'func(m *{typ}) Marshal(w io.Writer){{{projection}wireproto.Write(w,{obj},{limit})}}',f'func(m *{typ}) MarshalProtoFrame(code uint8,tagged bool)([]byte,error){{{projection}return wireproto.Encode(code,tagged,{obj},{limit})}}',f'func(m *{typ}) Unmarshal(r io.Reader)error{{var value {model};if err:=wireproto.Read(r,&value,{limit});err!=nil{{return err}}'])
         if pkg in ['kcensus','bodega','fastpaxos']:code.append('if err:=validateProtoMessage(&value);err!=nil{return err}')
         if pkg in EXTENSIONS and r.get('validate'):code.append(f"if err:={r['validate']}(&value);err!=nil{{return err}}")
         code.append('*m=wireMessage{message:value};return nil}' if typ=='wireMessage' else '*m=value;return nil}')

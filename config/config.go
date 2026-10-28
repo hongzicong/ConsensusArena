@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hongzicong/ConsensusArena/heatprofile"
 )
 
 type Error struct {
@@ -126,10 +128,12 @@ type Config struct {
 	// Immutable empirical input for Bodega deployment planning.
 	HeatProfilePath   string
 	HeatProfileSHA256 string
-	Preload           bool
-	PreloadSeed       int
-	WorkloadSeed      int
-	Pipeline          bool
+	// Validated frozen observations cached by Agreement's startup planner.
+	HeatProfile  *heatprofile.Profile
+	Preload      bool
+	PreloadSeed  int
+	WorkloadSeed int
+	Pipeline     bool
 	// when pipelining the frequency of syncs
 	Syncs int
 	// when pipelining the maximal number of pending commands

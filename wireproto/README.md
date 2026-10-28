@@ -23,7 +23,7 @@ directly. Removing conversion does not establish a performance improvement.
 metadata. It no longer owns a second set of message field declarations. Do not
 edit generated Go files manually. The generator applies deterministic payload
 method naming and field-selection hooks after protoc runs.
-All seven protocol packages use this three-file message layout. The shared
+All eight protocol packages use this three-file message layout. The shared
 `state` and `replica/defs` generated support is consolidated in their respective
 `messages.pb.go` files as well. Regeneration does not create separate wire helper
 files.

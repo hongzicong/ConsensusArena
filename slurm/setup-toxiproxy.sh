@@ -128,9 +128,9 @@ for ordinal, alias in enumerate(sorted(clients)):
         print(endpoint, f'{host}:{port}')
 PY
 fi
-# Bodega discovers the installed roster on the replica control port. Shape
+# Bodega and Agreement discover the installed roster on the replica control port. Shape
 # these hints with the same geographic links as its requests, not an oracle.
-if awk 'tolower($1) == "protocol:" && tolower($2) == "bodega" { found=1 } END { exit !found }' "$run_dir/config/cluster.conf"; then
+if awk 'tolower($1) == "protocol:" && (tolower($2) == "bodega" || tolower($2) == "agreement") { found=1 } END { exit !found }' "$run_dir/config/cluster.conf"; then
     traffic_types+=(control)
 fi
 target_index=0

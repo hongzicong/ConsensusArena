@@ -1,0 +1,596 @@
+package agreement
+
+import (
+	"bufio"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/rpc"
+	"slices"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/hongzicong/ConsensusArena/client"
+	"github.com/hongzicong/ConsensusArena/config"
+	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/state"
+)
+
+type Client struct {
+	keyPolicy                                     *keyPolicy
+	sampleKnown, sampleUnknown                    atomic.Uint64
+	allKeyLearning                                bool
+	coldEnabled                                   bool
+	coldCut                                       state.Key
+	coldQ                                         uint64
+	coldVotes                                     map[int32]map[ColdVoteIdentity]uint64
+	coldSent, coldWins, coldDone, coldProofErrors atomic.Uint64
+	coldProofQueue                                chan coldMessage
+	learnerWins, learnerVoteReplies, readRaceSent atomic.Uint64
+	learningEnabled                               bool
+	initialBallot                                 uint64
+	raceRanges                                    []config.PlannedReadRaceRange
+	directSent, rejectedHomeReply                 atomic.Uint64
+	completionRanges                              []config.PlannedCompletionRange
+	delegatedWrites                               atomic.Uint64
+	initialLeader, writeIngress                   int
+	client.StandardClient
+	Unhold time.Duration
+	bodega *bodegaRouting
+}
+
+func NewClient(b *client.BufferClient, cfg *config.Config) *Client {
+	c := &Client{keyPolicy: newKeyPolicy(cfg), StandardClient: client.StandardClient{BufferClient: b}}
+	c.allKeyLearning = cfg.Plan.ClientLearningAllKeys
+	c.initialLeader = cfg.Plan.Leader.Rank
+	c.coldEnabled = cfg.Plan.ColdEnabled
+	c.coldCut = state.Key(cfg.Plan.ColdCutoff)
+	c.coldQ = cfg.Plan.ColdQuorum
+	c.coldVotes = map[int32]map[ColdVoteIdentity]uint64{}
+	c.learningEnabled = cfg.Writes > 0
+	c.raceRanges = cfg.Plan.ReadRaceRanges[cfg.Alias]
+	c.completionRanges = cfg.Plan.CompletionRanges
+	c.writeIngress = c.initialLeader
+	for id, alias := range cfg.ReplicaAliases {
+		if alias == cfg.Plan.WriteClientRoutes[cfg.Alias] {
+			c.writeIngress = id
+		}
+	}
+	b.SkipPing = true
+	b.SetProtocol(c)
+	return c
+}
+
+var _ client.Adapter = (*Client)(nil)
+
+func (c *Client) RetryPolicy() string {
+	delay := c.Unhold
+	if delay == 0 {
+		delay = 250 * time.Millisecond
+	}
+	return fmt.Sprintf("GET: original-ID hedge to installed leader after %s; writes: no client retransmission", delay)
+}
+
+type bodegaRouting struct {
+	roster                                 atomic.Pointer[RosterReply]
+	dead                                   []atomic.Bool
+	rtt                                    []atomic.Int64 // control RPC round-trip through DialAddress; zero means unknown
+	readDestinations                       []atomic.Uint64
+	stop, wake                             chan struct{}
+	closeOnce                              sync.Once
+	mu                                     sync.Mutex
+	pending                                map[int32]*bodegaPending
+	hedges, hedgeWins, duplicates, cancels atomic.Uint64
+	reads, writes, forwarded               atomic.Uint64
+}
+
+func newBodegaRouting(n int) *bodegaRouting {
+	return &bodegaRouting{pending: make(map[int32]*bodegaPending), dead: make([]atomic.Bool, n), rtt: make([]atomic.Int64, n), readDestinations: make([]atomic.Uint64, n), stop: make(chan struct{}), wake: make(chan struct{}, 1)}
+}
+
+func (c *Client) bodegaDistance(id int) int64 {
+	if id >= 0 && id < len(c.bodega.rtt) {
+		if ns := c.bodega.rtt[id].Load(); ns > 0 {
+			return ns
+		}
+	}
+	return 1<<63 - 1 // unknown distances sort last, then by replica ID
+}
+
+func (c *Client) bodegaPeerAlive(id int) bool {
+	return id >= 0 && id < c.PeerCount() && c.Writer(id) != nil && !c.bodega.dead[id].Load()
+}
+
+func (c *Client) nearestBodegaPeer() int {
+	if c.bodegaPeerAlive(c.ClosestID) {
+		return c.ClosestID
+	}
+	best := -1
+	for id := 0; id < c.PeerCount(); id++ {
+		if c.bodegaPeerAlive(id) && (best < 0 || c.bodegaDistance(id) < c.bodegaDistance(best)) {
+			best = id
+		}
+	}
+	return best
+}
+
+// Hints are monotonic and never authorize execution. The destination replica
+// still checks its installed ballot, preparation and responder-covered quorum.
+func (c *Client) learnBodegaRoster(hint RosterReply) bool {
+	if !hint.Ready || hint.Ballot == 0 || !c.bodegaPeerAlive(hint.Leader) || hint.Responders>>uint(c.PeerCount()) != 0 || !validRanges(hint.Ranges, c.PeerCount()) {
+		return false
+	}
+	hint.Ranges = slices.Clone(hint.Ranges)
+	for {
+		old := c.bodega.roster.Load()
+		if old != nil && hint.Ballot <= old.Ballot {
+			if hint.Ballot != old.Ballot || hint.Leader != old.Leader || hint.Responders != old.Responders || !slices.Equal(hint.Ranges, old.Ranges) {
+				return false
+			}
+			if hint.ColdEpoch >= old.ColdEpoch {
+				c.bodega.roster.CompareAndSwap(old, &hint)
+			}
+			return true
+		}
+		if c.bodega.roster.CompareAndSwap(old, &hint) {
+			c.Printf("BODEGA_CLIENT_ROSTER ballot=%d leader=%d\n", hint.Ballot, hint.Leader)
+			return true
+		}
+	}
+}
+
+func (c *Client) queryBodegaRoster(id int) (RosterReply, error) {
+	var reply RosterReply
+	host, portText, err := net.SplitHostPort(c.ReplicaAddress(id))
+	if err != nil {
+		return reply, err
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return reply, err
+	}
+	endpoint := defs.DialAddress(net.JoinHostPort(host, strconv.Itoa(port+1000)))
+	conn, err := net.DialTimeout("tcp", endpoint, time.Second)
+	if err != nil {
+		return reply, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if _, err = io.WriteString(conn, "CONNECT "+rpc.DefaultRPCPath+" HTTP/1.0\n\n"); err != nil {
+		return reply, err
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: "CONNECT"})
+	if err != nil {
+		return reply, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return reply, fmt.Errorf("Bodega control HTTP status %s", response.Status)
+	}
+	control := rpc.NewClient(conn)
+	defer control.Close()
+	started := time.Now()
+	err = control.Call("Replica.GetBodegaRoster", &defs.GetLeaderArgs{}, &reply)
+	if err == nil && c.bodega != nil && id < len(c.bodega.rtt) {
+		ns := time.Since(started).Nanoseconds()
+		if ns < 1 {
+			ns = 1
+		}
+		c.bodega.rtt[id].Store(ns)
+	}
+	return reply, err
+}
+
+// Sampling is outside the request path and uses the same modeled delays as
+// data RPCs. Per-peer probes are parallel and bounded by the query deadline.
+func (c *Client) probeBodegaPeers(samples int) {
+	var wg sync.WaitGroup
+	for id := 0; id < c.PeerCount(); id++ {
+		if !c.bodegaPeerAlive(id) {
+			continue
+		}
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			best := int64(1<<63 - 1)
+			for i := 0; i < samples; i++ {
+				select {
+				case <-c.bodega.stop:
+					return
+				default:
+				}
+				if hint, err := c.queryBodegaRoster(id); err == nil {
+					if ns := c.bodegaDistance(id); ns < best {
+						best = ns
+					}
+					c.learnBodegaRoster(hint)
+				}
+			}
+			if best != 1<<63-1 {
+				c.bodega.rtt[id].Store(best)
+			}
+		}(id)
+	}
+	wg.Wait()
+	rtts := make([]int64, len(c.bodega.rtt))
+	for i := range rtts {
+		rtts[i] = c.bodega.rtt[i].Load()
+	}
+	c.Printf("BODEGA_CLIENT_RTT source=proxied_control_rpc rtt_ns=%v\n", rtts)
+}
+
+func (c *Client) refreshBodegaRoster() bool {
+	// A successful local query costs one control RPC per second, outside the
+	// request path. Try other connected replicas when that hint is unavailable.
+	near := c.nearestBodegaPeer()
+	for attempt := 0; attempt <= c.PeerCount(); attempt++ {
+		select {
+		case <-c.bodega.stop:
+			return false
+		default:
+		}
+		id := near
+		if attempt > 0 {
+			id = attempt - 1
+			if id == near {
+				continue
+			}
+		}
+		if !c.bodegaPeerAlive(id) {
+			continue
+		}
+		if hint, err := c.queryBodegaRoster(id); err == nil && c.learnBodegaRoster(hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) Start() error {
+	if c.Unhold < 0 {
+		return fmt.Errorf("Bodega unhold must be positive")
+	}
+	c.bodega = newBodegaRouting(c.PeerCount())
+	deadline := time.Now().Add(30 * time.Second)
+	for !c.refreshBodegaRoster() {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("no installed Bodega roster available")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	c.probeBodegaPeers(3)
+	c.startColdProofs()
+	c.registerLearnerStreams()
+	if hint := c.bodega.roster.Load(); hint != nil {
+		c.initialBallot = hint.Ballot
+	}
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		lastProbe := time.Now()
+		for {
+			select {
+			case <-c.bodega.stop:
+				return
+			case <-ticker.C:
+				c.emitRepairStats()
+			case <-c.bodega.wake:
+			}
+			c.refreshBodegaRoster()
+			if time.Since(lastProbe) >= 10*time.Second {
+				c.probeBodegaPeers(1)
+				lastProbe = time.Now()
+			}
+		}
+	}()
+	return nil
+}
+
+func (c *Client) markBodegaPeer(id int) {
+	if !c.bodega.dead[id].Swap(true) {
+		c.MarkFaultPeer(id)
+		select {
+		case c.bodega.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (c *Client) SendProposal(cmd defs.Propose) {
+	if c.keyPolicy.rank(cmd.Command.K) < 0 {
+		c.sampleUnknown.Add(1)
+	} else {
+		c.sampleKnown.Add(1)
+	}
+	id := c.nearestBodegaPeer()
+	if cmd.Command.Op == state.GET {
+		if hint := c.bodega.roster.Load(); hint != nil {
+			mask := respondersFor(hint.Responders, hint.Ranges, hint.Leader, int64(cmd.Command.K))
+			if c.coldEnabled && c.keyPolicy.cold(cmd.Command.K, c.coldCut) && hint.ColdQuorum != 0 {
+				mask = hint.ColdQuorum
+				id = c.nearestColdResponder(mask)
+			} else {
+				id = c.nearestBodegaResponder(mask)
+			}
+		}
+		c.bodega.reads.Add(1)
+	} else if roster := c.bodega.roster.Load(); roster != nil && c.bodegaPeerAlive(roster.Leader) {
+		id = roster.Leader
+		owner, delegated := c.plannedOwner(cmd.Command.K)
+		if cmd.Command.Op == state.PUT && delegated {
+			mask := respondersFor(roster.Responders, roster.Ranges, roster.Leader, int64(cmd.Command.K))
+			if mask&(uint64(1)<<uint(owner)) != 0 && c.bodegaPeerAlive(owner) {
+				id = owner
+			}
+			c.delegatedWrites.Add(1)
+		} else if roster.Leader == c.initialLeader && c.bodegaPeerAlive(c.writeIngress) {
+			id = c.writeIngress
+		}
+		c.bodega.writes.Add(1)
+	} else {
+		// During discovery after a disconnect, the survivor preserves the
+		// request identity and uses the existing engine's forwarding queue.
+		c.bodega.forwarded.Add(1)
+	}
+	if id < 0 {
+		return
+	}
+	if cmd.Command.Op == state.GET && id < len(c.bodega.readDestinations) {
+		c.bodega.readDestinations[id].Add(1)
+	}
+	c.trackBodegaRequest(cmd, id)
+	if c.sendColdWrite(cmd, id) {
+		return
+	}
+	c.startHotReadRace(cmd, id)
+	if cmd.Command.Op == state.PUT {
+		if hint := c.bodega.roster.Load(); hint != nil && hint.Leader != id && c.bodegaPeerAlive(hint.Leader) {
+			direct := cmd
+			direct.Command.Op = directPUT
+			direct.Command.V = make(state.Value, 4+len(cmd.Command.V))
+			binary.LittleEndian.PutUint32(direct.Command.V[:4], uint32(id))
+			copy(direct.Command.V[4:], cmd.Command.V)
+			c.directSent.Add(1)
+			c.writeBodegaProposal(direct, hint.Leader, false)
+		}
+	}
+	c.writeBodegaProposal(cmd, id, false)
+}
+
+func (c *Client) plannedOwner(key state.Key) (int, bool) {
+	rank := c.keyPolicy.rank(key)
+	if rank < 0 {
+		return -1, false
+	}
+	for _, span := range c.completionRanges {
+		if rank < span.Start {
+			break
+		}
+		if rank < span.End {
+			return span.Owner.Rank, true
+		}
+	}
+	return -1, false
+}
+
+// The write lock orders initial/hedged sends before a cancellation on that stream.
+func (c *Client) writeBodegaProposal(cmd defs.Propose, id int, hedge bool) {
+	c.WriteMutex(id).Lock()
+	defer c.WriteMutex(id).Unlock()
+	if !c.bodegaPeerAlive(id) {
+		return
+	}
+	if cmd.Command.Op != cancelRead {
+		c.bodega.mu.Lock()
+		_, pending := c.bodega.pending[cmd.CommandId]
+		c.bodega.mu.Unlock()
+		if !pending {
+			return
+		}
+		if hedge {
+			c.bodega.hedges.Add(1)
+		}
+	}
+	_ = c.Connection(id).SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = c.Writer(id).WriteByte(defs.PROPOSE)
+	cmd.Marshal(c.Writer(id))
+	if err := c.Writer(id).Flush(); err != nil {
+		c.ObserveWriteError()
+		c.markBodegaPeer(id)
+		_ = c.Connection(id).Close()
+	}
+}
+
+func (c *Client) nearestBodegaResponder(mask uint64) int {
+	if c.bodegaPeerAlive(c.ClosestID) && mask&(uint64(1)<<uint(c.ClosestID)) != 0 {
+		return c.ClosestID
+	}
+	best := -1
+	for id := 0; id < c.PeerCount(); id++ {
+		if mask&(uint64(1)<<uint(id)) != 0 && c.bodegaPeerAlive(id) && (best < 0 || c.bodegaDistance(id) < c.bodegaDistance(best)) {
+			best = id
+		}
+	}
+	if best < 0 {
+		return c.nearestBodegaPeer()
+	} // stale roster: server forwards safely
+	return best
+}
+
+func (c *Client) nearestColdResponder(mask uint64) int {
+	best := -1
+	for id := 0; id < c.PeerCount(); id++ {
+		if mask&bit(id) != 0 && c.bodegaPeerAlive(id) && (best < 0 || c.bodegaDistance(id) < c.bodegaDistance(best)) {
+			best = id
+		}
+	}
+	if best < 0 {
+		return c.nearestBodegaPeer()
+	}
+	return best
+}
+
+func (c *Client) WaitReplies(_ int) {
+	for id := 0; id < c.PeerCount(); id++ {
+		reader := c.Reader(id)
+		if reader == nil {
+			continue
+		}
+		go func(id int) {
+			err := c.ReadReplies(id, func(r *defs.ProposeReplyTS) bool {
+				if !c.acceptClientReply(r, id) {
+					return true
+				}
+				return c.CompleteReply(defs.RequestID{Client: c.ClientID, Sequence: r.CommandId}, r.Value, nil, c.bodega.stop)
+			})
+			if err != nil {
+				c.markBodegaPeer(id)
+			}
+		}(id)
+	}
+}
+
+func (c *Client) Close() {
+	c.emitRepairStats()
+	c.Printf("COLD_CLIENT sent=%d fast_wins=%d chosen_done=%d proof_queue_errors=%d", c.coldSent.Load(), c.coldWins.Load(), c.coldDone.Load(), c.coldProofErrors.Load())
+	c.Printf("CLIENT_LEARNING sent_votes=%d wins=%d read_races=%d", c.learnerVoteReplies.Load(), c.learnerWins.Load(), c.readRaceSent.Load())
+	c.Printf("DIRECT_ADMISSION_CLIENT sent=%d rejected_home_reply=%d", c.directSent.Load(), c.rejectedHomeReply.Load())
+	if c.bodega != nil {
+		c.bodega.closeOnce.Do(func() {
+			close(c.bodega.stop)
+			c.stopBodegaReads()
+			c.Printf("BODEGA_CLIENT_ROUTES local_reads=%d leader_commands=%d discovery_forwards=%d\n", c.bodega.reads.Load(), c.bodega.writes.Load(), c.bodega.forwarded.Load())
+			c.Printf("XPAXOS_COMPLETION_ROUTES delegated_writes=%d ranges=%v\n", c.delegatedWrites.Load(), c.completionRanges)
+			counts := make([]uint64, len(c.bodega.readDestinations))
+			for i := range counts {
+				counts[i] = c.bodega.readDestinations[i].Load()
+			}
+			c.Printf("BODEGA_CLIENT_DESTINATIONS read_attempts=%v\n", counts)
+			c.Printf("BODEGA_CLIENT_HEDGES sent=%d wins=%d duplicate_replies=%d cancels=%d\n", c.bodega.hedges.Load(), c.bodega.hedgeWins.Load(), c.bodega.duplicates.Load(), c.bodega.cancels.Load())
+		})
+	}
+}
+
+type bodegaPending struct {
+	cmd            defs.Propose
+	initial, hedge int
+	timer          *time.Timer
+	certificates   map[clientCertificate]uint64
+}
+
+func (c *Client) trackBodegaRequest(cmd defs.Propose, initial int) {
+	b := c.bodega
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, exists := b.pending[cmd.CommandId]; exists {
+		return
+	}
+	p := &bodegaPending{cmd: cmd, initial: initial, hedge: -1}
+	b.pending[cmd.CommandId] = p
+	if cmd.Command.Op == state.GET {
+		delay := c.Unhold
+		if delay == 0 {
+			delay = 250 * time.Millisecond
+		}
+		p.timer = time.AfterFunc(delay, func() { c.hedgeBodegaRead(cmd.CommandId) })
+	}
+}
+
+func (c *Client) hedgeBodegaRead(id int32) {
+	b := c.bodega
+	b.mu.Lock()
+	p := b.pending[id]
+	if p == nil || p.cmd.Command.Op != state.GET || p.hedge >= 0 {
+		b.mu.Unlock()
+		return
+	}
+	hint := b.roster.Load()
+	if hint == nil || !c.bodegaPeerAlive(hint.Leader) {
+		// A routing refresh may supply a new leader; never replay a write.
+		p.timer = time.AfterFunc(100*time.Millisecond, func() { c.hedgeBodegaRead(id) })
+		b.mu.Unlock()
+		return
+	}
+	if hint.Leader == p.initial {
+		b.mu.Unlock()
+		return
+	}
+	p.hedge = hint.Leader
+	cmd, target := p.cmd, p.hedge
+	b.mu.Unlock()
+	c.writeBodegaProposal(cmd, target, true)
+}
+
+func (c *Client) completeBodegaRequest(id int32, source int) bool {
+	return c.completeBodegaRequestKind(id, source, false)
+}
+
+func (c *Client) completeBodegaRequestKind(id int32, source int, certified bool) bool {
+	b := c.bodega
+	b.mu.Lock()
+	p := b.pending[id]
+	if p == nil {
+		b.duplicates.Add(1)
+		b.mu.Unlock()
+		return false
+	}
+	if !certified && (p.cmd.Command.Op == state.PUT || p.cmd.Command.Op == state.SCAN) && source != p.initial {
+		c.rejectedHomeReply.Add(1)
+		b.mu.Unlock()
+		return false
+	}
+	delete(b.pending, id)
+	if p.timer != nil {
+		p.timer.Stop()
+	}
+	b.mu.Unlock()
+	if p.hedge >= 0 {
+		if source == p.hedge {
+			b.hedgeWins.Add(1)
+		}
+		loser := p.initial
+		if source == p.initial {
+			loser = p.hedge
+		}
+		// Best-effort transport cleanup: does not wait before delivering the winner.
+		go func() {
+			select {
+			case <-b.stop:
+				return
+			default:
+			}
+			cancel := defs.Propose{ClientId: p.cmd.ClientId, CommandId: id}
+			cancel.Command.Op = cancelRead
+			b.cancels.Add(1)
+			c.writeBodegaProposal(cancel, loser, false)
+		}()
+	}
+	return true
+}
+
+func (c *Client) stopBodegaReads() {
+	b := c.bodega
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, p := range b.pending {
+		if p.timer != nil {
+			p.timer.Stop()
+		}
+	}
+	b.pending = make(map[int32]*bodegaPending)
+}
+
+func (c *Client) emitRepairStats() {
+	started := time.Now()
+	fmt.Printf("XPAXOS_SAMPLE_ROUTING known_attempts=%d unknown_attempts=%d\n", c.sampleKnown.Load(), c.sampleUnknown.Load())
+	fmt.Printf("COLD_CLIENT sent=%d fast_wins=%d chosen_done=%d proof_queue_errors=%d\n", c.coldSent.Load(), c.coldWins.Load(), c.coldDone.Load(), c.coldProofErrors.Load())
+	fmt.Printf("CLIENT_LEARNING sent_votes=%d wins=%d read_races=%d\n", c.learnerVoteReplies.Load(), c.learnerWins.Load(), c.readRaceSent.Load())
+	fmt.Printf("DIRECT_ADMISSION_CLIENT sent=%d rejected_home_reply=%d\n", c.directSent.Load(), c.rejectedHomeReply.Load())
+	if c.bodega != nil {
+		fmt.Printf("BODEGA_CLIENT_HEDGES sent=%d wins=%d duplicate_replies=%d cancels=%d\n", c.bodega.hedges.Load(), c.bodega.hedgeWins.Load(), c.bodega.duplicates.Load(), c.bodega.cancels.Load())
+	}
+	fmt.Printf("XPAXOS_CLIENT_OBSERVABILITY snapshot_ns=%d emission_ns=%d\n", time.Now().UnixNano(), time.Since(started).Nanoseconds())
+}
