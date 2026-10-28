@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze Bodega observations before deployment planning."""
+"""Freeze empirical observations before Bodega or PQL deployment planning."""
 import json
 import os
 from pathlib import Path
@@ -14,7 +14,7 @@ def prepare(binary, config):
     protocols = re.findall(r'^protocol:\s*(\S+)\s*$', text, flags=re.M | re.I)
     if len(protocols) != 1:
         raise ValueError('expected one protocol field')
-    if protocols[0].lower() != 'bodega':
+    if protocols[0].lower() not in ('bodega', 'pql'):
         return
     profile = config.with_name('heat-profile.json')
     if profile.exists():

@@ -1,0 +1,11 @@
+{
+  "roots": [
+    {
+      "type": "Packet",
+      "limit": 16777216,
+      "validate": "validatePacket"
+    }
+  ],
+  "local_names": {},
+  "aliases": {}
+}

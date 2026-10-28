@@ -1,0 +1,65 @@
+syntax = "proto2";
+package pql;
+option go_package = "github.com/hongzicong/ConsensusArena/pql";
+import "gogoproto/gogo.proto";
+import "replica/defs/messages.proto";
+import "state/messages.proto";
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.goproto_getters_all) = false;
+option (gogoproto.goproto_unrecognized_all) = false;
+option (gogoproto.goproto_unkeyed_all) = false;
+option (gogoproto.goproto_sizecache_all) = false;
+
+message Packet {
+  optional uint32 kind = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "uint8", (gogoproto.customname) = "Kind", (gogoproto.jsontag) = "Kind"];
+  optional sint32 from = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "From", (gogoproto.jsontag) = "From"];
+  optional sint64 ballot = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional sint64 floor = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Floor", (gogoproto.jsontag) = "Floor"];
+  optional sint64 high = 5 [(gogoproto.nullable) = false, (gogoproto.customname) = "High", (gogoproto.jsontag) = "High"];
+  optional sint32 page = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "Page", (gogoproto.jsontag) = "Page"];
+  optional sint32 pages = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "Pages", (gogoproto.jsontag) = "Pages"];
+  repeated Record records = 8 [(gogoproto.nullable) = false, (gogoproto.customname) = "Records", (gogoproto.jsontag) = "Records"];
+  repeated Request requests = 9 [(gogoproto.nullable) = false, (gogoproto.customname) = "Requests", (gogoproto.jsontag) = "Requests"];
+  optional sint64 lease_epoch = 10 [(gogoproto.nullable) = false, (gogoproto.customname) = "LeaseEpoch", (gogoproto.jsontag) = "LeaseEpoch"];
+  optional sint64 timestamp = 11 [(gogoproto.nullable) = false, (gogoproto.customname) = "Timestamp", (gogoproto.jsontag) = "Timestamp"];
+  optional sint64 duration = 12 [(gogoproto.nullable) = false, (gogoproto.customname) = "Duration", (gogoproto.jsontag) = "Duration"];
+  optional sint64 frontier = 13 [(gogoproto.nullable) = false, (gogoproto.customname) = "Frontier", (gogoproto.jsontag) = "Frontier"];
+  optional bytes result = 14 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Value", (gogoproto.customname) = "Result", (gogoproto.jsontag) = "Result"];
+  optional bool control = 15 [(gogoproto.nullable) = false];
+  optional sint64 ack_sequence = 16 [(gogoproto.nullable) = false];
+  optional sint64 elapsed = 17 [(gogoproto.nullable) = false];
+  reserved 18;
+  optional uint64 excluded = 19 [(gogoproto.nullable) = false];
+}
+
+message Record {
+  optional sint64 slot = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "Slot", (gogoproto.jsontag) = "Slot"];
+  optional sint64 ballot = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Ballot", (gogoproto.jsontag) = "Ballot"];
+  optional Request request = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Request", (gogoproto.jsontag) = "Request"];
+  optional bool committed = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Committed", (gogoproto.jsontag) = "Committed"];
+  optional uint64 notify_mask = 5 [(gogoproto.nullable) = false];
+  optional sint64 lease_epoch = 6 [(gogoproto.nullable) = false];
+}
+
+message Request {
+  optional replica.defs.RequestID id = 1 [(gogoproto.nullable) = false, (gogoproto.customname) = "ID", (gogoproto.jsontag) = "ID"];
+  optional state.Command command = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "Command", (gogoproto.jsontag) = "Command"];
+  optional sint32 origin = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "Origin", (gogoproto.jsontag) = "Origin"];
+  optional sint64 timestamp = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "Timestamp", (gogoproto.jsontag) = "Timestamp"];
+  optional LeaseChange change = 5;
+}
+
+// Independent Lease-Paxos log values, following qleaseproto.LeaseMetadata.
+message HolderUpdate {
+  optional sint64 key = 1 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/hongzicong/ConsensusArena/state.Key"];
+  optional uint64 holders = 2 [(gogoproto.nullable) = false];
+}
+
+message LeaseChange {
+  optional sint32 leader = 1 [(gogoproto.nullable) = false];
+  optional uint64 excluded = 2 [(gogoproto.nullable) = false];
+  repeated HolderUpdate updates = 3 [(gogoproto.nullable) = false];
+}
+
