@@ -70,6 +70,7 @@ type statistics struct {
 
 // engine has no goroutines. All callbacks and transitions are serialized.
 type engine struct {
+	observeLocalRead              func(defs.RequestID)
 	repairSent                    map[int]map[uint64]time.Time
 	auxRoles                      func() uint64
 	intercept                     func(request, time.Time) bool

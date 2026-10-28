@@ -23,6 +23,7 @@ type Replica struct {
 	rosterQueries chan chan BodegaRosterReply
 	core          *core
 	proposals     map[defs.RequestID]*defs.GPropose
+	readPaths     replica.ReadPathMetrics
 }
 
 func New(alias string, replicaID int, addrs []string, isLeader bool, conf *config.Config, logger *dlog.Logger) *Replica {
@@ -130,6 +131,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 	go r.WaitForClientConnections()
 	proposals := r.proposals
 	c := r.core
+	c.observeLocalRead = r.readPaths.Local
 	c.activate(time.Now())
 	c.clock = time.Now
 	c.batching = true
@@ -176,6 +178,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 		case call := <-r.control:
 			protocol.Must(r.Step(call, time.Now()))
 		case <-metrics.C:
+			r.Printf("%s", r.readPaths.Status("bodega", c.id))
 			var bytes, frames [kindCount]uint64
 			for i := range bytes {
 				bytes[i] = transport.wireBytes[i].Load()

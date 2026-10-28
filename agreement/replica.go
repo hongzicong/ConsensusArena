@@ -23,6 +23,7 @@ type Replica struct {
 	control       chan leaderCall
 	rosterQueries chan chan RosterReply
 	engine        *engine
+	readPaths     replica.ReadPathMetrics
 	waiting       map[defs.RequestID][]*defs.GPropose
 }
 

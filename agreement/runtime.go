@@ -61,6 +61,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 	waiting := map[defs.RequestID][]*defs.GPropose{}
 	e := newEngine(int(r.ID), r.N, opt, time.Now())
 	r.engine, r.waiting = e, waiting
+	e.observeLocalRead = r.readPaths.Local
 	r.learnerStreams = map[int32][]*defs.GPropose{}
 	e.clientVote = r.sendClientVotes
 	r.ingressSince = map[defs.RequestID]time.Time{}
@@ -149,6 +150,7 @@ func (r *Replica) run(opt options, isLeader bool, code uint8, inbox chan rpc.Ser
 		case call := <-r.control:
 			protocol.Must(r.Step(call, time.Now()))
 		case <-metrics.C:
+			r.Printf("%s", r.readPaths.Status("agreement", e.id))
 			var bytes, frames [kindCount]uint64
 			for i := range bytes {
 				bytes[i] = transport.wireBytes[i].Load()

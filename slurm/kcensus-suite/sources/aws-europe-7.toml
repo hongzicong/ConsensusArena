@@ -1,0 +1,18 @@
+regions = [
+    'eu-central-1 Europe Frankfurt',
+    'eu-central-2 Europe Zurich',
+    'eu-south-1 Europe Milan',
+    'eu-south-2 Europe Spain',
+    'eu-west-1 Europe Ireland',
+    'eu-west-2 Europe London',
+    'eu-west-3 Europe Paris',
+]
+raw_latencies = [
+    [0, 3.25, 4.59, 11.01, 10, 6.28, 4.08],
+    [3.24, 0, 2.13, 11.2, 12.08, 7.65, 4.27],
+    [4.59, 2.13, 0, 9.06, 14.24, 10.3, 8.73],
+    [11, 11.2, 9.08, 0, 15.4, 10.65, 7.08],
+    [10, 12.08, 14.25, 15.4, 0, 4.68, 8.54],
+    [6.27, 7.65, 10.3, 10.65, 4.68, 0, 3.78],
+    [4.08, 4.26, 8.72, 7.09, 8.55, 3.79, 0],
+]

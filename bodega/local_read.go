@@ -14,6 +14,9 @@ func (c *core) localReadAuthority(now time.Time) bool {
 
 func (c *core) finishLocalRead(r request, value state.Value) {
 	c.stats.LocalReads++
+	if r.Origin == c.id && c.observeLocalRead != nil {
+		c.observeLocalRead(r.id())
+	}
 	if c.current.Leader == c.id {
 		c.stats.StableLeaderReads++
 	}

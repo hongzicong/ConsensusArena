@@ -21,6 +21,9 @@ func (e *engine) finishLocalRead(r request, value state.Value, now time.Time) {
 		e.stats.HeldReadNanos += uint64(now.Sub(h.Since))
 	}
 	e.stats.LocalReads++
+	if r.Origin == e.id && e.observeLocalRead != nil {
+		e.observeLocalRead(r.id())
+	}
 	if e.current.Leader == e.id {
 		e.stats.StableLeaderReads++
 	}

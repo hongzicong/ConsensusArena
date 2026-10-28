@@ -103,7 +103,11 @@ func (t *replicaTransport) trySend(to int, m message) bool {
 }
 
 func (r *Replica) sendReply(p *defs.GPropose, value state.Value) bool {
-	return r.ReplyResult(p, value, 8192) == nil
+	ok := r.ReplyResult(p, value, 8192) == nil
+	if ok && p.Command.Op == state.GET {
+		r.readPaths.Reply(p.RequestID())
+	}
+	return ok
 }
 func (r *Replica) configureTransport(code uint8) *replicaTransport {
 	t := &replicaTransport{sources: make([]*sendSource, r.N), drained: make(chan int, r.N), wireBytes: new([kindCount]atomic.Uint64), wireFrames: new([kindCount]atomic.Uint64), code: code}

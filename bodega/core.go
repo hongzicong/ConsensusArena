@@ -51,6 +51,7 @@ type statistics struct {
 // core has no goroutines. All callbacks and transitions are serialized.
 // core owns protocol state, ordering, recovery decisions and completion semantics.
 type core struct {
+	observeLocalRead              func(defs.RequestID)
 	id, n, majority               int
 	opt                           options
 	current, pending              roster

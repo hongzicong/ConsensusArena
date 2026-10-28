@@ -20,6 +20,7 @@ type Replica struct {
 	*replica.EventLoop
 	core      *core
 	proposals map[defs.RequestID]*defs.GPropose
+	readPaths replica.ReadPathMetrics
 }
 
 func New(alias string, replicaID int, addrs []string, f int, conf *config.Config, logger *dlog.Logger) *Replica {
@@ -44,6 +45,7 @@ func newReplica(base *replica.Replica, leader int32, policy *leasePolicy) *Repli
 		return cmd.Execute(base.State)
 	}), proposals: map[defs.RequestID]*defs.GPropose{}}
 	r.core.now = time.Now
+	r.core.observeLocalRead = r.readPaths.Local
 	r.core.configLog.now = time.Now
 	r.EventLoop = newEventLoop(base, &protocolAdapter{r})
 	code := r.EventLoop.Register(&Packet{})
@@ -61,7 +63,11 @@ func newReplica(base *replica.Replica, leader int32, policy *leasePolicy) *Repli
 		// restores proposals, and core.values returns the original result.
 		g := r.proposals[req.ID]
 		if g != nil {
+			before := r.EventLoop.Replies
 			r.client(req.ID, 0, &defs.ProposeReplyTS{OK: defs.TRUE, CommandId: req.ID.Sequence, Value: v, Timestamp: req.Timestamp}, false)
+			if req.Command.Op == state.GET && r.EventLoop.Replies > before {
+				r.readPaths.Reply(req.ID)
+			}
 		}
 		delete(r.proposals, req.ID)
 	}
@@ -123,7 +129,7 @@ func (p *protocolAdapter) Leader() int32 { return p.replica.core.leader }
 
 func (p *protocolAdapter) Status() string {
 	c := p.replica.core
-	return fmt.Sprintf("PQL_STATS ballot=%d leader=%d active=%t preparing=%t accepted=%d executed=%d results=%d pending=%d local_reads=%d forwarded_reads=%d logged_reads=%d updating_keys=%d grant_epoch=%d read_epoch=%d config_epoch=%d config_accepted=%d config_executed=%d excluded=%x lease_active=%t promise_accepts=%d promise_rejects=%d lease_rejects=%d quorum_sends=%d recoveries=%d recovery_end=%d gap_accepts=%d fetch_requests=%d fetch_suppressed=%d replay_replies=%d", c.ballot, c.leader, c.active, c.preparing, c.high, c.executed, len(c.values), len(c.pending), c.localReads, c.forwardedReads, c.loggedReads, len(c.updating), c.lease.promisedBy, c.lease.promisedTo, c.latestEpoch, c.configLog.high, c.configLog.executed, c.policy.excluded, time.Now().Before(c.lease.readUntil), c.lease.promisesAccepted, c.lease.promisesRejected, c.leaseRejects, c.quorumSends, c.recoveries, c.recoveryEnd, c.gapAccepts, c.fetchRequests, c.fetchSuppressed, c.replayReplies)
+	return p.replica.readPaths.Status("pql", int(c.id)) + "\n" + fmt.Sprintf("PQL_STATS ballot=%d leader=%d active=%t preparing=%t accepted=%d executed=%d results=%d pending=%d local_reads=%d forwarded_reads=%d logged_reads=%d updating_keys=%d grant_epoch=%d read_epoch=%d config_epoch=%d config_accepted=%d config_executed=%d excluded=%x lease_active=%t promise_accepts=%d promise_rejects=%d lease_rejects=%d quorum_sends=%d recoveries=%d recovery_end=%d gap_accepts=%d fetch_requests=%d fetch_suppressed=%d replay_replies=%d", c.ballot, c.leader, c.active, c.preparing, c.high, c.executed, len(c.values), len(c.pending), c.localReads, c.forwardedReads, c.loggedReads, len(c.updating), c.lease.promisedBy, c.lease.promisedTo, c.latestEpoch, c.configLog.high, c.configLog.executed, c.policy.excluded, time.Now().Before(c.lease.readUntil), c.lease.promisesAccepted, c.lease.promisesRejected, c.leaseRejects, c.quorumSends, c.recoveries, c.recoveryEnd, c.gapAccepts, c.fetchRequests, c.fetchSuppressed, c.replayReplies)
 }
 
 // The master discovers the ballot owner; changing a flag cannot install a leader.

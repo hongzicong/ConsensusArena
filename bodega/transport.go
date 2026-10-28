@@ -107,7 +107,11 @@ func (t *replicaTransport) broadcast(m message) int {
 }
 
 func (r *Replica) sendReply(p *defs.GPropose, value state.Value) bool {
-	return r.ReplyResult(p, value, 8192) == nil
+	ok := r.ReplyResult(p, value, 8192) == nil
+	if ok && p.Command.Op == state.GET {
+		r.readPaths.Reply(p.RequestID())
+	}
+	return ok
 }
 
 func (r *Replica) configureTransport(code uint8) *replicaTransport {

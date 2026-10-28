@@ -287,6 +287,9 @@ func (c *coldReplica) read(req request, now time.Time) {
 	if c.readAuthority(now) && c.keyValid(c.key(req.Proposal.Command.K)) {
 		value := req.Proposal.Command.Execute(c.r.State)
 		c.stats.ColdReads++
+		if req.Origin == e.id && e.observeLocalRead != nil {
+			e.observeLocalRead(req.id())
+		}
 		if start, ok := c.readSince[req.id()]; ok {
 			c.stats.HeldReadSamples++
 			c.stats.HeldReadNanos += uint64(now.Sub(start))
@@ -325,6 +328,9 @@ func (c *coldReplica) releaseReads(now time.Time) {
 		if c.readAuthority(now) && c.keyValid(c.key(req.Proposal.Command.K)) {
 			value := req.Proposal.Command.Execute(c.r.State)
 			c.stats.ColdReads++
+			if req.Origin == c.r.engine.id && c.r.engine.observeLocalRead != nil {
+				c.r.engine.observeLocalRead(req.id())
+			}
 			if start, ok := c.readSince[req.id()]; ok {
 				c.stats.HeldReadSamples++
 				c.stats.HeldReadNanos += uint64(now.Sub(start))

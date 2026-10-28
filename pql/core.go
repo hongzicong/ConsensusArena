@@ -60,6 +60,7 @@ type core struct {
 	recoveries, replayReplies, gapAccepts   uint64
 	fetchRequests, fetchSuppressed          uint64
 	localReads, forwardedReads, loggedReads uint64
+	observeLocalRead                        func(defs.RequestID)
 	leaseRejects, quorumSends               uint64
 	resume                                  []Request
 }
@@ -171,6 +172,9 @@ func (c *core) submit(r Request, now time.Time) {
 				c.values[r.ID] = append(state.Value(nil), v...)
 				delete(c.pending, r.ID)
 				c.localReads++
+				if r.Origin == c.id && c.observeLocalRead != nil {
+					c.observeLocalRead(r.ID)
+				}
 				c.finish(r, v)
 			} else {
 				c.pending[r.ID] = r
