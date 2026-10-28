@@ -14,6 +14,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/kcensus"
 	"github.com/hongzicong/ConsensusArena/paxos"
 	"github.com/hongzicong/ConsensusArena/placement"
+	"github.com/hongzicong/ConsensusArena/pql"
 	protocolapi "github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/swift"
 )
@@ -46,6 +47,22 @@ func lookupProtocol(name string) (protocolSpec, bool) {
 }
 
 var protocols = map[string]protocolSpec{
+	"pql": {
+		heatSampleOptions: client.HeatSampleOptions{PreserveClientOrigins: true},
+		planDeployment:    pql.PlanDeployment,
+		configureClient: func(c *config.Config) {
+			c.Leaderless = false
+			c.Fast = false
+			c.WaitClosest = true
+		},
+		installClient: func(b *client.BufferClient, c *config.Config, _ int) {
+			pql.NewClient(b, len(c.ReplicaAddrs))
+		},
+		newReplica: func(s replicaStart) protocolapi.Machine {
+			log.Println("Starting PQL replica...")
+			return pql.New(s.config.Alias, s.id, s.addrs, s.failures, s.config, s.logger)
+		},
+	},
 	"kcensus": {
 		planDeployment: kcensus.PlanDeployment,
 		installClient: func(b *client.BufferClient, c *config.Config, clone int) {
