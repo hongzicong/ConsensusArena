@@ -19,20 +19,25 @@ type replyJob struct {
 	reply    defs.ProposeReplyTS
 }
 
+type encodingStats struct {
+	EncodedFrames, EncodedBytes, EncodingSamples, EncodingNanos uint64
+	ReusedEncodings                                             uint64
+}
+
 func (r *Replica) drain() {
-	drainOutputs(r.core, r.peers, r.code, nil, func(m message) {
+	drainOutputs(r.core.id, r.core.m, &r.core.out, r.core.peerFailed, &r.core.stats.encodingStats, r.peers, r.code, nil, func(m message) {
 		protocol.Must(r.Step(localMessage{m}, time.Time{}))
 	})
 }
 
-// Replica and client outputs share fanout, admission and encoding accounting.
+// Replica and client outputs share fanout and admission; nil stats skips accounting.
 // Cancellation stops at the first eligible remote target, preserving local order.
-func drainOutputs(c *core, peers *replica.PeerStreams, code uint8, stop <-chan struct{}, local func(message)) {
+func drainOutputs(id, processes int, out *[]envelope, peerFailed func(int) bool, stats *encodingStats, peers *replica.PeerStreams, code uint8, stop <-chan struct{}, local func(message)) {
 	cancelled := false
 	var attempts uint64
-	sender := replica.MessageSender{ID: c.id, N: c.m,
+	sender := replica.MessageSender{ID: id, N: processes,
 		Eligible: func(id int) bool {
-			if cancelled || c.peerFailed(id) {
+			if cancelled || peerFailed(id) {
 				return false
 			}
 			select {
@@ -44,8 +49,10 @@ func drainOutputs(c *core, peers *replica.PeerStreams, code uint8, stop <-chan s
 			}
 		},
 		Enqueue: func(id int, f replica.Frame) error {
-			attempts++
-			c.stats.EncodedBytes += uint64(len(f.Data))
+			if stats != nil {
+				attempts++
+				stats.EncodedBytes += uint64(len(f.Data))
+			}
 			return peers.Enqueue(id, f)
 		},
 		Local: func(msg interface{ Marshal(io.Writer) }) {
@@ -54,9 +61,13 @@ func drainOutputs(c *core, peers *replica.PeerStreams, code uint8, stop <-chan s
 			}
 		},
 	}
-	protocol.Drain(&c.out, func(e envelope) bool {
-		frames, previousAttempts := c.stats.EncodedFrames, attempts
-		encode := func() replica.Frame { return encodeOutput(code, e, &c.stats) }
+	protocol.Drain(out, func(e envelope) bool {
+		var frames uint64
+		previousAttempts := attempts
+		if stats != nil {
+			frames = stats.EncodedFrames
+		}
+		encode := func() replica.Frame { return encodeOutput(code, e, stats) }
 		if e.Count > 0 {
 			fanout := sender
 			fanout.N = e.Count
@@ -65,21 +76,25 @@ func drainOutputs(c *core, peers *replica.PeerStreams, code uint8, stop <-chan s
 			_ = sender.Send(e.To, code, &wireMessage{message: e.Message}, encode)
 		}
 		// Rejected remote admissions also use an image; local delivery does not.
-		c.stats.ReusedEncodings += attempts - previousAttempts - (c.stats.EncodedFrames - frames)
+		if stats != nil {
+			stats.ReusedEncodings += attempts - previousAttempts - (stats.EncodedFrames - frames)
+		}
 		return !cancelled
 	})
 }
 
 // The image is scoped to one broadcast. Sender never mutates frame bytes;
 // every recipient still receives its own FIFO frame through the common sender.
-func encodeOutput(code uint8, e envelope, stats *Stats) replica.Frame {
+func encodeOutput(code uint8, e envelope, stats *encodingStats) replica.Frame {
 	if e.Encoded != nil && *e.Encoded != nil {
 		return replica.Frame{Data: *e.Encoded}
 	}
-	stats.EncodedFrames++
 	var before time.Time
-	if stats.EncodedFrames%64 == 1 {
-		before = time.Now()
+	if stats != nil {
+		stats.EncodedFrames++
+		if stats.EncodedFrames%64 == 1 {
+			before = time.Now()
+		}
 	}
 	frame := replica.Encode(code, &wireMessage{message: e.Message}, true)
 	if !before.IsZero() {
@@ -105,6 +120,9 @@ func (r *Replica) bindClient(m message, connection *fastrpc.ClientConnection) (i
 	}
 	if r.core.peerFailed(id) {
 		return -1, replica.ErrSendClosed
+	}
+	if m.Digest != r.core.plan.Digest {
+		return -1, fmt.Errorf("KCensus client %d requirement fingerprint mismatch", id)
 	}
 	// The shared connection context invokes this exactly once, before delivery.
 	if err := r.peers.Bind(id, func() *replica.Sender {
@@ -136,18 +154,17 @@ func (r *Replica) flushReplies() {
 }
 
 func (c *Client) drain() {
-	drainOutputs(c.core, c.peers, defs.RPC_TABLE, c.stop, c.core.receive)
+	p := c.proposer
+	drainOutputs(p.id, p.m, &p.out, p.peerFailed, nil, c.peers, defs.RPC_TABLE, c.stop, func(m message) { c.receive(projectClientMessage(m, p.id, p.m)) })
 }
 
 func (c *Client) deliver(m message) bool {
-	inbox := c.inbox
-	if m.Kind == heartbeat {
-		inbox = c.control
+	switch m.Kind {
+	case spread, accept, commit, offer, executedResult:
+	default:
+		return true
 	}
-	if m.Kind == executedResult {
-		inbox = c.resultInbox
-	}
-	return fastrpc.Deliver(inbox, m, c.stop)
+	return fastrpc.Deliver(c.inbox, projectClientMessage(m, c.proposer.id, c.proposer.m), c.stop)
 }
 
 // All client streams use the same immutable registration and fresh factories.
@@ -167,111 +184,34 @@ func decodeClientMessage(code uint8, wire io.Reader) (*wireMessage, error) {
 
 func (c *Client) readStream(id int, conn net.Conn, r *bufio.Reader) {
 	defer conn.Close()
-	cancelled := false
-	if id < 0 {
-		// Resolve an incoming mesh connection once using its first normal frame.
-		first, err := fastrpc.ReadMessage(r, decodeClientMessage)
-		if err != nil {
-			return
-		}
-		if first.From < c.core.n || first.From >= c.core.id || c.bindStream(first.From, conn, nil) != nil {
-			c.Printf("KCENSUS_CLIENT_STREAM rejected_from=%d self=%d", first.From, c.core.id)
-			return
-		}
-		id = first.From
-		_ = conn.SetReadDeadline(time.Time{})
-		if !c.deliver(first.message) {
-			return
-		}
+	if id < 0 || id >= c.proposer.n {
+		return
 	}
+	cancelled := false
+	planChecked := false
 	streamErr := fastrpc.ReadStream(r, decodeClientMessage, func(w *wireMessage) bool {
 		w.From = id // The established stream supplies its source identity.
+		if !planChecked {
+			if w.Digest != c.proposer.plan.Digest {
+				panic(fmt.Sprintf("KCensus voter %d requirement fingerprint mismatch", id))
+			}
+			planChecked = true
+		}
 		cancelled = !c.deliver(w.message)
 		return !cancelled
 	})
-	if cancelled || id < 0 {
+	if cancelled {
 		return
 	}
 	c.Printf("KCENSUS_CLIENT_STREAM peer=%d closed error=%v", id, streamErr)
-	if id < c.core.n {
-		c.MarkPeerFailed(id)
-	}
+	c.MarkPeerFailed(id)
 	c.peers.ClosePeer(id)
 }
 
 func (c *Client) bindStream(id int, conn net.Conn, w *bufio.Writer) error {
-	options := replica.SenderOptions{Capacity: -1, Writer: w}
-	if id < c.core.n {
-		options.Locker = c.WriteMutex(id)
+	if id < 0 || id >= c.proposer.n {
+		return replica.ErrPeerID
 	}
+	options := replica.SenderOptions{Capacity: -1, Writer: w, Locker: c.WriteMutex(id)}
 	return c.peers.BindConnection(id, conn, options)
-}
-
-func (c *Client) acceptMesh() {
-	for {
-		conn, err := c.listener.Accept()
-		if err != nil {
-			return
-		}
-		_ = conn.SetReadDeadline(time.Now().Add(2*time.Second + c.core.retry))
-		go c.readStream(-1, conn, bufio.NewReader(conn))
-	}
-}
-
-// A local proxy may accept TCP before the remote listener exists. Confirm an
-// ordinary protocol frame before publishing a stream or treating EOF as a
-// crash. The existing heartbeat also supplies the first-frame identity; no
-// separate handshake message or protocol vote is introduced.
-func (c *Client) confirmMesh(id int, conn net.Conn) (*bufio.Reader, message, error) {
-	if err := conn.SetDeadline(time.Now().Add(2*time.Second + c.core.retry)); err != nil {
-		return nil, message{}, err
-	}
-	frame := replica.Encode(defs.RPC_TABLE, &wireMessage{message: message{Kind: heartbeat, From: c.core.id, Digest: c.core.plan.Digest}}, true)
-	if n, err := conn.Write(frame.Data); err != nil {
-		return nil, message{}, err
-	} else if n != len(frame.Data) {
-		return nil, message{}, io.ErrShortWrite
-	}
-	r := bufio.NewReader(conn)
-	w, err := fastrpc.ReadMessage(r, decodeClientMessage)
-	if err != nil {
-		return nil, message{}, err
-	}
-	if w.From != id {
-		return nil, message{}, fmt.Errorf("invalid KCensus mesh peer %d (expected %d)", w.From, id)
-	}
-	if err := conn.SetDeadline(time.Time{}); err != nil {
-		return nil, message{}, err
-	}
-	return r, w.message, nil
-}
-
-func (c *Client) dialMesh(id int) {
-	timer := time.NewTicker(100 * time.Millisecond)
-	defer timer.Stop()
-	for {
-		select {
-		case <-c.stop:
-			return
-		default:
-		}
-		conn, err := net.DialTimeout("tcp", defs.DialAddress(c.topology.Listeners[id]), time.Second)
-		if err == nil {
-			r, first, confirmErr := c.confirmMesh(id, conn)
-			if confirmErr == nil && c.bindStream(id, conn, nil) == nil {
-				if !c.deliver(first) {
-					conn.Close()
-					return
-				}
-				go c.readStream(id, conn, r)
-				return
-			}
-			conn.Close()
-		}
-		select {
-		case <-c.stop:
-			return
-		case <-timer.C:
-		}
-	}
 }

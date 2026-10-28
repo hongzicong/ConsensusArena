@@ -1,9 +1,9 @@
 package kcensus
 
-// Non-voting client construction, routing, and executed-result completion.
+// Non-voting participants propose writes and receive voting-executor results.
 import (
 	"fmt"
-	"net"
+	"math"
 	"sync"
 	"time"
 
@@ -15,29 +15,33 @@ import (
 )
 
 type clientRequest struct {
-	record     Record
-	delegate   int
-	nextQuery  time.Duration
-	queryDelay time.Duration
-	queryPeer  int
+	record   Record
+	delegate int
+	uid      uint64
+}
+
+// The configured latency table is immutable. Availability is the only changing
+// input to this client's delegate selection; retain just the most recent set.
+type readDelegateCache struct {
+	voters   uint64
+	delegate int
+	valid    bool // the empty voter set may legitimately cache delegate -1
 }
 
 type Client struct {
 	client.StandardClient
-	topology    processTopology
-	core        *core
-	inbox       chan message
-	control     chan message
-	resultInbox chan message
-	proposals   chan Record
-	peers       *replica.PeerStreams
-	stop        chan struct{}
-	closeOnce   sync.Once
-	listener    net.Listener
-	requests    map[defs.RequestID]*clientRequest
-	readersOnce sync.Once
-	queryQueue  []defs.RequestID
-	queryHead   int
+	topology     processTopology
+	proposer     *clientProposer
+	inbox        chan clientInput
+	proposals    chan Record
+	peers        *replica.PeerStreams
+	stop         chan struct{}
+	closeOnce    sync.Once
+	requests     map[defs.RequestID]*clientRequest
+	readDelegate readDelegateCache
+	readVoters   uint64 // last available voter set processed for GET failover
+	readersOnce  sync.Once
+	writeFailed  uint64
 }
 
 func NewClient(b *client.BufferClient, conf *config.Config, clone int) *Client {
@@ -55,13 +59,12 @@ func NewClient(b *client.BufferClient, conf *config.Config, clone int) *Client {
 	if pid < 0 {
 		panic("KCensus client alias/clone is not configured")
 	}
-	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, topology: topology, core: newCore(pid, topology.Plan, conf.KCensusFailure, conf.KCensusShards), inbox: make(chan message, 65536), resultInbox: make(chan message, 4096), proposals: make(chan Record, 65536), stop: make(chan struct{}), requests: make(map[defs.RequestID]*clientRequest)}
+	c := &Client{StandardClient: client.StandardClient{BufferClient: b}, topology: topology, proposer: newClientProposer(pid, topology.Plan, conf.KCensusFailure, conf.KCensusShards), inbox: make(chan clientInput, 65536), proposals: make(chan Record, 65536), stop: make(chan struct{}), requests: make(map[defs.RequestID]*clientRequest)}
 	c.Printf("KCENSUS_SHARDS client=%d count=%d mapping=identity-if-zero-otherwise-modulo-v1", pid, conf.KCensusShards)
 	b.ClientID = int32(pid)
-	c.control = make(chan message, 4*c.core.m)
 	b.SkipPing = true
 	b.ClosestID = topology.Plan.Leaders[pid]
-	c.peers = replica.NewPeerStreams(len(topology.Aliases))
+	c.peers = replica.NewPeerStreams(c.proposer.n)
 	b.SetProtocol(c)
 	return c
 }
@@ -69,25 +72,16 @@ func NewClient(b *client.BufferClient, conf *config.Config, clone int) *Client {
 var _ client.Adapter = (*Client)(nil)
 
 func (*Client) RetryPolicy() string {
-	return "GET: original-ID delegate failover; PUT: executed-result cache queries; protocol evidence/payload repair"
+	return "PUT: synthesized voting delegate replies after ordered execution, original-ID result lookup at a survivor after stream failure; GET: voting-delegate quorum read with original-ID failover; in-memory executed-shard checkpoint catch-up; crash-stop lossless FIFO"
 }
 
 func (c *Client) Start() error {
-	c.ClosestID = c.core.plan.Leaders[c.core.id]
-	if c.PeerCount() != c.core.n {
+	c.ClosestID = c.proposer.plan.Leaders[c.proposer.id]
+	if c.PeerCount() != c.proposer.n {
 		return fmt.Errorf("KCensus client membership differs from configured topology")
 	}
-	listener, err := net.Listen("tcp", c.topology.Listeners[c.core.id])
-	if err != nil {
-		return fmt.Errorf("KCensus client listener: %w", err)
-	}
-	c.listener = listener
-	c.Printf("KCENSUS_CLIENT pid=%d alias=%s delegate=%d digest=%x listener=%s", c.core.id, c.topology.Aliases[c.core.id], c.core.plan.Leaders[c.core.id], c.core.plan.Digest, listener.Addr())
+	c.Printf("KCENSUS_CLIENT pid=%d alias=%s delegate=%d digest=%x voter_streams=%d", c.proposer.id, c.topology.Aliases[c.proposer.id], c.proposer.plan.Leaders[c.proposer.id], c.proposer.plan.Digest, c.proposer.n)
 	go c.run()
-	go c.acceptMesh()
-	for id := c.core.id + 1; id < c.core.m; id++ {
-		go c.dialMesh(id)
-	}
 	return nil
 }
 
@@ -98,7 +92,7 @@ func (c *Client) WaitReplies(_ int) {
 			return
 		default:
 		}
-		for id := 0; id < c.core.n; id++ {
+		for id := 0; id < c.proposer.n; id++ {
 			if c.Connection(id) != nil {
 				if c.bindStream(id, c.Connection(id), c.Writer(id)) == nil {
 					go c.readStream(id, c.Connection(id), c.Reader(id))
@@ -117,7 +111,7 @@ func (c *Client) SendProposal(p defs.Propose) {
 		panic(err)
 	}
 	select {
-	case c.proposals <- Record{defs.RequestID{Client: int32(c.core.id), Sequence: p.CommandId}, p.Command}:
+	case c.proposals <- Record{defs.RequestID{Client: int32(c.proposer.id), Sequence: p.CommandId}, p.Command}:
 	case <-c.stop:
 	}
 }
@@ -125,105 +119,525 @@ func (c *Client) SendProposal(p defs.Propose) {
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		close(c.stop)
-		if c.listener != nil {
-			c.listener.Close()
-		}
 		c.peers.Close()
 	})
 }
 
-func (c *Client) selectedDelegate() int {
-	leader := c.core.plan.Leaders[c.core.id]
-	if c.Connection(leader) != nil && !c.PeerFailed(leader) {
-		return leader
+func (c *Client) submitRequest(r Record) {
+	if c.requests[r.ID] != nil || c.ReplyCompleted(r.ID) {
+		return
 	}
-	alive := make([]bool, c.core.n)
-	for id := range alive {
-		alive[id] = c.Connection(id) != nil && !c.PeerFailed(id)
+	q := &clientRequest{record: r, delegate: -1}
+	c.requests[r.ID] = q
+	if r.Command.Op == state.GET {
+		c.sendDelegatedRead(q)
+		return
 	}
-	if delegate := survivingReadDelegate(c.topology.Latency, c.core.id, c.core.n, c.core.f, alive); delegate >= 0 {
-		return delegate
+	q.delegate = c.proposer.plan.Leaders[c.proposer.id]
+	q.uid = c.proposer.submit(r)
+	// The proposer owns the retained Single/repair payload after submission.
+	// The adapter needs only PUT identity, key, operation and delegate for replies.
+	// Clear this slice header without mutating queued messages or payload bytes.
+	q.record.Command.V = nil
+	if c.proposer.peerFailed(q.delegate) {
+		c.queryWriteResult(q)
 	}
-	for _, id := range c.core.priority {
-		if id < c.core.n && c.Connection(id) != nil && !c.PeerFailed(id) {
+}
+
+func (c *Client) availableVoters() uint64 {
+	var voters uint64
+	for id := 0; id < c.proposer.n; id++ {
+		if !c.proposer.peerFailed(id) && (c.proposer.connected == nil || c.proposer.connected[id]) {
+			voters |= uint64(1) << id
+		}
+	}
+	return voters
+}
+
+func (c *Client) selectedReadDelegate() int {
+	voters := c.availableVoters()
+	// Normal GETs use the same synthesized voting delegate as PUTs. Retain the
+	// existing alternative selection only when that delegate is unavailable.
+	preferred := c.proposer.plan.Leaders[c.proposer.id]
+	if preferred >= 0 && preferred < c.proposer.n && voters&(uint64(1)<<preferred) != 0 {
+		return preferred
+	}
+	if c.readDelegate.valid && c.readDelegate.voters == voters {
+		return c.readDelegate.delegate
+	}
+	// Membership fits the protocol's 63-process limit. Misses retain the exact
+	// existing failover cost calculation and tie-breaking; hits avoid its allocations/sorts.
+	var alive [63]bool
+	for id := 0; id < c.proposer.n; id++ {
+		alive[id] = voters&(uint64(1)<<id) != 0
+	}
+	delegate := survivingReadDelegate(c.topology.Latency, c.proposer.id, c.proposer.n, c.proposer.f, alive[:c.proposer.n])
+	c.readDelegate = readDelegateCache{voters: voters, delegate: delegate, valid: true}
+	return delegate
+}
+
+func (c *Client) sendDelegatedRead(q *clientRequest) {
+	q.delegate = c.selectedReadDelegate()
+	if q.delegate >= 0 {
+		r := q.record
+		c.proposer.send(q.delegate, message{Kind: delegateRead, Shard: c.proposer.shardFor(r.Command.K), ID: r.ID, Request: &r})
+	}
+}
+
+func (c *Client) receive(i clientInput) {
+	if i.kind != executedResult {
+		c.proposer.receive(i)
+		return
+	}
+	c.proposer.markConnected(i.from)
+	q := c.requests[i.id]
+	if q == nil || i.id.Client != int32(c.proposer.id) || i.from < 0 || i.from >= c.proposer.n ||
+		i.from != q.delegate || c.proposer.peerFailed(i.from) || i.shard != c.proposer.shardFor(q.record.Command.K) {
+		return
+	}
+	switch q.record.Command.Op {
+	case state.GET:
+		if i.slot != 0 {
+			return
+		}
+	case state.PUT:
+		if i.slot == 0 {
+			return
+		}
+		// Execution evidence retires our payload, but does not invent a Commit UID
+		// or advance the proposal cursor: the result's slot can be a later prefix.
+		c.proposer.retire(i.shard, q.uid)
+	default:
+		return
+	}
+	value := append(state.Value(nil), i.result...)
+	c.CompleteReply(i.id, value, func() {
+		delete(c.requests, i.id)
+	}, c.stop)
+}
+
+// A live FIFO retains its queued GET/result. Revisit pending GETs only when
+// availability changes; an unrelated change never resends to a live delegate.
+func (c *Client) recoverReadDelegates() {
+	voters := c.availableVoters()
+	if voters == c.readVoters {
+		return
+	}
+	c.readVoters = voters
+	for _, q := range c.requests {
+		if q.record.Command.Op == state.GET && (q.delegate < 0 || voters&(uint64(1)<<q.delegate) == 0) {
+			c.sendDelegatedRead(q)
+		}
+	}
+}
+
+// All pending PUTs share the same original executor for this client. Scan
+// requests only when that executor (or a subsequent recovery executor) fails;
+// a healthy run adds neither per-request timers nor result-query traffic.
+func (c *Client) recoverWriteResults() {
+	failed := c.proposer.failed
+	if failed == c.writeFailed {
+		return
+	}
+	c.writeFailed = failed
+	for _, q := range c.requests {
+		if q.record.Command.Op == state.PUT && (q.delegate < 0 || c.proposer.peerFailed(q.delegate)) {
+			c.queryWriteResult(q)
+		}
+	}
+}
+
+func (c *Client) queryWriteResult(q *clientRequest) {
+	q.delegate = c.selectedReadDelegate()
+	if q.delegate < 0 {
+		return
+	}
+	r := q.record
+	c.proposer.send(q.delegate, message{Kind: resultQuery, Shard: c.proposer.shardFor(r.Command.K), ID: r.ID, Request: &r})
+}
+
+func (c *Client) run() {
+	start := time.Now()
+	c.proposer.connected = make([]bool, c.proposer.m)
+	for id := 0; id < c.proposer.n; id++ {
+		if c.Connection(id) != nil && !c.PeerFailed(id) {
+			c.proposer.markConnected(id)
+		}
+	}
+	c.readVoters = c.availableVoters()
+	receive := c.receive
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.stop:
+			return
+		case r := <-c.proposals:
+			c.submitRequest(r)
+		case m := <-c.inbox:
+			receive(m)
+		case now := <-ticker.C:
+			c.peers.Failed().Range(func(id int) bool { c.proposer.markFailed(id); return true })
+			for id := 0; id < c.proposer.n; id++ {
+				if c.PeerFailed(id) {
+					c.proposer.markFailed(id)
+				}
+			}
+			c.proposer.tick(now.Sub(start))
+			c.recoverReadDelegates()
+			c.recoverWriteResults()
+		}
+		// Drain a bounded group of already-arrived evidence before generating
+		// another timer's repairs. All protocol transitions remain serialized.
+		for count := 0; count < 64; count++ {
+			select {
+			case m := <-c.inbox:
+				receive(m)
+			default:
+				count = 64
+			}
+		}
+		c.drain()
+	}
+}
+
+// clientInput is a projection made before inbox admission. It cannot retain a
+// foreign Record, graph report, KV image, or snapshot. Results belong to this
+// client; batch members contain only this client's UIDs.
+type clientInput struct {
+	kind              uint8
+	from, proposer    int
+	shard             state.Key
+	slot, uid         uint64
+	hasValue, hasLast bool
+	last              uint64
+	graphTime         int64
+	id                defs.RequestID
+	result            state.Value
+	batches           []clientBatch
+}
+
+type clientBatch struct {
+	uid, slot uint64
+	members   []uint64
+}
+
+func projectClientMessage(m message, owner, processes int) clientInput {
+	i := clientInput{kind: m.Kind, from: m.From, proposer: m.Proposer, shard: m.Shard,
+		slot: m.Slot, graphTime: m.GraphTime}
+	if m.LastV != nil {
+		i.hasLast, i.last = true, *m.LastV
+	}
+	if m.Value != nil {
+		i.hasValue, i.uid = true, m.Value.UID
+	}
+	owned := func(uid uint64) bool { return uid&1 == 0 && int((uid>>1)%uint64(processes)) == owner }
+	if m.Kind == executedResult && m.ID.Client == int32(owner) {
+		i.id, i.result = m.ID, m.Result
+	}
+	batch := func(v *Value) {
+		if v == nil || v.Reference || v.Batch == nil {
+			return
+		}
+		b := clientBatch{uid: v.UID, slot: v.Batch.Slot}
+		for _, uid := range v.Batch.Members {
+			if owned(uid) {
+				b.members = append(b.members, uid)
+			}
+		}
+		if len(b.members) > 0 {
+			i.batches = append(i.batches, b)
+		}
+	}
+	batch(m.Value)
+	batch(m.Fast)
+	for _, v := range m.Values {
+		batch(v)
+	}
+	for _, r := range m.Reports {
+		batch(r.Value)
+	}
+	return i
+}
+
+// This is an input-owner state machine, not an SMR learner. A voting Commit
+// supplies the next proposal slot and predecessor UID, without materializing or
+// executing that slot. Only executedResult from the selected voting delegate
+// completes a request. No client votes, runs a census, or relays foreign input.
+type clientProposer struct {
+	id, n, m, f int
+	plan        Plan
+	priority    []int
+	shardCount  state.Key
+	shards      map[state.Key]*clientShard
+	out         []envelope
+	planSent    uint64 // fingerprint piggybacked once per voter stream
+	now, retry  time.Duration
+	connected   []bool
+	failed      uint64
+	graphFailed bool
+	queue       []state.Key
+	head        int
+}
+
+type clientShard struct {
+	nextUID, slot, lastUID, busy uint64
+	hasLast                      bool
+	// Only this owner's unretired PUT bodies. Idle shards retain scalar cursors.
+	inputs    map[uint64]*Value
+	batches   map[uint64]clientBatch
+	handoffs  map[uint64]uint64
+	nextOffer time.Duration
+	scheduled bool
+}
+
+func newClientProposer(id int, plan Plan, failure time.Duration, shards int) *clientProposer {
+	if shards < 0 || id < plan.Voters || id >= len(plan.Requirements) {
+		panic("invalid KCensus client configuration")
+	}
+	if err := validateRequirements(plan.Requirements, plan.Voters); err != nil {
+		panic(err)
+	}
+	if len(plan.Graphs) != len(plan.Requirements) {
+		panic("KCensus requires a synthesized propagation graph")
+	}
+	if failure <= 0 {
+		failure = 1500 * time.Millisecond
+	}
+	return &clientProposer{id: id, n: plan.Voters, m: len(plan.Requirements), f: plan.Voters / 2,
+		plan: plan, priority: plan.leaderPriority(), shardCount: state.Key(shards), shards: make(map[state.Key]*clientShard),
+		retry: failure / 3}
+}
+
+func (p *clientProposer) shardFor(key state.Key) state.Key { return shardFor(key, p.shardCount) }
+
+func (p *clientProposer) shard(k state.Key) *clientShard {
+	s := p.shards[k]
+	if s == nil {
+		s = &clientShard{nextUID: uint64(2 * p.id)}
+		p.shards[k] = s
+	}
+	return s
+}
+
+func (p *clientProposer) peerFailed(id int) bool {
+	return id < 0 || id >= p.m || p.failed&(uint64(1)<<id) != 0
+}
+func (p *clientProposer) markConnected(id int) {
+	if p.connected != nil && id >= 0 && id < p.n && !p.peerFailed(id) {
+		p.connected[id] = true
+	}
+}
+func (p *clientProposer) markFailed(id int) {
+	if id < 0 || id >= p.n || p.peerFailed(id) {
+		return
+	}
+	p.failed |= uint64(1) << id
+	p.graphFailed = p.graphFailed || graphNeedsPeer(p.plan, p.id, id)
+}
+func (p *clientProposer) coordinator() int {
+	for _, id := range p.priority {
+		// Established FIFO streams remain eligible until a definitive failure.
+		// A transport-free driver supplies failures explicitly through markFailed.
+		if id < p.n && !p.peerFailed(id) && (p.connected == nil || p.connected[id]) {
 			return id
 		}
 	}
 	return -1
 }
 
-func (c *Client) receiveResult(m message) {
-	q := c.requests[m.ID]
-	if q == nil || !c.core.acceptsResult(m, q.record) || c.ReplyCompleted(m.ID) {
+func (p *clientProposer) send(to int, m message) {
+	if to < 0 || to >= p.n || p.peerFailed(to) {
 		return
 	}
-	c.CompleteReply(m.ID, m.Result, func() {
-		delete(c.requests, m.ID)
-		c.core.recordResult(m, q.record)
-	}, nil)
+	m.From = p.id
+	if p.planSent&(uint64(1)<<to) == 0 {
+		m.Digest = p.plan.Digest
+		p.planSent |= uint64(1) << to
+	}
+	switch m.Kind {
+	case spread, offer:
+		if s := p.shards[m.Shard]; s != nil && s.hasLast {
+			uid := s.lastUID
+			m.LastV = &uid
+		}
+	}
+	p.out = append(p.out, envelope{To: to, Message: m})
 }
 
-// Fair, bounded cache repair. Queries never propose a PUT or authorize completion.
-func (c *Client) queryResults() {
-	count := len(c.queryQueue) - c.queryHead
-	if count > 256 {
-		count = 256
+func (p *clientProposer) submit(r Record) uint64 {
+	k := p.shardFor(r.Command.K)
+	s := p.shard(k)
+	uid := s.nextUID
+	if uid > math.MaxUint64-uint64(2*p.m)-1 {
+		panic("KCensus UID space exhausted")
 	}
-	budget := 32
-	for ; count > 0; count-- {
-		id := c.queryQueue[c.queryHead]
-		c.queryHead++
-		q := c.requests[id]
-		if q == nil {
-			continue
-		}
-		c.queryQueue = append(c.queryQueue, id)
-		if c.core.now < q.nextQuery || budget == 0 {
-			continue
-		}
-		if q.record.Command.Op == state.GET {
-			if q.delegate < 0 || c.Connection(q.delegate) == nil || c.PeerFailed(q.delegate) {
-				q.delegate = c.selectedDelegate()
-				c.sendRead(q)
-			}
-			// A live delegate will deliver this GET's own result. Other voters
-			// do not execute this read and cannot answer a cache lookup for it.
-			q.nextQuery = c.core.now + c.core.retry
-			continue
-		}
-		if q.delegate >= 0 && c.Connection(q.delegate) != nil && !c.PeerFailed(q.delegate) {
-			q.nextQuery = c.core.now + c.core.retry
-			continue
-		}
-		for attempt := 0; attempt < c.core.n; attempt++ {
-			peer := q.queryPeer
-			if peer < 0 {
-				peer = 0
-			}
-			q.queryPeer = (peer + 1) % c.core.n
-			if c.Connection(peer) == nil || c.PeerFailed(peer) {
-				continue
-			}
-			c.core.send(peer, message{Kind: resultQuery, Shard: c.core.shardFor(q.record.Command.K), ID: id})
-			budget--
-			break
-		}
-		q.queryDelay *= 2
-		if q.queryDelay > 8*time.Second {
-			q.queryDelay = 8 * time.Second
-		}
-		q.nextQuery = c.core.now + q.queryDelay
+	s.nextUID += uint64(2 * p.m)
+	r.Command.V = append(state.Value(nil), r.Command.V...)
+	v := &Value{UID: uid, Proposer: p.id, Records: []Record{r}}
+	if s.inputs == nil {
+		s.inputs = make(map[uint64]*Value)
 	}
-	if c.queryHead > 4096 && c.queryHead*2 >= len(c.queryQueue) {
-		copy(c.queryQueue, c.queryQueue[c.queryHead:])
-		c.queryQueue = c.queryQueue[:len(c.queryQueue)-c.queryHead]
-		c.queryHead = 0
+	// Previously offered own input must be reproposed by the voting reproposer.
+	direct := len(s.inputs) == 0 && s.busy <= s.slot && !p.graphFailed
+	s.inputs[uid] = v
+	if !s.scheduled {
+		s.scheduled = true
+		s.nextOffer = p.now + 4*p.retry
+		p.queue = append(p.queue, k)
+	}
+	if direct {
+		s.busy = s.slot + 1
+		for _, edge := range p.plan.Graphs[p.id].States[p.id][0].Outgoing {
+			payload := p.plan.Graphs[p.id].Payload[edge]
+			p.send(edge.To, message{Kind: spread, Shard: k, Slot: s.slot + 1, Proposer: p.id, GraphTime: int64(edge.Time),
+				Mask: uint64(1) << p.id, Value: v, NewValue: true, References: !payload})
+		}
+	} else {
+		p.offer(k, v, p.graphFailed)
+	}
+	return uid
+}
+
+func (p *clientProposer) offer(k state.Key, v *Value, repair bool) {
+	m := message{Kind: offer, Shard: k, ID: v.Records[0].ID, Proposer: p.id, Value: v}
+	if repair {
+		to := p.coordinator()
+		if to < 0 {
+			return
+		}
+		s := p.shards[k]
+		reliable := p.connected != nil && p.connected[to] && !p.peerFailed(to)
+		if reliable {
+			if s.handoffs == nil {
+				s.handoffs = make(map[uint64]uint64)
+			}
+			bit := uint64(1) << to
+			if s.handoffs[v.UID]&bit != 0 {
+				return
+			}
+			s.handoffs[v.UID] |= bit
+		}
+		m.GraphTime = -1
+		p.send(to, m)
+		return
+	}
+	for _, edge := range p.plan.Graphs[p.id].States[p.id][0].Outgoing {
+		if p.plan.Graphs[p.id].Payload[edge] {
+			m.GraphTime = int64(edge.Time)
+			p.send(edge.To, m)
+		}
 	}
 }
 
-func (c *Client) sendRead(q *clientRequest) {
-	if q.delegate >= 0 {
-		r := q.record
-		c.core.send(q.delegate, message{Kind: delegateRead, Shard: c.core.shardFor(r.Command.K), ID: r.ID, Request: &r})
+func (p *clientProposer) retire(k state.Key, uid uint64) {
+	s := p.shards[k]
+	if s == nil {
+		return
+	}
+	delete(s.inputs, uid)
+	delete(s.handoffs, uid)
+	if len(s.inputs) == 0 {
+		s.inputs = nil
+		s.handoffs = nil
+		s.batches = nil
+	}
+}
+
+func (p *clientProposer) receive(i clientInput) {
+	if i.from < 0 || i.from >= p.n {
+		return
+	}
+	p.markConnected(i.from)
+	if p.shardCount != 0 && (i.shard < 0 || i.shard >= p.shardCount) {
+		return
+	}
+	switch i.kind {
+	case spread, accept, commit, offer:
+	default:
+		return
+	}
+	if i.kind == spread && (i.proposer < 0 || i.proposer >= p.m || !p.plan.Graphs[i.proposer].Edges[graphEdge{i.from, p.id, time.Duration(i.graphTime)}]) {
+		return
+	}
+	s := p.shards[i.shard]
+	if s == nil {
+		switch i.kind {
+		case offer:
+			return
+		}
+		s = p.shard(i.shard)
+	}
+	if i.slot == s.slot+1 && i.hasLast && (!s.hasLast || s.lastUID != i.last) {
+		panic(fmt.Sprintf("KCensus last_v mismatch shard=%d slot=%d from=%d", i.shard, i.slot, i.from))
+	}
+	for _, b := range i.batches {
+		var members []uint64
+		for _, uid := range b.members {
+			if s.inputs[uid] != nil {
+				members = append(members, uid)
+			}
+		}
+		if len(members) > 0 && b.slot > s.slot {
+			if s.batches == nil {
+				s.batches = make(map[uint64]clientBatch)
+			}
+			b.members = members
+			s.batches[b.uid] = b
+		}
+	}
+	switch i.kind {
+	case spread, accept:
+		if i.slot > s.busy {
+			s.busy = i.slot
+		}
+	case commit:
+		if !i.hasValue || i.slot == 0 || i.slot <= s.slot {
+			return
+		}
+		p.retire(i.shard, i.uid)
+		if b, ok := s.batches[i.uid]; ok {
+			for _, uid := range b.members {
+				p.retire(i.shard, uid)
+			}
+		}
+		s.slot, s.lastUID, s.hasLast = i.slot, i.uid, true
+		for uid, b := range s.batches {
+			if b.slot <= s.slot {
+				delete(s.batches, uid)
+			}
+		}
+	}
+}
+
+func (p *clientProposer) tick(now time.Duration) {
+	p.now = now
+	budget := 64
+	for count := min(256, len(p.queue)-p.head); count > 0; count-- {
+		k := p.queue[p.head]
+		p.head++
+		s := p.shards[k]
+		if len(s.inputs) == 0 {
+			s.scheduled = false
+			continue
+		}
+		p.queue = append(p.queue, k)
+		if now < s.nextOffer || budget == 0 {
+			continue
+		}
+		s.nextOffer = now + 4*p.retry
+		var lowest *Value
+		for _, v := range s.inputs {
+			if lowest == nil || v.UID < lowest.UID {
+				lowest = v
+			}
+		}
+		p.offer(k, lowest, true)
+		budget--
+	}
+	if p.head > 4096 && p.head*2 >= len(p.queue) {
+		copy(p.queue, p.queue[p.head:])
+		p.queue = p.queue[:len(p.queue)-p.head]
+		p.head = 0
 	}
 }

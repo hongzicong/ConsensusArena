@@ -29,7 +29,9 @@ type propagationGraph struct {
 	Edges   map[graphEdge]bool
 }
 
-func planningPaths(latency [][]time.Duration) ([][]time.Duration, [][]int) {
+// Clients propose directly to voters and receive foreign payloads from voters.
+// No client-to-client link exists; only voters may be intermediate vertices.
+func planningPaths(latency [][]time.Duration, voters int) ([][]time.Duration, [][]int) {
 	n := len(latency)
 	d, next := make([][]time.Duration, n), make([][]int, n)
 	for i := range d {
@@ -37,12 +39,16 @@ func planningPaths(latency [][]time.Duration) ([][]time.Duration, [][]int) {
 		next[i] = make([]int, n)
 		for j := range d[i] {
 			next[i][j] = j
+			if i != j && i >= voters && j >= voters {
+				d[i][j] = time.Duration(1<<62 - 1)
+				continue
+			}
 			if i != j && d[i][j] == 0 {
 				d[i][j] = time.Nanosecond
 			}
 		}
 	}
-	for k := 0; k < n; k++ {
+	for k := 0; k < voters; k++ {
 		for i := 0; i < n; i++ {
 			for j := 0; j < n; j++ {
 				if d[i][k]+d[k][j] < d[i][j] {
@@ -56,7 +62,7 @@ func planningPaths(latency [][]time.Duration) ([][]time.Duration, [][]int) {
 
 func buildPropagation(latency [][]time.Duration, rs []Requirement, budgets []time.Duration, leaders []int, voters int) ([]propagationGraph, error) {
 	n := len(rs)
-	d, next := planningPaths(latency)
+	d, next := planningPaths(latency, voters)
 	graphs := make([]propagationGraph, n)
 	type triangle struct {
 		a, w int
@@ -191,12 +197,20 @@ func buildPropagation(latency [][]time.Duration, rs []Requirement, budgets []tim
 			}
 		}
 		g.States = make([][]*graphState, n)
+		for edge := range g.Edges {
+			if edge.From >= voters && edge.To >= voters {
+				return nil, fmt.Errorf("client-to-client graph edge %d -> %d", edge.From, edge.To)
+			}
+		}
 		for v := range states {
 			for _, s := range states[v] {
 				g.States[v] = append(g.States[v], s)
 			}
 			sort.Slice(g.States[v], func(i, j int) bool { return g.States[v][i].Time < g.States[v][j].Time })
 			for _, s := range g.States[v] {
+				if v >= voters && len(s.Outgoing) > 0 && (v != p || len(s.Dependencies) > 0) {
+					return nil, fmt.Errorf("non-voter %d relays proposer %d at %s", v, p, s.Time)
+				}
 				sort.Slice(s.Outgoing, func(i, j int) bool { return s.Outgoing[i].To < s.Outgoing[j].To })
 			}
 		}

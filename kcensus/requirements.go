@@ -48,8 +48,6 @@ func Compatible(a, b Requirement, f int) bool {
 	return witnesses.Size() > f
 }
 
-func ValidateRequirements(rs []Requirement) error { return validateRequirements(rs, len(rs)) }
-
 func validateRequirements(rs []Requirement, voters int) error {
 	m := len(rs)
 	if voters < 3 || voters > m || m > 63 || voters%2 != 1 {

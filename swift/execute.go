@@ -11,7 +11,7 @@ func (c *core) apply(desc *commandDesc, cmdID defs.RequestID) {
 	//       Now I do
 	// TODO: How is that possible ?
 
-	if desc.propose == nil || c.delivered.Has(cmdID.String()) || !c.executeEnabled() {
+	if desc.propose == nil || c.hasDelivered(cmdID) || !c.executeEnabled() {
 		return
 	}
 
@@ -20,34 +20,30 @@ func (c *core) apply(desc *commandDesc, cmdID defs.RequestID) {
 	}
 
 	for _, cmdIDPrime := range desc.dep {
-		if !c.delivered.Has(cmdIDPrime.String()) {
+		if !c.hasDelivered(cmdIDPrime) {
 			return
 		}
 	}
 
-	c.delivered.Set(cmdID.String(), struct{}{})
+	c.delivered[cmdID] = struct{}{}
 	v := c.execute(desc.cmd)
 
-	desc.successorsL.Lock()
 	if desc.successors != nil {
 		for _, sucCmdID := range desc.successors {
 			c.scheduleDelivery(sucCmdID)
 		}
 	}
-	desc.successorsL.Unlock()
 
 	if !c.replyAfterExecution() {
 		return
 	}
 
 	c.queueReply(desc, cmdID, v)
-	if desc.seq {
-		c.awaitReply(desc, cmdID)
-	}
 }
 
-// completeReply runs on the existing reply worker, preserving send/bookkeeping order.
-func (c *core) completeReply(args *replyArgs) {
+// Reply sending and history handoff run as a later event-loop task, after the
+// descriptor transition that authorized them has returned.
+func (c *core) completeReply(desc *commandDesc, args *replyArgs) {
 	if args.propose.Proxy && !c.optExec {
 		acc := &MAccept{
 			Replica: c.id,
@@ -68,5 +64,14 @@ func (c *core) completeReply(args *replyArgs) {
 	}
 	// TODO: what if it is optimistically executed by the leader?
 	c.historySize = (c.historySize % HISTORY_SIZE) + 1
-	args.finish <- (c.historySize - 1)
+	slot := c.historySize - 1
+	c.history[slot] = commandStaticDesc{
+		cmdID: args.cmdID, phase: desc.phase, cmd: desc.cmd, dep: desc.dep,
+		slowPath: desc.slowPath, defered: desc.defered,
+	}
+	desc.active = false
+	desc.slowPathH.Free()
+	desc.fastPathH.Free()
+	delete(c.descriptors, args.cmdID)
+	c.freeDesc(desc)
 }

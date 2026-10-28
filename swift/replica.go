@@ -12,7 +12,6 @@ import (
 	"github.com/hongzicong/ConsensusArena/replicaset"
 	fastrpc "github.com/hongzicong/ConsensusArena/rpc"
 	"github.com/hongzicong/ConsensusArena/state"
-	cmap "github.com/orcaman/concurrent-map"
 )
 
 // Replica owns runtime resources and one protocol core.
@@ -22,18 +21,15 @@ type Replica struct {
 	channels            transportChannels
 	control             chan leaderCall
 	recover             chan int32
-	delivery            chan defs.RequestID
-	replyWorker         *replyWorker
+	localReady          chan struct{}
+	batcher             *messageBatcher
 	descriptorPool      sync.Pool
 	descriptorPoolLevel int
-	descriptorCount     int
 }
 
 func New(alias string, replicaID int, addrs []string, executeEnabled, fastRead, optExec bool,
 	descriptorPoolLevel, f int, conf *config.Config, logger *dlog.Logger, slowAddrs []string) *Replica {
-	cmap.SHARD_COUNT = 32768
-
-	r := &Replica{Replica: replica.New(alias, replicaID, f, addrs, executeEnabled, conf, logger), control: make(chan leaderCall, 8), recover: make(chan int32, 8), delivery: make(chan defs.RequestID, defs.CHAN_BUFFER_SIZE), descriptorPoolLevel: descriptorPoolLevel, descriptorPool: sync.Pool{New: func() interface{} { return &commandDesc{} }}}
+	r := &Replica{Replica: replica.New(alias, replicaID, f, addrs, executeEnabled, conf, logger), control: make(chan leaderCall, 8), recover: make(chan int32, 8), localReady: make(chan struct{}, 1), descriptorPoolLevel: descriptorPoolLevel, descriptorPool: sync.Pool{New: func() interface{} { return &commandDesc{} }}}
 	initial := replicaset.New()
 	for _, member := range conf.Plan.FastQuorum {
 		initial.Add(member.Rank)
@@ -44,20 +40,15 @@ func New(alias string, replicaID int, addrs []string, executeEnabled, fastRead, 
 		send:                func(id int, code uint8, msg fastrpc.Serializable) error { return r.Messages().Send(id, code, msg) },
 		broadcast:           func(msg fastrpc.Serializable, code uint8) int { return r.SendToAll(msg, code) },
 		sendClient:          r.SendClientMsg,
-		peerAlive:           func(id int) bool { return r.Alive[id] },
+		peerAlive:           r.peerAlive,
 		executeEnabled:      func() bool { return r.ExecuteEnabled },
 		replyAfterExecution: func() bool { return r.ReplyAfterExecution },
-		requeueProposal:     r.requeueProposal, scheduleDelivery: r.scheduleDelivery,
-		startDescriptor: r.startDescriptor, stopDescriptors: r.stopDescriptors, resetDescriptors: func() { r.descriptorCount = 0 },
-		sequentialDescriptor: func() bool { return r.descriptorCount >= MaxDescRoutines }, allocDesc: r.allocDesc, freeDesc: r.freeDesc,
-		stopReplies: func() { r.replyWorker.stop() }, resetReplies: func() { r.replyWorker = newReplyWorker(r) },
-		queueReply: func(d *commandDesc, id defs.RequestID, v state.Value) { r.replyWorker.reply(d, id, v) },
-		awaitReply: r.awaitReply, awaitRecovery: r.awaitRecovery,
+		allocDesc:           r.allocDesc, freeDesc: r.freeDesc,
 	}, fastRead, optExec, slowAddrs, initial, conf.Plan.LeaderID())
 	r.core.execute = func(cmd state.Command) state.Value { return cmd.Execute(r.State) }
 
-	r.core.batcher = newMessageBatcher(r, 16)
-	r.replyWorker = newReplyWorker(r)
+	r.batcher = newMessageBatcher(r, 16)
+	r.core.batcher = r.batcher
 
 	// Include recovery-only input, but leave client-only messages unsubscribed.
 	r.channels = transportChannels{
@@ -80,8 +71,6 @@ func New(alias string, replicaID int, addrs []string, executeEnabled, fastRead, 
 
 	return r
 }
-
-var MaxDescRoutines = 100
 
 type leaderCall struct{ done chan leaderDecision }
 
@@ -114,35 +103,49 @@ func (r *Replica) run() {
 	go r.WaitForClientConnections()
 
 	for !r.Shutdown {
+		proposals, recoveries := r.ProposeChan, r.recover
+		fast, slow := r.channels.fastAckChan, r.channels.lightSlowAckChan
+		acks, optAcks := r.channels.acksChan, r.channels.optAcksChan
+		local := r.localReady
+		var recoveryAcks chan fastrpc.Serializable
+		if r.core.status == RECOVERING {
+			// Preserve the old recovery loop's input gate without nesting a
+			// blocking loop inside a protocol transition.
+			proposals, recoveries, fast, slow, acks, optAcks, local = nil, nil, nil, nil, nil, nil, nil
+			recoveryAcks = r.channels.newLeaderAckNChan
+		}
 		select {
 		case call := <-r.control:
 			protocol.Must(r.Step(call, time.Time{}))
 
-		case newBallot := <-r.recover:
+		case newBallot := <-recoveries:
 			protocol.Must(r.Step(recoveryEvent(newBallot), time.Time{}))
 
-		case cmdID := <-r.delivery:
-			protocol.Must(r.Step(cmdID, time.Time{}))
+		case <-local:
+			r.drain()
 
-		case propose := <-r.ProposeChan:
+		case propose := <-proposals:
 			protocol.Must(r.Propose(propose, time.Time{}))
 
-		case m := <-r.channels.fastAckChan:
+		case m := <-fast:
 			protocol.Must(r.Step(m, time.Time{}))
 
-		case m := <-r.channels.lightSlowAckChan:
+		case m := <-slow:
 			protocol.Must(r.Step(m, time.Time{}))
 
-		case m := <-r.channels.acksChan:
+		case m := <-acks:
 			protocol.Must(r.Step(m, time.Time{}))
 
-		case m := <-r.channels.optAcksChan:
+		case m := <-optAcks:
 			protocol.Must(r.Step(m, time.Time{}))
 
 		case m := <-r.channels.newLeaderChan:
 			protocol.Must(r.Step(m, time.Time{}))
 
 		case m := <-r.channels.syncChan:
+			protocol.Must(r.Step(m, time.Time{}))
+
+		case m := <-recoveryAcks:
 			protocol.Must(r.Step(m, time.Time{}))
 
 		}
@@ -157,6 +160,10 @@ func (r *Replica) Propose(p *defs.GPropose, _ time.Time) error {
 	if err := protocol.ValidateProposal(p); err != nil {
 		return err
 	}
+	if r.core.status == RECOVERING {
+		r.core.requeueProposal(r.admitProposal(p))
+		return nil
+	}
 	additional := len(r.ProposeChan)
 	if additional > 255 {
 		additional = 255
@@ -166,12 +173,25 @@ func (r *Replica) Propose(p *defs.GPropose, _ time.Time) error {
 	for i := 0; i < additional; i++ {
 		r.core.submit(r.admitProposal(<-r.ProposeChan))
 	}
+	r.drain()
 	return nil
 }
 
-func (r *Replica) Step(event any, now time.Time) error { return r.core.receive(event, now) }
+func (r *Replica) Step(event any, now time.Time) error {
+	if err := r.core.receive(event, now); err != nil {
+		return err
+	}
+	r.drain()
+	return nil
+}
 
-func (r *Replica) Tick(t protocol.Tick) error { return r.core.tick(t) }
+func (r *Replica) Tick(t protocol.Tick) error {
+	if err := r.core.tick(t); err != nil {
+		return err
+	}
+	r.drain()
+	return nil
+}
 
 func (r *Replica) allocDesc() *commandDesc {
 	if r.descriptorPoolLevel > 0 {
@@ -188,85 +208,23 @@ func (r *Replica) freeDesc(desc *commandDesc) {
 	}
 }
 
-func (r *Replica) runDescriptor(desc *commandDesc, cmdID defs.RequestID) {
-	defer func() {
-		for len(desc.stopChan) != 0 {
-			(<-desc.stopChan).Done()
-		}
-	}()
-
-	for desc.active {
-		select {
-		case wg := <-desc.stopChan:
-			desc.active = false
-			wg.Done()
-			return
-		case msg := <-desc.msgs:
-			if r.core.handleMsg(msg, desc, cmdID) {
-				r.descriptorCount--
-				return
-			}
-		}
-	}
-}
-
-func (r *Replica) awaitRecovery() {
-	// stop processing normal channels:
-	for r.core.status == RECOVERING {
-		select {
-		case call := <-r.control:
-			protocol.Must(r.Step(call, time.Time{}))
-
-		case m := <-r.channels.newLeaderChan:
-			protocol.Must(r.Step(m, time.Time{}))
-
-		case m := <-r.channels.newLeaderAckNChan:
-			protocol.Must(r.Step(m, time.Time{}))
-
-		case m := <-r.channels.syncChan:
-			protocol.Must(r.Step(m, time.Time{}))
-		}
-	}
-}
-
-func (r *Replica) stopDescriptors() {
-	var wg sync.WaitGroup
-	r.core.descriptors.IterCb(func(_ string, v interface{}) {
-		desc := v.(*commandDesc)
-		if desc.active && !desc.seq {
-			wg.Add(1)
-			desc.stopChan <- &wg
-		}
-	})
-	wg.Wait()
-
-	// TODO: maybe add to history even if stopped this way ?
-}
-
-func (r *Replica) awaitReply(desc *commandDesc, cmdID defs.RequestID) {
-	// wait for the slot number and ignore any other message
-	for {
-		switch slot := (<-desc.msgs).(type) {
-		case int:
-			r.core.handleMsg(slot, desc, cmdID)
-			return
-		}
-	}
-}
-
 func (r *Replica) admitProposal(p *defs.GPropose) *proposal {
 	return &proposal{Propose: p.Propose, Proxy: p.Proxy, Addr: p.Addr, context: p}
 }
 
-func (r *Replica) requeueProposal(p *proposal) {
-	go func() { r.ProposeChan <- p.context.(*defs.GPropose) }()
+func (r *Replica) drain() {
+	r.core.drainLocalWork(localWorkBudget)
+	r.batcher.flush()
+	if r.core.status == NORMAL && r.core.hasLocalWork() {
+		select {
+		case r.localReady <- struct{}{}:
+		default:
+		}
+	}
 }
 
-func (r *Replica) scheduleDelivery(id defs.RequestID) {
-	go func() { r.delivery <- id }()
-}
-
-func (r *Replica) startDescriptor(desc *commandDesc, id defs.RequestID) {
-	go r.runDescriptor(desc, id)
-	r.descriptorCount++
+func (r *Replica) peerAlive(id int) bool {
+	r.M.Lock()
+	defer r.M.Unlock()
+	return r.Alive[id]
 }

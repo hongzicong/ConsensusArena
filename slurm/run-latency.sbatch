@@ -76,7 +76,8 @@ bandwidth_kbps=${CONSENSUSARENA_BANDWIDTH_KBPS:-${case_bandwidth_kbps:-125000}}
 scratch_root=${SCRATCH:-/scratch/$USER}
 run_dir=${CONSENSUSARENA_RUN_DIR:-$scratch_root/consensusarena-$SLURM_JOB_ID}
 replica_ready_timeout=${REPLICA_READY_TIMEOUT_SECONDS:-900}
-client_timeout=${CLIENT_TIMEOUT_SECONDS:-300}
+client_timeout=19 # From the shared workload epoch; setup/readiness has its own timeout.
+export CONSENSUSARENA_THROUGHPUT=1
 ycsb_profiles_spec=${CONSENSUSARENA_YCSB_PROFILES:-A:B:C}
 runner_pid=
 active_run_dir=
@@ -181,7 +182,8 @@ if $generated; then
 else
     printf 'experiment_design=three_topologies_one_run_each\ntopology_ids=1:2:3\nrepetitions_per_topology=1\nlatency_source=CloudPing 1Y P50\n' >> "$run_dir/metadata.txt"
 fi
-printf 'warmup_s=5\nramp_s=2.5\nmeasurement_s=10\nworkload_model=synchronized-ramp-sustain-v1\nlatency_origin=scheduled_arrival\nsustain_until=all_measured_replies\n' >> "$run_dir/metadata.txt"
+printf 'warmup_s=5\nramp_s=2.5\nmeasurement_s=10\nsustain_s=2\nexperiment_timeout_s=19\nworkload_model=synchronized-ramp-fixed-sustain-v2\nlatency_origin=scheduled_arrival\nsustain_until=fixed_arrival_epoch_plus_17s\ndrain_until=all_issued_replies\n' >> "$run_dir/metadata.txt"
+printf 'latency_sample_policy=completed_measured_requests\ntimeout_policy=retain_throughput_and_completed_request_latency\n' >> "$run_dir/metadata.txt"
 printf 'selected_cases=%s\n' "$cases_spec" >> "$run_dir/metadata.txt"
 
 run_scale() {
@@ -367,6 +369,23 @@ run_scale() {
 
         python3 "$script_dir/latency-barrier.py" run "$repetition_dir" \
             --runner-pid "$runner_pid" --ready-timeout "$replica_ready_timeout" --timeout "$client_timeout"
+
+        if [[ -f "$repetition_dir/status/drain-timeout.json" ]]; then
+            # Freeze logs before summarizing. Nonzero workload exits are expected
+            # here: the shared 19s deadline can beat an individual watchdog.
+            touch "$repetition_dir/status/stop"
+            if kill -0 "$runner_pid" 2>/dev/null; then kill "$runner_pid" 2>/dev/null || true; fi
+            set +e
+            wait "$runner_pid"
+            runner_exit=$?
+            set -e
+            printf 'timeout_runner_exit=%s\n' "$runner_exit" >> "$repetition_dir/metadata.txt"
+            runner_pid=
+            active_run_dir=
+            bash "$script_dir/summarize-latency.sh" "$repetition_dir"
+            echo "$repetition_name timed out; completed-request statistics retained"
+            return 0
+        fi
 
         deadline=$((SECONDS + client_timeout))
         while true; do

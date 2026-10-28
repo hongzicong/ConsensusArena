@@ -33,6 +33,9 @@ func (c *core) storeValue(k state.Key, v *Value) error {
 	if v == nil || v.Reference {
 		return nil
 	}
+	if v.Batch != nil && v.Batch.Slot <= c.executed(k) {
+		return nil
+	}
 	if v.Proposer < 0 || v.Proposer >= c.m {
 		return fmt.Errorf("invalid value context")
 	}
@@ -55,8 +58,12 @@ func (c *core) storeValue(k state.Key, v *Value) error {
 		c.commandUIDs[r.ID] = v.UID
 		if s.objects[v.UID] == nil {
 			x := *v
-			x.Records = []Record{c.known[r.ID]}
+			r = c.known[r.ID]
+			x.Records = []Record{r}
 			s.objects[v.UID] = &x
+			if len(s.objects) > s.peakObjects {
+				s.peakObjects = len(s.objects)
+			}
 			c.payloadArrived(k, v.UID)
 		}
 	} else {
@@ -84,6 +91,9 @@ func (c *core) storeValue(k state.Key, v *Value) error {
 			x.Records = nil
 			x.Batch = &Batch{v.Batch.Slot, append([]uint64(nil), v.Batch.Members...)}
 			s.objects[v.UID] = &x
+			if len(s.objects) > s.peakObjects {
+				s.peakObjects = len(s.objects)
+			}
 			c.payloadArrived(k, v.UID)
 		}
 	}

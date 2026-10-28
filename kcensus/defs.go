@@ -22,12 +22,15 @@ const (
 	heartbeat
 	resumeCensus // local replay only: wake selection after payload resolution
 	reservedGraphWitness
-	offer // payload only: never a fast acceptance or a slot proposal
-	payloadQuery
-	payloadReply
-	delegateRead
-	executedResult
-	resultQuery
+	offer            // payload only: never a fast acceptance or a slot proposal
+	payloadQuery     // reserved legacy wire ID; per-object queries are retired
+	payloadReply     // reserved legacy wire ID; prefix repair uses Fetch/checkpoints
+	delegateRead     // external GET request to a voting executor
+	executedResult   // voting executor reply; slot zero GET, positive slot PUT
+	resultQuery      // PUT result lookup after the original executor fails
+	snapshotPart     // recovery-only, chunked in-memory executed-shard checkpoint
+	checkpointStatus // recovery-only executed-prefix hint or unavailable-donor reply
+	checkpointAck    // recovery-only chunk credit; High zero cancels the transfer
 )
 
 const maxBatch = 4096

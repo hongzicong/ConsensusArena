@@ -66,52 +66,5 @@ type replyArgs struct {
 	hs      []SHash
 	val     state.Value
 	cmdID   defs.RequestID
-	finish  chan interface{}
 	propose *proposal
-}
-
-type replyWorker struct {
-	ok   chan struct{}
-	exit chan struct{}
-	args chan *replyArgs
-}
-
-func newReplyWorker(r *Replica) *replyWorker {
-	rc := &replyWorker{
-		ok:   make(chan struct{}, 1),
-		exit: make(chan struct{}, 2),
-		args: make(chan *replyArgs, defs.CHAN_BUFFER_SIZE),
-	}
-
-	go func() {
-		for !r.Shutdown {
-			select {
-			case <-rc.exit:
-				rc.ok <- struct{}{}
-				return
-			case args := <-rc.args:
-				r.core.completeReply(args)
-			}
-		}
-	}()
-
-	return rc
-}
-
-func (r *replyWorker) stop() {
-	r.exit <- struct{}{}
-	<-r.ok
-}
-
-func (r *replyWorker) reply(desc *commandDesc, cmdID defs.RequestID, val state.Value) {
-	hs := make([]SHash, len(desc.hs))
-	copy(hs, desc.hs)
-
-	r.args <- &replyArgs{
-		hs:      hs,
-		val:     val,
-		cmdID:   cmdID,
-		finish:  desc.msgs,
-		propose: desc.propose,
-	}
 }

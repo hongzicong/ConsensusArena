@@ -87,9 +87,15 @@ func (c *core) resolveMessage(m *message) bool {
 	return ready
 }
 func (c *core) waitPayload(m message) {
-	c.queuePayload(m, true)
+	c.stats.PayloadWaits++
+	if m.Kind == commit && m.Slot > c.executed(m.Shard) {
+		// A UID-only decision may arrive after all donors retired its payload.
+		// Keep a timed gap even though reference resolution cannot finish yet.
+		c.slot(m.Shard, m.Slot)
+	}
+	c.queuePayload(m)
 }
-func (c *core) queuePayload(m message, query bool) {
+func (c *core) queuePayload(m message) {
 	key := payloadKey(m)
 	if old := c.payloadWaiting[key]; old != nil {
 		old.message = m
@@ -122,80 +128,13 @@ func (c *core) queuePayload(m message, query bool) {
 		c.payloadDependencies[obj][key] = true
 	}
 	c.payloadWaiting[key] = w
-	c.payloadRotation = append(c.payloadRotation, w)
-	if query {
-		c.stats.PayloadWaits++
+	if c.payloadByShard == nil {
+		c.payloadByShard = make(map[state.Key]map[payloadWaitKey]*payloadWait)
 	}
-	if query && len(c.payloadWaiting) == 1 {
-		c.queryPayload(m.Shard, []*Value{m.Value, m.Fast}, m.Reports)
-		c.payloadRetry = c.now + c.retry
+	if c.payloadByShard[m.Shard] == nil {
+		c.payloadByShard[m.Shard] = make(map[payloadWaitKey]*payloadWait)
 	}
-}
-func (c *core) queryPayload(k state.Key, values []*Value, reports []nodeReport) {
-	for _, r := range reports {
-		values = append(values, r.Value)
-	}
-	seen := map[uint64]bool{}
-	var ids []uint64
-	missing := func(uid uint64) {
-		if c.shard(k).objects[uid] == nil && !seen[uid] {
-			seen[uid] = true
-			ids = append(ids, uid)
-		}
-	}
-	for _, v := range values {
-		if v == nil {
-			continue
-		}
-		obj := c.shard(k).objects[v.UID]
-		if obj == nil {
-			missing(v.UID)
-		} else if obj.Batch != nil {
-			for _, uid := range obj.Batch.Members {
-				missing(uid)
-			}
-		}
-	}
-	for len(ids) > 0 {
-		count := len(ids)
-		if count > maxBatch {
-			count = maxBatch
-		}
-		c.broadcastAll(message{Kind: payloadQuery, Shard: k, UIDs: ids[:count]})
-		c.stats.PayloadQueries++
-		ids = ids[count:]
-	}
-}
-func (c *core) answerPayload(m message) {
-	var values []*Value
-	size := 0
-	flush := func() {
-		if len(values) > 0 {
-			c.send(m.From, message{Kind: payloadReply, Shard: m.Shard, Values: values})
-			values = nil
-			size = 0
-		}
-	}
-	seen := map[uint64]bool{}
-	for _, uid := range m.UIDs {
-		v := c.shard(m.Shard).objects[uid]
-		if v == nil || seen[uid] {
-			continue
-		}
-		seen[uid] = true
-		bytes := 32
-		if v.Batch != nil {
-			bytes += 8 * len(v.Batch.Members)
-		} else {
-			bytes += recordBytes(v.Records[0])
-		}
-		if size+bytes > maxBatchBytes || len(values) == maxBatch {
-			flush()
-		}
-		values = append(values, v)
-		size += bytes
-	}
-	flush()
+	c.payloadByShard[m.Shard][key] = w
 }
 
 func (c *core) drainPayload() {
@@ -215,60 +154,35 @@ func (c *core) drainPayload() {
 				if w == nil {
 					continue
 				}
-				delete(c.payloadWaiting, key)
-				for dep := range w.missing {
-					delete(c.payloadDependencies[dep], key)
-					if len(c.payloadDependencies[dep]) == 0 {
-						delete(c.payloadDependencies, dep)
-					}
-				}
 				m := w.message
+				c.removePayloadWait(w)
+
 				if c.resolveMessage(&m) {
 					c.receiveMessage(m, true)
 				} else {
-					c.queuePayload(m, false)
+					c.queuePayload(m)
 				}
 			}
 		}
 	}
-	c.compactPayloadRotation()
 }
 
-func (c *core) compactPayloadRotation() {
-	if c.payloadHead < 4096 && len(c.payloadRotation) < 4*len(c.payloadWaiting)+4096 {
+func (c *core) removePayloadWait(w *payloadWait) {
+	if c.payloadWaiting[w.key] != w {
 		return
 	}
-	var live []*payloadWait
-	for _, w := range c.payloadRotation[c.payloadHead:] {
-		if c.payloadWaiting[w.key] == w {
-			live = append(live, w)
+	delete(c.payloadWaiting, w.key)
+	delete(c.payloadByShard[w.key.Shard], w.key)
+	if len(c.payloadByShard[w.key.Shard]) == 0 {
+		delete(c.payloadByShard, w.key.Shard)
+	}
+	c.touched[w.key.Shard] = true
+	for dep := range w.missing {
+		delete(c.payloadDependencies[dep], w.key)
+		if len(c.payloadDependencies[dep]) == 0 {
+			delete(c.payloadDependencies, dep)
 		}
 	}
-	c.payloadRotation = live
-	c.payloadHead = 0
-}
-
-func (c *core) retryPayload() {
-	if len(c.payloadWaiting) == 0 || c.now < c.payloadRetry {
-		return
-	}
-	c.payloadRetry = c.now + c.retry
-	// At most 32 waiting messages per sweep; rotate for fairness and reserve
-	// the remaining budget for slot recovery and reads.
-	count := len(c.payloadRotation) - c.payloadHead
-	if count > 32 {
-		count = 32
-	}
-	for i := 0; i < count && c.retryBudget > 0; i++ {
-		w := c.payloadRotation[c.payloadHead]
-		c.payloadHead++
-		if c.payloadWaiting[w.key] != w {
-			continue
-		}
-		c.payloadRotation = append(c.payloadRotation, w)
-		m := w.message
-		c.retryBudget--
-		c.queryPayload(m.Shard, []*Value{m.Value, m.Fast}, m.Reports)
-	}
-	c.compactPayloadRotation()
+	w.message = message{}
+	w.missing = nil
 }

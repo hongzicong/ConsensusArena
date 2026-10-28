@@ -29,32 +29,32 @@ func (c *core) relayPayload(m message) {
 	if !g.Payload[edge] {
 		return
 	}
-	if m.Slot == 0 {
-		id := payloadEdgeID{p, edge, m.ID}
-		if c.payloadSeen == nil {
-			c.payloadSeen = make(map[payloadEdgeID]bool)
-		}
-		if c.payloadSeen[id] {
-			return
-		}
-		c.payloadSeen[id] = true
-	} else {
-		x := c.slot(m.Shard, m.Slot)
-		if x.payloadRelayed == nil {
-			x.payloadRelayed = make(map[graphEdge]bool)
-		}
-		if x.payloadRelayed[edge] {
-			return
-		}
-		x.payloadRelayed[edge] = true
+	if c.valueCompleted(m.Value) {
+		return
 	}
+	object := payloadObject{m.Shard, m.Value.UID}
+	if c.payloadSeen == nil {
+		c.payloadSeen = make(map[payloadObject]map[payloadEdgeID]bool)
+	}
+	if c.payloadSeen[object] == nil {
+		c.payloadSeen[object] = make(map[payloadEdgeID]bool)
+	}
+	id := payloadEdgeID{p, edge, m.ID}
+	if c.payloadSeen[object][id] {
+		return
+	}
+	c.payloadSeen[object][id] = true
+
 	for _, s := range g.States[c.id] {
 		if !s.Dependencies[edge] {
 			continue
 		}
 		for _, out := range s.Outgoing {
 			if g.Payload[out] {
-				c.send(out.To, message{Kind: offer, Shard: m.Shard, Slot: m.Slot, ID: m.ID, Proposer: p, GraphTime: int64(out.Time), Value: m.Value})
+				// Upstream SpreadValueOnly has no slot. A late payload relay may
+				// already have advanced its prefix, so its predecessor snapshot
+				// cannot be interpreted as context for the incoming Spread slot.
+				c.send(out.To, message{Kind: offer, Shard: m.Shard, ID: m.ID, Proposer: p, GraphTime: int64(out.Time), Value: m.Value})
 			}
 		}
 		break
@@ -230,7 +230,7 @@ func (c *core) advanceGraph(k state.Key, i uint64, x *slotState, p int) {
 	if c.id == c.plan.Leaders[p] && r.Cursor == len(states)-1 && !x.conflictAnnounced && bits.OnesCount64(x.participants) == 1 && x.promised <= uint64(c.n+c.plan.Leaders[p]) && c.canCommit(x) {
 		v := x.fast
 		c.stats.FastCommits++
-		c.broadcastCommit(message{Kind: commit, Shard: k, Slot: i, Value: v, References: true})
+		c.broadcastCommit(message{Kind: commit, Shard: k, Slot: i, Value: v})
 		c.learn(k, i, v)
 	}
 }

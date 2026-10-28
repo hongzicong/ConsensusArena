@@ -6,13 +6,15 @@ import "github.com/hongzicong/ConsensusArena/state"
 // Zero preserves the previous per-key logs, including negative application keys.
 // The mapping is immutable and included in the configured peer digest. Every
 // Record keeps its original Command.K for validation, execution and deduplication.
-func (c *core) shardFor(key state.Key) state.Key {
-	if c.shardCount == 0 {
+func (c *core) shardFor(key state.Key) state.Key { return shardFor(key, c.shardCount) }
+
+func shardFor(key, count state.Key) state.Key {
+	if count == 0 {
 		return key
 	}
-	shard := key % c.shardCount
+	shard := key % count
 	if shard < 0 {
-		shard += c.shardCount
+		shard += count
 	}
 	return shard
 }
