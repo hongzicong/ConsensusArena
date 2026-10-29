@@ -163,7 +163,9 @@ func newColdPlanModel(c *config.Config, t *placement.Topology, p config.Deployme
 				}
 			}
 		}
-		bin.Scenarios = m.Visibility.scenarios(bin.Owner, m.Remote, p.ClientLearningAllKeys || a >= m.HotCutoff)
+		// Hot-off uses the ordinary read fence even without hot client votes.
+		fenced := p.ClientLearningAllKeys || a >= m.HotCutoff || hotAblated(c)
+		bin.Scenarios = m.Visibility.scenarios(bin.Owner, m.Remote, fenced)
 		m.Bins = append(m.Bins, bin)
 	}
 	return m
@@ -341,6 +343,10 @@ func coldQuorumMasks(t *placement.Topology) []uint64 {
 }
 
 func planColdPlacement(c *config.Config, t *placement.Topology, p config.DeploymentPlan) config.DeploymentPlan {
+	if coldAblated(c) {
+		p.ColdEnabled = false
+		return p
+	}
 	if c.Writes <= 0 || len(c.HeatProfile.File.Keys) <= heatpolicy.HotCutoff(c) || c.UniqueKeys {
 		return p
 	}

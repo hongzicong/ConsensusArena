@@ -17,6 +17,7 @@ import (
 	"github.com/hongzicong/ConsensusArena/master"
 	"github.com/hongzicong/ConsensusArena/placement"
 	"github.com/hongzicong/ConsensusArena/replica/defs"
+	"github.com/hongzicong/ConsensusArena/resourceobs"
 	"github.com/hongzicong/ConsensusArena/wireproto"
 )
 
@@ -135,6 +136,7 @@ func run(conf *config.Config) {
 	case config.ClientMachine:
 		runClient(conf, true)
 	case config.ReplicaMachine:
+		resourceobs.Start(os.Getenv("CONSENSUSARENA_RESOURCE_RUN"), conf.Alias)
 		runReplica(conf, dlog.New(*logFile, true))
 	}
 }

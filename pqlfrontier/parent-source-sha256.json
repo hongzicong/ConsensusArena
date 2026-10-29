@@ -1,0 +1,16 @@
+{
+  "parent_commit": "5cda41f",
+  "files": {
+    "client.go": "54c4ac86dbbbdaedf0f5763f5396f22a070e5159bcb5212530c4bf1318df1dfa",
+    "configuration.go": "85b49ef052afd9c25f86e5c82394ea7c6512023719f69adaec5143ca70a40bf5",
+    "core.go": "044837355d3ba0af6d24eb799a02bb30749c696acbb3ead99f9c0b3102831710",
+    "defs.go": "52ad708cea520c14dd11921566b4f2dedfea1d9ddc3b0d165eb1300ed9cf9fc5",
+    "execute.go": "846a8da904c3a39287d36cba44650fbbe40f3ac2e9a281e5f2579dddf600fb89",
+    "lease.go": "a7bc5679b528f2442dd07f085e428cea50aa042bab8f32e05d5a6e953eb5878c",
+    "plan.go": "22985740f697b43325b38c01a8e32e70ee366d6acda46270b4059abe52506296",
+    "policy.go": "968ff375b2f14af426dfc755a222731771c237642680abe391e0a0791a71bd7a",
+    "recovery.go": "f687f25e386bf66a42124a3e5acece8e8c1a9f489384c379a9c60f512dd2d772",
+    "replica.go": "5ea53e9b6eb55ba8ea1ab927ad4188b5f7710eb4bfff4b49830dd63f81d143cf",
+    "transport.go": "42f8d6805fd45b6bb4925c7cd339ac9450dc4f694f805f0f634b238ebda3f167"
+  }
+}

@@ -46,7 +46,7 @@ def generated_layout(case):
     replicas = [alias for alias, address in members['replicas']]
     clients = [alias for alias, address in members['clients']]
     n, c, index = map(int, match.groups())
-    if (not 3 <= n <= 17 or n % 2 == 0 or c < 1 or n + c > 63
+    if (not 3 <= n <= 31 or n % 2 == 0 or c < 1 or n + c > 63
             or len(replicas) != n or len(clients) != c
             or len(set(replicas + clients)) != n + c):
         raise ValueError('invalid generated membership: ' + case.name)

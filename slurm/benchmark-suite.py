@@ -317,6 +317,7 @@ def collect(kind, root):
                                  if kind == 'latency' else ('phase-summary.csv', 'timeseries.csv', 'request-cohorts.csv'))}
     statuses = []
     validations = []
+    resource_files = []
     for scene, name in zip(plan, names):
         base = root / 'scenes' / name
         status = dict(**scene, complete=False)
@@ -361,6 +362,9 @@ def collect(kind, root):
                         validated['status'] != rows[0]['status'] or
                         str(validated['all_requests_drained']) != rows[0]['all_requests_drained']):
                     raise ValueError('exported and measured completed-request metrics differ')
+                if 'resources_enabled=1' in (base / 'metadata.txt').read_text().splitlines():
+                    from resource_summary import export as export_resources
+                    resource_files.append(export_resources(base))
                 status.update(timed_out=validated['timed_out'],
                               completed_requests=validated['completed_requests'],
                               cohort_complete=validated['cohort_complete'],
@@ -376,6 +380,8 @@ def collect(kind, root):
         statuses.append(status)
     for filename, paths in files.items():
         merge_csv(paths, root / filename)
+    if kind == 'latency':
+        merge_csv(resource_files, root / 'resources.csv')
     if kind == 'fault':
         write_json(root / 'validation.json', validations)
     complete = all(status['complete'] for status in statuses)

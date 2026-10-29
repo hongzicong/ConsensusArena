@@ -24,6 +24,7 @@ type Client struct {
 	keyPolicy                                     *keyPolicy
 	sampleKnown, sampleUnknown                    atomic.Uint64
 	allKeyLearning                                bool
+	hotDisabled                                   bool
 	coldEnabled                                   bool
 	coldCut                                       state.Key
 	coldQ                                         uint64
@@ -46,6 +47,7 @@ type Client struct {
 func NewClient(b *client.BufferClient, cfg *config.Config) *Client {
 	c := &Client{keyPolicy: newKeyPolicy(cfg), StandardClient: client.StandardClient{BufferClient: b}}
 	c.allKeyLearning = cfg.Plan.ClientLearningAllKeys
+	c.hotDisabled = cfg.Plan.AgreementHotDisabled
 	c.initialLeader = cfg.Plan.Leader.Rank
 	c.coldEnabled = cfg.Plan.ColdEnabled
 	c.coldCut = state.Key(cfg.Plan.ColdCutoff)
@@ -361,6 +363,9 @@ func (c *Client) SendProposal(cmd defs.Propose) {
 }
 
 func (c *Client) plannedOwner(key state.Key) (int, bool) {
+	if c.hotDisabled && c.keyPolicy.hot(key) {
+		return -1, false
+	}
 	rank := c.keyPolicy.rank(key)
 	if rank < 0 {
 		return -1, false

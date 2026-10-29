@@ -176,6 +176,7 @@ printf '%s\n' \
     'ycsb_semantics=ratio-only; READ is mapped to GET; UPDATE is mapped to PUT' \
     'request_distribution=zipfian' >> "$run_dir/metadata.txt"
 printf 'resource_observer=GNU time per role; exit-time CPU, RSS, context switches\n' >> "$run_dir/metadata.txt"
+printf 'resources_enabled=%s\n' "${CONSENSUSARENA_RESOURCES:-0}" >> "$run_dir/metadata.txt"
 if $generated; then
     printf 'experiment_design=generated_one_run_each\ncase=%s\ncase_sha256=%s\nrepetitions_per_topology=1\nlatency_source=generated\n' \
         "$(basename "$CONSENSUSARENA_CASE")" "$CONSENSUSARENA_CASE_SHA256" >> "$run_dir/metadata.txt"
@@ -246,7 +247,7 @@ run_scale() {
     fi
     if [[ -n "${CONSENSUSARENA_PROTOCOL:-}" ]]; then
         case "${CONSENSUSARENA_PROTOCOL,,}" in
-            swiftpaxos|curp|fastpaxos|paxos|epaxos|bodega|kcensus|pql|agreement) ;;
+            swiftpaxos|curp|fastpaxos|paxos|epaxos|bodega|kcensus|pql|pqlfrontier|agreement) ;;
             *) echo "Unsupported protocol: $CONSENSUSARENA_PROTOCOL" >&2; exit 1 ;;
         esac
         awk -v protocol="$CONSENSUSARENA_PROTOCOL" \

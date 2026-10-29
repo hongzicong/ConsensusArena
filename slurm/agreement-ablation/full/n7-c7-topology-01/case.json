@@ -1,0 +1,68 @@
+{
+  "seed": 1,
+  "deployment": "europe-7",
+  "topology_model": "kcensus_aws_snapshot",
+  "regions": [
+    "eu-central-1 Europe Frankfurt",
+    "eu-central-2 Europe Zurich",
+    "eu-south-1 Europe Milan",
+    "eu-south-2 Europe Spain",
+    "eu-west-1 Europe Ireland",
+    "eu-west-2 Europe London",
+    "eu-west-3 Europe Paris"
+  ],
+  "replica_regions": {
+    "replica-eu-central-1": "eu-central-1",
+    "replica-eu-central-2": "eu-central-2",
+    "replica-eu-south-1": "eu-south-1",
+    "replica-eu-south-2": "eu-south-2",
+    "replica-eu-west-1": "eu-west-1",
+    "replica-eu-west-2": "eu-west-2",
+    "replica-eu-west-3": "eu-west-3"
+  },
+  "client_regions": {
+    "client-eu-central-1": "eu-central-1",
+    "client-eu-central-2": "eu-central-2",
+    "client-eu-south-1": "eu-south-1",
+    "client-eu-south-2": "eu-south-2",
+    "client-eu-west-1": "eu-west-1",
+    "client-eu-west-2": "eu-west-2",
+    "client-eu-west-3": "eu-west-3"
+  },
+  "client_placement": "one client colocated with each replica; zero added local delay",
+  "source": {
+    "repository": "https://github.com/LPD-EPFL/kcensus",
+    "checkout_revision": "b232c3320d7853ea332e9cb17a0acbf8386e125c",
+    "path": "configs/aws-europe-7.toml",
+    "bundled_path": "sources/aws-europe-7.toml",
+    "sha256": "aff61e7b1fb4c30cf39de96f30c389ef23036810a734857916f92b19c50d8ddc",
+    "unit": "estimated one-way milliseconds (ping RTT / 2)",
+    "conversion": "input[i,j] = 2 * raw_latencies[i,j]; preserve direction and decimals"
+  },
+  "network": {
+    "latency_jitter_ms": 0,
+    "bandwidth_kbps": 125000,
+    "bandwidth_source": "ConsensusArena default; not an AWS measurement",
+    "bandwidth_scope": "KB/s per TCP connection per stream direction",
+    "runtime_delay": "ceil(input[i,j] / 2) ms; physical transport overhead is additional"
+  },
+  "workload": {
+    "total_arrival_rate": 20000,
+    "offered_load_source": "new paper latency experiment target (KCensus baseline was 1000 total)",
+    "arrival_rate_per_client": 2857.14285714286,
+    "key_count": 100000,
+    "zipf_skew": 0.99,
+    "command_size_bytes": 16,
+    "command_size_source": "fixed small-value approximation of KCensus variable strings",
+    "shared_keyspace": true,
+    "profiles": [
+      "A",
+      "B",
+      "C"
+    ],
+    "workload_seed": 1,
+    "key_mapping_seed": 1
+  },
+  "agreement_ablation": "full",
+  "ablation_base_case_sha256": "e8f88712204c38e6501ce43fd00b67199e21f6bcab5f4715fd37c9b83fd90075"
+}

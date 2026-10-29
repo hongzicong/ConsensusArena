@@ -14,7 +14,7 @@ def prepare(binary, config):
     protocols = re.findall(r'^protocol:\s*(\S+)\s*$', text, flags=re.M | re.I)
     if len(protocols) != 1:
         raise ValueError('expected one protocol field')
-    if protocols[0].lower() not in ('bodega', 'pql', 'agreement'):
+    if protocols[0].lower() not in ('bodega', 'pql', 'pqlfrontier', 'agreement'):
         return
     profile = config.with_name('heat-profile.json')
     if profile.exists():

@@ -6,7 +6,7 @@ param(
     [string]$RemoteBase = 'ConsensusArena',
     [ValidatePattern('^[A-Za-z0-9_-]+$')]
     [string]$SlurmAccount = 'dcl',
-    [ValidateSet('swiftpaxos', 'bodega', 'paxos', 'kcensus', 'agreement', 'pql')]
+    [ValidateSet('swiftpaxos', 'bodega', 'paxos', 'kcensus', 'agreement', 'pql', 'pqlfrontier')]
     [string[]]$Protocols = @('swiftpaxos', 'bodega', 'paxos', 'kcensus', 'agreement', 'pql'),
     [ValidateRange(1, 6)]
     [int]$MaxParallel = 1,

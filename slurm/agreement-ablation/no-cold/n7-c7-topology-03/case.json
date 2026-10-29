@@ -1,0 +1,68 @@
+{
+  "seed": 1,
+  "deployment": "north-america-7",
+  "topology_model": "kcensus_aws_snapshot",
+  "regions": [
+    "ca-central-1 Canada Central",
+    "ca-west-1 Canada Calgary",
+    "mx-central-1 Mexico Central",
+    "us-east-1 US East N. Virginia",
+    "us-east-2 US East Ohio",
+    "us-west-1 US West N. California",
+    "us-west-2 US West Oregon"
+  ],
+  "replica_regions": {
+    "replica-ca-central-1": "ca-central-1",
+    "replica-ca-west-1": "ca-west-1",
+    "replica-mx-central-1": "mx-central-1",
+    "replica-us-east-1": "us-east-1",
+    "replica-us-east-2": "us-east-2",
+    "replica-us-west-1": "us-west-1",
+    "replica-us-west-2": "us-west-2"
+  },
+  "client_regions": {
+    "client-ca-central-1": "ca-central-1",
+    "client-ca-west-1": "ca-west-1",
+    "client-mx-central-1": "mx-central-1",
+    "client-us-east-1": "us-east-1",
+    "client-us-east-2": "us-east-2",
+    "client-us-west-1": "us-west-1",
+    "client-us-west-2": "us-west-2"
+  },
+  "client_placement": "one client colocated with each replica; zero added local delay",
+  "source": {
+    "repository": "https://github.com/LPD-EPFL/kcensus",
+    "checkout_revision": "b232c3320d7853ea332e9cb17a0acbf8386e125c",
+    "path": "configs/aws-north-america-7.toml",
+    "bundled_path": "sources/aws-north-america-7.toml",
+    "sha256": "02ea876df9fe95bbf6ba35c92a8e41c2e47f6a90e70be00077a83ae2d14e3c7e",
+    "unit": "estimated one-way milliseconds (ping RTT / 2)",
+    "conversion": "input[i,j] = 2 * raw_latencies[i,j]; preserve direction and decimals"
+  },
+  "network": {
+    "latency_jitter_ms": 0,
+    "bandwidth_kbps": 125000,
+    "bandwidth_source": "ConsensusArena default; not an AWS measurement",
+    "bandwidth_scope": "KB/s per TCP connection per stream direction",
+    "runtime_delay": "ceil(input[i,j] / 2) ms; physical transport overhead is additional"
+  },
+  "workload": {
+    "total_arrival_rate": 20000,
+    "offered_load_source": "new paper latency experiment target (KCensus baseline was 1000 total)",
+    "arrival_rate_per_client": 2857.14285714286,
+    "key_count": 100000,
+    "zipf_skew": 0.99,
+    "command_size_bytes": 16,
+    "command_size_source": "fixed small-value approximation of KCensus variable strings",
+    "shared_keyspace": true,
+    "profiles": [
+      "A",
+      "B",
+      "C"
+    ],
+    "workload_seed": 1,
+    "key_mapping_seed": 1
+  },
+  "agreement_ablation": "no-cold",
+  "ablation_base_case_sha256": "fce561fb1c3ed2f7035414a91588683d9bd6bed683747d93b9109ad64fe19abd"
+}

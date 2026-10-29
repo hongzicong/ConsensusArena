@@ -9,7 +9,7 @@ import (
 
 // Delivery geometry and correlated invalidation proxy, never read authority.
 func planJointReadRaces(c *config.Config, t *placement.Topology, p config.DeploymentPlan) config.DeploymentPlan {
-	if c.Writes <= 0 || c.KeyCount <= 0 || c.UniqueKeys {
+	if hotAblated(c) || c.Writes <= 0 || c.KeyCount <= 0 || c.UniqueKeys {
 		return p
 	}
 	mask := uint64(0)

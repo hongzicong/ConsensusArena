@@ -8,6 +8,9 @@ type completionSpan struct {
 }
 
 func (e *engine) plannedCompletionOwner(key state.Key) (int, bool) {
+	if e.opt.HotDisabled && e.opt.KeyPolicy.hot(key) {
+		return e.current.Leader, false
+	}
 	rank := e.opt.KeyPolicy.rank(key)
 	if rank < 0 {
 		return e.current.Leader, false
@@ -38,6 +41,9 @@ func (e *engine) completionOwner(key state.Key) int {
 
 // Only these writes permit the owner to keep serving its committed value.
 func (e *engine) ownerMayBypass(v entry, r request) bool {
+	if e.opt.HotDisabled && e.opt.KeyPolicy.hot(r.Proposal.Command.K) {
+		return false
+	}
 	return !(e.opt.ClientLearning && (e.opt.AllKeyLearning || e.opt.KeyPolicy.rank(r.Proposal.Command.K) >= int64(e.opt.KeyPolicy.hotCutoff))) &&
 		r.Origin == e.completionOwner(r.Proposal.Command.K) && v.ReadFresh && v.Ballot == e.current.Ballot
 }

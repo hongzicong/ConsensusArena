@@ -3,6 +3,10 @@ package config
 // DeploymentPlan is startup output, never an external quorum configuration.
 // Protocol packages own its policy; the common launcher only applies it.
 type DeploymentPlan struct {
+	AgreementAblation            string                            `json:"agreement_ablation,omitempty"`
+	AgreementHotDisabled         bool                              `json:"agreement_hot_disabled,omitempty"`
+	AgreementBasePlanSHA256      string                            `json:"agreement_base_plan_sha256,omitempty"`
+	AgreementBaseColdEnabled     bool                              `json:"agreement_base_cold_enabled,omitempty"`
 	ClientLearningAllKeys        bool                              `json:"client_learning_all_keys,omitempty"`
 	ColdEnabled                  bool                              `json:"cold_enabled,omitempty"`
 	ColdCutoff                   int64                             `json:"cold_cutoff,omitempty"`

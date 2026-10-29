@@ -57,11 +57,12 @@ const (
 )
 
 type Config struct {
-	Protocol        string
-	Topology        string
-	Plan            DeploymentPlan
-	KCensusTopology string
-	KCensusFailure  time.Duration
+	Protocol          string
+	Topology          string
+	Plan              DeploymentPlan
+	AgreementAblation string
+	KCensusTopology   string
+	KCensusFailure    time.Duration
 	// Zero preserves one logical shard per key; positive counts use key modulo count.
 	KCensusShards int
 
@@ -271,6 +272,9 @@ func Read(filename, alias string) (*Config, error) {
 				ok = true
 			case "bodegaunhold":
 				c.BodegaUnhold, err = expectDuration(words)
+				ok = true
+			case "agreementablation":
+				c.AgreementAblation, err = expectString(words)
 				ok = true
 			case "warmup":
 				c.Warmup, err = expectDuration(words)

@@ -16,8 +16,10 @@ import (
 	"github.com/hongzicong/ConsensusArena/paxos"
 	"github.com/hongzicong/ConsensusArena/placement"
 	"github.com/hongzicong/ConsensusArena/pql"
+	"github.com/hongzicong/ConsensusArena/pqlfrontier"
 	protocolapi "github.com/hongzicong/ConsensusArena/protocol"
 	"github.com/hongzicong/ConsensusArena/swift"
+	"github.com/hongzicong/ConsensusArena/swiftplacement"
 )
 
 // replicaStart contains deployment inputs; quorum and recovery rules stay in
@@ -108,8 +110,24 @@ var protocols = map[string]protocolSpec{
 			return pql.New(s.config.Alias, s.id, s.addrs, s.failures, s.config, s.logger)
 		},
 	},
+	"pqlfrontier": {
+		heatSampleOptions: client.HeatSampleOptions{PreserveClientOrigins: true},
+		planDeployment:    pqlfrontier.PlanDeployment,
+		configureClient: func(c *config.Config) {
+			c.Leaderless = false
+			c.Fast = false
+			c.WaitClosest = true
+		},
+		installClient: func(b *client.BufferClient, c *config.Config, _ int) {
+			pqlfrontier.NewClient(b, len(c.ReplicaAddrs))
+		},
+		newReplica: func(s replicaStart) protocolapi.Machine {
+			log.Println("Starting PQLFrontier replica...")
+			return pqlfrontier.New(s.config.Alias, s.id, s.addrs, s.failures, s.config, s.logger)
+		},
+	},
 	"swiftpaxos": {
-		planDeployment: swift.PlanDeployment,
+		planDeployment: swiftplacement.PlanDeployment,
 		installClient: func(b *client.BufferClient, c *config.Config, _ int) {
 			swift.NewClient(b, len(c.ReplicaAddrs))
 		},

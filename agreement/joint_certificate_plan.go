@@ -270,7 +270,7 @@ func (q probabilityCurve) mean(x certificateGeometry, t *placement.Topology, lam
 
 func exploratoryHotPlan(c *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
 	p, err := baselineHotPlan(c, t)
-	if err != nil || c.Writes <= 0 || c.KeyCount <= 0 || c.UniqueKeys {
+	if err != nil || hotAblated(c) || c.Writes <= 0 || c.KeyCount <= 0 || c.UniqueKeys {
 		return p, err
 	}
 	n := len(t.Replicas)

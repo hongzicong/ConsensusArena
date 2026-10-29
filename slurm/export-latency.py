@@ -69,6 +69,9 @@ def export(base, cases=None):
     if selected and {(key[0],key[3]) for key in keys} != selected:
         raise ValueError('missing selected size/topology cases')
     path=base/'baseline-latency.csv'
+    if (base/'metadata.txt').exists() and 'resources_enabled=1' in (base/'metadata.txt').read_text().splitlines():
+        from resource_summary import export as export_resources
+        export_resources(base)
     with path.open('w',newline='') as output:
         writer=csv.DictWriter(output,fieldnames=list(rows[0]))
         writer.writeheader();writer.writerows(rows)

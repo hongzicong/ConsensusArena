@@ -16,6 +16,7 @@ import (
 type options struct {
 	KeyPolicy                                     *keyPolicy
 	AllKeyLearning                                bool
+	HotDisabled                                   bool
 	ClientLearning                                bool
 	Learners                                      uint64
 	Completion                                    []completionSpan
@@ -49,6 +50,7 @@ type statistics struct {
 	VoteRecipientSamples, VoteRecipientCount, OmittedVoteRecipients                                                             uint64
 	CoalescedAttempts, FanoutAttempts, FanoutEnqueued                                                                           uint64
 	OwnerShortcutReads, OwnPendingBypassReads, OwnerRiskHolds, OwnerPrefixHolds                                                 uint64
+	HotOwnerBypassReads                                                                                                         uint64
 	DelegatedWrites, OwnerIngressWrites, WrongOriginWrites, DeferredOwnerResults                                                uint64
 	LearnerCoverageWaits                                                                                                        uint64
 	DirectVotesSent, OrphanVotes, LearnerCommits                                                                                uint64
@@ -559,7 +561,7 @@ func (e *engine) submit(r request, now time.Time) {
 	if r.Proposal.Command.Op == state.GET && e.current.respondersFor(r.Proposal.Command.K)&bit(e.id) != 0 {
 		if e.localReadAuthority(now) {
 			s := e.latest[r.Proposal.Command.K]
-			ownerRead := e.completionOwner(r.Proposal.Command.K) == e.id
+			ownerRead := !(e.opt.HotDisabled && e.opt.KeyPolicy.hot(r.Proposal.Command.K)) && e.completionOwner(r.Proposal.Command.K) == e.id
 			delegated := e.delegatedKey(r.Proposal.Command.K)
 			if ownerRead {
 				// The owner withholds its ACCEPTED until local commitment, so no
@@ -571,6 +573,9 @@ func (e *engine) submit(r request, now time.Time) {
 				}
 			}
 			if value, ok := e.readValue(s, r); ok {
+				if ownerRead && e.opt.KeyPolicy.hot(r.Proposal.Command.K) && e.latest[r.Proposal.Command.K] > s {
+					e.stats.HotOwnerBypassReads++
+				}
 				if ownerRead && delegated {
 					e.stats.OwnerShortcutReads++
 					if e.latest[r.Proposal.Command.K] > s {

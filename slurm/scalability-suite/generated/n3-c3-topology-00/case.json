@@ -1,0 +1,49 @@
+{
+  "deployment": "aws-random",
+  "regions": [
+    "ca-central-1",
+    "eu-west-3",
+    "ap-northeast-2"
+  ],
+  "seed": 1,
+  "topology_model": "kcensus_aws_snapshot",
+  "replica_regions": {
+    "replica-ca-central-1": "ca-central-1",
+    "replica-eu-west-3": "eu-west-3",
+    "replica-ap-northeast-2": "ap-northeast-2"
+  },
+  "client_regions": {
+    "client-ca-central-1": "ca-central-1",
+    "client-eu-west-3": "eu-west-3",
+    "client-ap-northeast-2": "ap-northeast-2"
+  },
+  "source": {
+    "path": "configs/aws-random/3.toml",
+    "bundled_path": "../sources/aws-random/3.toml",
+    "sha256": "40f438ee3fb08496424c28b5642283d6159a2e08203171eb049eb0726dd09682",
+    "conversion": "2 * directed one-way milliseconds; emulator halves and rounds up"
+  },
+  "network": {
+    "latency_jitter_ms": 0,
+    "bandwidth_kbps": 125000
+  },
+  "workload": {
+    "profiles": [
+      "B"
+    ],
+    "total_arrival_rate": 20000,
+    "arrival_rate_per_client": 6666.666666666667,
+    "key_count": 100000,
+    "zipf_skew": 0.99,
+    "command_size_bytes": 16,
+    "workload_seed": 1,
+    "key_mapping_seed": 1
+  },
+  "resources": {
+    "enabled": true,
+    "window_seconds": [
+      5,
+      15
+    ]
+  }
+}

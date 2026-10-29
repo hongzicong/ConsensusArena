@@ -70,6 +70,11 @@ else
 fi
 
 if [[ -n "$replica_alias" ]]; then
+    if [[ "${CONSENSUSARENA_RESOURCES:-0}" == 1 ]]; then
+        export CONSENSUSARENA_RESOURCE_RUN="$run_dir"
+    else
+        unset CONSENSUSARENA_RESOURCE_RUN
+    fi
     run_app -run replica -config "$config" \
         -alias "$replica_alias" \
         -log "$run_dir/logs/${replica_alias}-replica.log" \

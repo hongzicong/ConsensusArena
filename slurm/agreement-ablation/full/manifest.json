@@ -1,0 +1,16 @@
+{
+  "name": "kcensus-four-deployments-n7-zipf099-20krps-agreement-full",
+  "topologies": [
+    "n7-c7-topology-00",
+    "n7-c7-topology-01",
+    "n7-c7-topology-02",
+    "n7-c7-topology-03"
+  ],
+  "deployments": {
+    "n7-c7-topology-00": "ring-7",
+    "n7-c7-topology-01": "europe-7",
+    "n7-c7-topology-02": "east-asia-7",
+    "n7-c7-topology-03": "north-america-7"
+  },
+  "agreement_ablation": "full"
+}

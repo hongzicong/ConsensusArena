@@ -1,0 +1,68 @@
+{
+  "seed": 1,
+  "deployment": "east-asia-7",
+  "topology_model": "kcensus_aws_snapshot",
+  "regions": [
+    "ap-east-1 Asia Pacific Hong Kong",
+    "ap-east-2 Asia Pacific Taipei",
+    "ap-northeast-1 Asia Pacific Tokyo",
+    "ap-northeast-2 Asia Pacific Seoul",
+    "ap-northeast-3 Asia Pacific Osaka",
+    "ap-southeast-1 Asia Pacific Singapore",
+    "ap-southeast-5 Asia Pacific Malaysia"
+  ],
+  "replica_regions": {
+    "replica-ap-east-1": "ap-east-1",
+    "replica-ap-east-2": "ap-east-2",
+    "replica-ap-northeast-1": "ap-northeast-1",
+    "replica-ap-northeast-2": "ap-northeast-2",
+    "replica-ap-northeast-3": "ap-northeast-3",
+    "replica-ap-southeast-1": "ap-southeast-1",
+    "replica-ap-southeast-5": "ap-southeast-5"
+  },
+  "client_regions": {
+    "client-ap-east-1": "ap-east-1",
+    "client-ap-east-2": "ap-east-2",
+    "client-ap-northeast-1": "ap-northeast-1",
+    "client-ap-northeast-2": "ap-northeast-2",
+    "client-ap-northeast-3": "ap-northeast-3",
+    "client-ap-southeast-1": "ap-southeast-1",
+    "client-ap-southeast-5": "ap-southeast-5"
+  },
+  "client_placement": "one client colocated with each replica; zero added local delay",
+  "source": {
+    "repository": "https://github.com/LPD-EPFL/kcensus",
+    "checkout_revision": "b232c3320d7853ea332e9cb17a0acbf8386e125c",
+    "path": "configs/aws-east-asia-7.toml",
+    "bundled_path": "sources/aws-east-asia-7.toml",
+    "sha256": "3b01c14ce4d2b1ef2798b71a35cb56a9a3502cedf53de78d73db078e6512a4a1",
+    "unit": "estimated one-way milliseconds (ping RTT / 2)",
+    "conversion": "input[i,j] = 2 * raw_latencies[i,j]; preserve direction and decimals"
+  },
+  "network": {
+    "latency_jitter_ms": 0,
+    "bandwidth_kbps": 125000,
+    "bandwidth_source": "ConsensusArena default; not an AWS measurement",
+    "bandwidth_scope": "KB/s per TCP connection per stream direction",
+    "runtime_delay": "ceil(input[i,j] / 2) ms; physical transport overhead is additional"
+  },
+  "workload": {
+    "total_arrival_rate": 20000,
+    "offered_load_source": "new paper latency experiment target (KCensus baseline was 1000 total)",
+    "arrival_rate_per_client": 2857.14285714286,
+    "key_count": 100000,
+    "zipf_skew": 0.99,
+    "command_size_bytes": 16,
+    "command_size_source": "fixed small-value approximation of KCensus variable strings",
+    "shared_keyspace": true,
+    "profiles": [
+      "A",
+      "B",
+      "C"
+    ],
+    "workload_seed": 1,
+    "key_mapping_seed": 1
+  },
+  "agreement_ablation": "no-hot",
+  "ablation_base_case_sha256": "c55ffdc7690698b3630e102ccb71368d1f1281597d29aa156c0a43f2cf0099cb"
+}

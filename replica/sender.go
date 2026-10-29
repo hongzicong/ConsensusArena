@@ -3,6 +3,7 @@ package replica
 import (
 	"bufio"
 	"errors"
+	"github.com/hongzicong/ConsensusArena/resourceobs"
 	"io"
 	"net"
 	"sync"
@@ -187,6 +188,7 @@ func (s *Sender) run() {
 		}
 		s.frames.Add(uint64(len(batch)))
 		s.bytes.Add(uint64(n))
+		resourceobs.Sent(len(batch), n)
 		if s.options.OnBatch != nil {
 			s.options.OnBatch(len(batch), n)
 		}

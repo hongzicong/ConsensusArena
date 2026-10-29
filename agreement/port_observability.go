@@ -13,6 +13,9 @@ import (
 
 func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
 	start := time.Now()
+	if _, _, err := ablationMode(c.AgreementAblation); err != nil {
+		return config.DeploymentPlan{}, err
+	}
 	profile, err := heatprofile.Load(c.HeatProfilePath, c.HeatProfileSHA256, c.KeyCount)
 	if err != nil {
 		return config.DeploymentPlan{}, fmt.Errorf("XPaxos empirical profile: %w", err)
@@ -34,6 +37,10 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 	if err != nil {
 		return p, err
 	}
+	p, err = applyAblation(c, p)
+	if err != nil {
+		return p, err
+	}
 	var coldMass, collision, topCold float64
 	for rank, probability := range profile.Probabilities {
 		if p.ColdEnabled && int64(rank) >= p.ColdCutoff {
@@ -52,6 +59,8 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 		"cold_enabled": p.ColdEnabled, "cold_cutoff": p.ColdCutoff,
 		"sample_cold_mass": coldMass, "sample_cold_collision_mass": collision, "sample_hot_mass_in_cold_cohort": topCold,
 		"client_learning_all_keys": p.ClientLearningAllKeys, "mapping_table_bytes": len(profile.Ranks) * 4,
+		"agreement_ablation": p.AgreementAblation, "hot_disabled": p.AgreementHotDisabled,
+		"base_plan_sha256": p.AgreementBasePlanSHA256, "base_cold_enabled": p.AgreementBaseColdEnabled,
 		"probability_table_bytes": len(profile.Probabilities) * 8, "diagnostic_startup_ns": time.Since(start).Nanoseconds(),
 	}
 	data, _ := json.Marshal(row)

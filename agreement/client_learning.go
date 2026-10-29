@@ -51,6 +51,9 @@ func (r *Replica) sendClientVotes(v entry) {
 		if req.Proposal.Command.Op != state.PUT || (!e.opt.AllKeyLearning && e.opt.KeyPolicy.rank(req.Proposal.Command.K) < int64(e.opt.KeyPolicy.hotCutoff)) {
 			continue
 		}
+		if e.opt.HotDisabled && e.opt.KeyPolicy.hot(req.Proposal.Command.K) {
+			continue
+		}
 		value := make(state.Value, 88)
 		binary.LittleEndian.PutUint64(value[0:8], v.Ballot)
 		binary.LittleEndian.PutUint64(value[8:16], v.Slot)
@@ -111,6 +114,10 @@ func (c *Client) acceptClientReply(reply *defs.ProposeReplyTS, source int) bool 
 		b.mu.Unlock()
 		return false
 	}
+	if c.hotDisabled && c.keyPolicy.hot(p.cmd.Command.K) {
+		b.mu.Unlock()
+		return false
+	}
 	digest := commandDigest(p.cmd.Command)
 	if !bytes.Equal(digest[:], reply.Value[56:88]) {
 		b.mu.Unlock()
@@ -144,7 +151,7 @@ func (c *Client) acceptClientReply(reply *defs.ProposeReplyTS, source int) bool 
 }
 
 func (c *Client) startHotReadRace(cmd defs.Propose, primary int) {
-	if !c.learningEnabled || cmd.Command.Op != state.GET || !c.keyPolicy.hot(cmd.Command.K) {
+	if c.hotDisabled || !c.learningEnabled || cmd.Command.Op != state.GET || !c.keyPolicy.hot(cmd.Command.K) {
 		return
 	}
 	hint := c.bodega.roster.Load()

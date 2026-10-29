@@ -29,6 +29,7 @@ type Replica struct {
 
 func readOptions(c *config.Config, n int) (options, error) {
 	o := options{KeyPolicy: newKeyPolicy(c), AllKeyLearning: c.Plan.ClientLearningAllKeys, ClientLearning: c.Writes > 0, Lease: 2500 * time.Millisecond, Margin: 100 * time.Millisecond, Heartbeat: 120 * time.Millisecond, Failure: 1200 * time.Millisecond, FailureMax: 2400 * time.Millisecond}
+	o.HotDisabled = c.Plan.AgreementHotDisabled
 	if n < 3 || n > 63 || n%2 == 0 {
 		return o, fmt.Errorf("Bodega requires odd membership of 3..63 replicas")
 	}

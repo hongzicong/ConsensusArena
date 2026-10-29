@@ -1,0 +1,37 @@
+{
+  "name": "scalability-B-zipf099-20krps",
+  "topologies": [
+    "n3-c3-topology-00",
+    "n5-c5-topology-00",
+    "n7-c7-topology-00",
+    "n9-c9-topology-00",
+    "n11-c11-topology-00",
+    "n13-c13-topology-00",
+    "n15-c15-topology-00",
+    "n17-c17-topology-00",
+    "n19-c19-topology-00",
+    "n21-c21-topology-00",
+    "n23-c23-topology-00",
+    "n25-c25-topology-00",
+    "n27-c27-topology-00",
+    "n29-c29-topology-00",
+    "n31-c31-topology-00"
+  ],
+  "deployments": {
+    "n3-c3-topology-00": "aws-random",
+    "n5-c5-topology-00": "aws-random",
+    "n7-c7-topology-00": "aws-random",
+    "n9-c9-topology-00": "aws-random",
+    "n11-c11-topology-00": "aws-random",
+    "n13-c13-topology-00": "aws-random",
+    "n15-c15-topology-00": "aws-random",
+    "n17-c17-topology-00": "aws-random",
+    "n19-c19-topology-00": "aws-random",
+    "n21-c21-topology-00": "aws-random",
+    "n23-c23-topology-00": "aws-random",
+    "n25-c25-topology-00": "aws-random",
+    "n27-c27-topology-00": "aws-random",
+    "n29-c29-topology-00": "aws-random",
+    "n31-c31-topology-00": "aws-random"
+  }
+}

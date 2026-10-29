@@ -1,0 +1,67 @@
+{
+  "deployment": "aws-random",
+  "regions": [
+    "us-west-1",
+    "us-east-1",
+    "ca-central-1",
+    "eu-west-3",
+    "eu-west-1",
+    "eu-north-1",
+    "ap-southeast-7",
+    "ap-southeast-5",
+    "ap-northeast-2"
+  ],
+  "seed": 1,
+  "topology_model": "kcensus_aws_snapshot",
+  "replica_regions": {
+    "replica-us-west-1": "us-west-1",
+    "replica-us-east-1": "us-east-1",
+    "replica-ca-central-1": "ca-central-1",
+    "replica-eu-west-3": "eu-west-3",
+    "replica-eu-west-1": "eu-west-1",
+    "replica-eu-north-1": "eu-north-1",
+    "replica-ap-southeast-7": "ap-southeast-7",
+    "replica-ap-southeast-5": "ap-southeast-5",
+    "replica-ap-northeast-2": "ap-northeast-2"
+  },
+  "client_regions": {
+    "client-us-west-1": "us-west-1",
+    "client-us-east-1": "us-east-1",
+    "client-ca-central-1": "ca-central-1",
+    "client-eu-west-3": "eu-west-3",
+    "client-eu-west-1": "eu-west-1",
+    "client-eu-north-1": "eu-north-1",
+    "client-ap-southeast-7": "ap-southeast-7",
+    "client-ap-southeast-5": "ap-southeast-5",
+    "client-ap-northeast-2": "ap-northeast-2"
+  },
+  "source": {
+    "path": "configs/aws-random/9.toml",
+    "bundled_path": "../sources/aws-random/9.toml",
+    "sha256": "61a238b18ca9bddc9cc3f687b0e39e33aa22f0b2914fdae697255db4e97c3899",
+    "conversion": "2 * directed one-way milliseconds; emulator halves and rounds up"
+  },
+  "network": {
+    "latency_jitter_ms": 0,
+    "bandwidth_kbps": 125000
+  },
+  "workload": {
+    "profiles": [
+      "B"
+    ],
+    "total_arrival_rate": 20000,
+    "arrival_rate_per_client": 2222.222222222222,
+    "key_count": 100000,
+    "zipf_skew": 0.99,
+    "command_size_bytes": 16,
+    "workload_seed": 1,
+    "key_mapping_seed": 1
+  },
+  "resources": {
+    "enabled": true,
+    "window_seconds": [
+      5,
+      15
+    ]
+  }
+}

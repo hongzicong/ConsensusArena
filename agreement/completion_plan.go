@@ -38,6 +38,7 @@ type completionModel struct {
 	leader                             int
 	writes, offeredWrites, remoteShare float64
 	hotCutoff                          int
+	hotDisabled                        bool
 	hot, cold                          probabilitySpan
 	parentHolds                        []readHoldProfile
 	ownerHolds                         [][]readHoldProfile
@@ -205,6 +206,7 @@ func planCompletionDelegation(c *config.Config, t *placement.Topology, plan *con
 		}
 	}
 	m := completionModel{leader: leader, writes: float64(c.Writes) / 100, weights: make([]float64, n), windows: make([]float64, n), hotCutoff: heatpolicy.HotCutoff(c)}
+	m.hotDisabled = hotAblated(c)
 	m.offeredWrites = c.ArrivalRate * float64(len(t.Clients)) * float64(max(1, c.Clones)) * m.writes
 	g := newVisibilityGeometry(t, leader, mask)
 	evidence := g.ordinary
@@ -262,12 +264,12 @@ func planCompletionDelegation(c *config.Config, t *placement.Topology, plan *con
 	m.parentHolds = make([]readHoldProfile, n)
 	m.ownerHolds = make([][]readHoldProfile, n)
 	for reader := 0; reader < n; reader++ {
-		m.parentHolds[reader] = g.holdProfile(g.scenarios(-1, m.remoteShare, false), reader)
+		m.parentHolds[reader] = g.holdProfile(g.scenarios(-1, m.remoteShare, m.hotDisabled), reader)
 	}
 	for owner := 0; owner < n; owner++ {
 		m.ownerHolds[owner] = make([]readHoldProfile, n)
 		for reader := 0; reader < n; reader++ {
-			m.ownerHolds[owner][reader] = g.holdProfile(g.scenarios(owner, 0, false), reader)
+			m.ownerHolds[owner][reader] = g.holdProfile(g.scenarios(owner, 0, m.hotDisabled), reader)
 		}
 	}
 	m.prob = c.HeatProfile.Probabilities
@@ -287,6 +289,9 @@ func planCompletionDelegation(c *config.Config, t *placement.Topology, plan *con
 		best, owner := 0.0, -1
 		rate := m.offeredWrites * probability
 		for _, candidate := range responders {
+			if m.hotDisabled && key < m.hotCutoff {
+				continue
+			}
 			readGain := 0.
 			if key < m.hotCutoff {
 				for reader, weight := range m.weights {

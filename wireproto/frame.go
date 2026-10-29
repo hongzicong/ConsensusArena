@@ -5,6 +5,7 @@ package wireproto
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/hongzicong/ConsensusArena/resourceobs"
 	"io"
 )
 
@@ -79,6 +80,7 @@ func Read(r io.Reader, message Message, limit int) error {
 	if _, err := io.ReadFull(r, body); err != nil {
 		return err
 	}
+	resourceobs.Received(headerSize + int(size) + 1)
 	if err := message.ValidateProtoPayload(body, 64); err != nil {
 		return err
 	}
