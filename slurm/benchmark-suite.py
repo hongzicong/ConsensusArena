@@ -3,8 +3,7 @@
 
 Run from ConsensusArena: python3 slurm/benchmark-suite.py submit latency|fault
 Environment overrides are shared with the existing single-scene harnesses.
-Latency defaults to 5 replicas, profiles A/B/C, and topology 1.
-The explicitly selected fault suite defaults to the full 27-scene matrix.
+Latency and fault use the fixed 27-scene topology/workload matrix.
 """
 import argparse
 import csv
@@ -26,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def scenes(env, kind='latency'):
     settings(env, kind)
-    return selection(env, kind)
+    return selection(env)
 
 
 def scene_name(scene):
