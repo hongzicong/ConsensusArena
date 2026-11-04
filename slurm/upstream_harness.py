@@ -33,19 +33,23 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def selection(env):
-    counts = [int(n) for n in env.get('CONSENSUSARENA_REPLICAS', '5:9:13').split(':')]
+def selection(env, kind='latency'):
+    requested_cases = env.get('CONSENSUSARENA_CASES')
+    default_counts = '5' if kind == 'latency' and not requested_cases else '5:9:13'
+    counts = [int(n) for n in env.get('CONSENSUSARENA_REPLICAS', default_counts).split(':')]
     profiles = env.get('CONSENSUSARENA_YCSB_PROFILES', 'A:B:C').upper().split(':')
     if len(set(counts)) != len(counts) or any(n not in (5, 9, 13) for n in counts):
         raise ValueError('expected distinct replica counts from 5:9:13')
     if len(set(profiles)) != len(profiles) or any(p not in WRITES for p in profiles):
         raise ValueError('expected distinct ratio profiles from A:B:C')
     cases = {(n, t) for n in counts for t in (1, 2, 3)}
-    if env.get('CONSENSUSARENA_CASES'):
-        entries = [tuple(map(int, item.split('-'))) for item in env['CONSENSUSARENA_CASES'].split(':')]
+    if requested_cases:
+        entries = [tuple(map(int, item.split('-'))) for item in requested_cases.split(':')]
         if len(set(entries)) != len(entries) or any(item not in cases for item in entries):
             raise ValueError('invalid, duplicate, or unrequested size-topology cases')
         cases = set(entries)
+    elif kind == 'latency':
+        cases = {(n, 1) for n in counts}
     return [dict(replicas=n, topology_id=t, profile=p) for n in counts
             for t in (1, 2, 3) if (n, t) in cases for p in profiles]
 
@@ -533,7 +537,7 @@ def main():
     parser.add_argument('kind', choices=('latency', 'fault'))
     args = parser.parse_args()
     env = dict(os.environ, CONSENSUSARENA_SCENE_KIND=args.kind)
-    plan = selection(env)
+    plan = selection(env, args.kind)
     if len(plan) != 1:
         raise ValueError('scene adapter requires exactly one selected scene')
     settings(env, args.kind)
