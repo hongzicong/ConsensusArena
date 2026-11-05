@@ -1,0 +1,19 @@
+name = "ring7-B-zipf099-load"
+# Each protocol has one adaptive Slurm worker (2 nodes, 15 tasks, 8 CPUs/task).
+# launch.ps1 uploads immutable inputs and submits workers concurrently; plan is read-only.
+protocols = ["agreement", "paxos", "swiftpaxos", "bodega", "kcensus", "pqlfrontier"]
+template = "../kcensus-suite/n7-c7-topology-00"
+profile = "B"
+resources = true
+
+[search]
+start = 500
+ceiling = 1024000
+coarse_step = 2000
+step_floor = 500
+latency_cap_ms = 400.0
+knee_factor = 1.2
+attempts = 2
+# A timeout is a valid unsustained observation; both attempts are preserved.
+# Invalid infrastructure/measurement evidence exhausts retries then fails the series.
+# No KCensus plotting monotonicity filter, edge trimming, or throughput estimator is used.

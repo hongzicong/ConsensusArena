@@ -1,0 +1,17 @@
+name = "ring7-B-agreement-bodega-knee"
+protocols = ["agreement", "bodega"]
+template = "../kcensus-suite/n7-c7-topology-00"
+profile = "B"
+resources = true
+
+[sweep]
+# Lower-load anchors, then 8k spacing across the previously observed latency rise.
+# Continue above the old 1,024,000 offered-rps ceiling even after a timeout.
+rates = [128000, 256000, 512000, 640000, 768000, 832000, 896000, 928000,
+         944000, 960000, 968000, 976000, 984000, 992000, 1000000, 1008000,
+         1016000, 1024000, 1032000, 1040000, 1056000, 1088000, 1120000]
+repetitions = 3
+order_seed = 20261103
+latency_cap_ms = 400.0
+# attempt-01/02/03 are independent repetitions, not success-conditioned retries.
+# All repetitions use the same workload seeds/settings as the original search.

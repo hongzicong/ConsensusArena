@@ -48,7 +48,7 @@ type QuorumsOfLeader map[int32]Quorum
 type QuorumSet map[int32]QuorumsOfLeader
 
 type QuorumSystem struct {
-	qs      QuorumSet
+	family  quorumFamily
 	ballots []int32
 }
 
@@ -60,18 +60,19 @@ func NewQuorumSystem(quorumSize, repNum int, initial Quorum, leader int32) (*Quo
 	if repNum < 1 || repNum > replicaset.MaxSize || !replicaset.All(repNum).Covers(initial) {
 		return nil, fmt.Errorf("invalid quorum membership %d", repNum)
 	}
-	qs := NewQuorumSet(quorumSize, repNum)
-	ballot := qs.BallotOf(leader, initial)
-	if ballot < 0 {
+	family := quorumFamily{size: quorumSize, replicas: repNum}
+	ballot := family.ballotOf(leader, initial)
+	if ballot < 0 || !family.aq(ballot).Equal(initial) {
 		return nil, fmt.Errorf("initial quorum has no ballot")
 	}
-	return &QuorumSystem{qs: qs, ballots: []int32{ballot}}, nil
+	return &QuorumSystem{family: family, ballots: []int32{ballot}}, nil
 }
 
 func (sys *QuorumSystem) SameHigher(sameAs, higherThan int32) int32 {
-	l := Leader(sameAs, len(sys.qs))
-	k := higherThan / int32(len(sys.qs[l]))
-	return sameAs + k*int32(len(sys.qs[l]))*int32(len(sys.qs))
+	// Retain the original int32 arithmetic and cycle calculation exactly.
+	count := int32(sys.family.count())
+	k := higherThan / count
+	return sameAs + k*count*int32(sys.family.replicas)
 }
 
 func (sys *QuorumSystem) BallotAt(i int) int32 {
@@ -82,11 +83,88 @@ func (sys *QuorumSystem) BallotAt(i int) int32 {
 }
 
 func (sys *QuorumSystem) BallotOf(leader int32, q Quorum) int32 {
-	return sys.qs.BallotOf(leader, q)
+	return sys.family.ballotOf(leader, q)
 }
 
 func (sys QuorumSystem) AQ(ballot int32) Quorum {
-	return sys.qs.AQ(ballot)
+	return sys.family.aq(ballot)
+}
+
+// quorumFamily represents precisely the lexicographic, leader-containing subset
+// order used by subsets below. Removing the fixed leader preserves that order:
+// quorum IDs are combination ranks among C(n-1,k-1) subsets. No tables of actual
+// quorums, cached mutable sets, or new wire/ballot encodings are introduced.
+type quorumFamily struct{ replicas, size int }
+
+var binomial = func() [65][65]uint64 {
+	var table [65][65]uint64
+	for n := 0; n <= 64; n++ {
+		table[n][0], table[n][n] = 1, 1
+		for k := 1; k < n; k++ {
+			table[n][k] = table[n-1][k-1] + table[n-1][k]
+		}
+	}
+	return table
+}()
+
+func choose(n, k int) uint64 {
+	if n < 0 || k < 0 || k > n {
+		return 0
+	}
+	return binomial[n][k]
+}
+
+func (f quorumFamily) count() uint64 { return choose(f.replicas-1, f.size-1) }
+
+func (f quorumFamily) ballotOf(leader int32, q Quorum) int32 {
+	if leader < 0 || int(leader) >= f.replicas || q.Size() != f.size ||
+		!q.Contains(int(leader)) || !replicaset.All(f.replicas).Covers(q) {
+		return -1
+	}
+	var rank uint64
+	previous, position := -1, 0
+	q.Range(func(id int) bool {
+		if id == int(leader) {
+			return true
+		}
+		index := id
+		if id > int(leader) {
+			index--
+		}
+		for skipped := previous + 1; skipped < index; skipped++ {
+			rank += choose(f.replicas-2-skipped, f.size-2-position)
+		}
+		previous, position = index, position+1
+		return true
+	})
+	// Deliberately keep the legacy signed int32 mapping. NewQuorumSystem rejects
+	// an initial mapping if overflow would alias a different quorum on decode.
+	return int32(rank)*int32(f.replicas) + leader
+}
+
+func (f quorumFamily) aq(ballot int32) Quorum {
+	leader := Leader(ballot, f.replicas)
+	if leader < 0 {
+		panic("negative Swift quorum ballot")
+	}
+	// The modulus's int32 conversion also matches the legacy implementation.
+	rank := uint64((ballot / int32(f.replicas)) % int32(f.count()))
+	q := replicaset.New(int(leader))
+	needed := f.size - 1
+	for index := 0; needed > 0 && index < f.replicas-1; index++ {
+		block := choose(f.replicas-2-index, needed-1)
+		if rank >= block {
+			rank -= block
+			continue
+		}
+		id := index
+		if id >= int(leader) {
+			id++
+		}
+		q.Add(id)
+		needed--
+	}
+	return q
 }
 
 func NewQuorumsOfLeader() QuorumsOfLeader {

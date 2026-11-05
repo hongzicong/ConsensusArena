@@ -1,0 +1,13 @@
+name = "ring7-B-agreement-knee-missing-repetitions"
+protocols = ["agreement"]
+template = "../kcensus-suite/n7-c7-topology-00"
+profile = "B"
+resources = true
+
+[sweep]
+# Replace only the missing third repetitions from array 40876123.
+# This suite's attempt-01 maps to logical repetition 3 of the original sweep.
+rates = [944000, 960000, 1032000]
+repetitions = 1
+order_seed = 20261104
+latency_cap_ms = 400.0
