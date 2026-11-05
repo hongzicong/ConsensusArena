@@ -1,3 +1,5 @@
 results/
 consensusarena-linux-amd64
 .gocache/
+/.local-reference/swift-before-quorum-memory-fix/
+/.local-reference/swift-implicit-quorums/
