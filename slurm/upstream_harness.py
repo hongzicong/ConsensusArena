@@ -34,16 +34,17 @@ def sha256(path):
 
 
 def selection(env):
-    counts = [int(n) for n in env.get('CONSENSUSARENA_REPLICAS', '5:9:13').split(':')]
+    counts = [int(n) for n in env.get('CONSENSUSARENA_REPLICAS', '5').split(':')]
     profiles = env.get('CONSENSUSARENA_YCSB_PROFILES', 'A:B:C').upper().split(':')
     if len(set(counts)) != len(counts) or any(n not in (5, 9, 13) for n in counts):
         raise ValueError('expected distinct replica counts from 5:9:13')
     if len(set(profiles)) != len(profiles) or any(p not in WRITES for p in profiles):
         raise ValueError('expected distinct ratio profiles from A:B:C')
-    cases = {(n, t) for n in counts for t in (1, 2, 3)}
+    cases = {(n, 1) for n in counts}
     if env.get('CONSENSUSARENA_CASES'):
         entries = [tuple(map(int, item.split('-'))) for item in env['CONSENSUSARENA_CASES'].split(':')]
-        if len(set(entries)) != len(entries) or any(item not in cases for item in entries):
+        allowed_cases = {(n, t) for n in counts for t in (1, 2, 3)}
+        if len(set(entries)) != len(entries) or any(item not in allowed_cases for item in entries):
             raise ValueError('invalid, duplicate, or unrequested size-topology cases')
         cases = set(entries)
     return [dict(replicas=n, topology_id=t, profile=p) for n in counts
