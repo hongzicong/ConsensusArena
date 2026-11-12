@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -35,6 +36,7 @@ var (
 func main() {
 	flag.Parse()
 	log.Printf("WIRE_CODEC name=%s", wireproto.Codec)
+	log.Printf("RUNTIME_CONFIG role=%s alias=%s gomaxprocs=%d num_cpu=%d", *machineType, *machineAlias, runtime.GOMAXPROCS(0), runtime.NumCPU())
 
 	if *confs == "" {
 		flag.Usage()

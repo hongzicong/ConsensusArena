@@ -14,7 +14,7 @@ spec.loader.exec_module(plots)
 
 class PlotTests(unittest.TestCase):
     def test_render_and_reject_incomplete(self):
-        with tempfile.TemporaryDirectory(dir=ROOT.parent.parent / 'results') as temp:
+        with tempfile.TemporaryDirectory(prefix='scalability-plot-test-') as temp:
             root = Path(temp)
             for protocol in plots.PROTOCOLS:
                 folder = root / protocol
@@ -28,7 +28,8 @@ class PlotTests(unittest.TestCase):
                     for i in range(n):
                         resources.append(dict(protocol=protocol, replicas=n, profile='B', topology_id=1,
                             replica=f'r{i}', traffic_bytes_per_request=10+n, messages_per_request=2,
-                            cpu_percent=50, mean_rss_mib=40, sampled_peak_rss_mib=42))
+                            cpu_percent=50, mean_rss_mib='', sampled_peak_rss_mib='', peak_rss_mib=43,
+                            memory_scope='process-start-through-measurement-end'))
                 for name, rows in [('baseline-latency.csv', latency), ('resources.csv', resources)]:
                     with (folder / name).open('w', newline='') as f:
                         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
@@ -37,6 +38,13 @@ class PlotTests(unittest.TestCase):
             roots = [root / protocol for protocol in plots.PROTOCOLS]
             plots.plot(roots, root / 'figures')
             self.assertEqual(len(list((root / 'figures').glob('*'))), 5)
+            with (root/'figures/scalability-summary.csv').open(newline='') as source:
+                self.assertTrue(all(float(r['peak_memory_mib']) == 43 for r in csv.DictReader(source)))
+            resource_file = roots[0]/'resources.csv'
+            resource_file.write_text(resource_file.read_text().replace(
+                'process-start-through-measurement-end','sampled-measurement-window'))
+            with self.assertRaisesRegex(ValueError, 'memory measurement scopes'):
+                plots.load(roots)
             (roots[0] / 'suite-status.json').write_text(json.dumps(dict(complete=False)))
             with self.assertRaisesRegex(ValueError, 'incomplete'):
                 plots.load(roots)

@@ -57,6 +57,12 @@ def export(base, cases=None):
         if 'case' in topology:
             rows[-1].update(clients=len(topology['clients']), case=topology['case'],
                             case_sha256=topology['case_sha256'])
+        if (base/'metadata.txt').exists():
+            metadata = dict(line.split('=', 1) for line in (base/'metadata.txt').read_text().splitlines() if '=' in line)
+            if metadata.get('runtime_policy'):
+                rows[-1].update(runtime_policy=metadata['runtime_policy'],
+                    replica_gomaxprocs=metadata['replica_gomaxprocs'], replica_logical_cpus=metadata['replica_logical_cpus'],
+                    resource_sampling_mode=metadata['resource_sampling_mode'])
     if not rows:
         raise ValueError('no completed topology runs under '+str(base))
     keys = {(r['replicas'],r['protocol'],r['profile'],r['topology_id']) for r in rows}

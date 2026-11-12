@@ -24,24 +24,54 @@ def summarize(run):
     rows = []
     for alias in aliases:
         data = json.loads((run / 'results' / (alias+'-resources.json')).read_text())
-        samples = data['samples']
+        schema = data['schema']
+        checked_counters = counters
+        if schema == 'replica-resources-v1':
+            samples = data['samples']
+            memory = samples
+            expected_seconds = list(range(5, 16))
+            sampling_mode = 'legacy-in-process-11-samples'
+            memory_scope = 'sampled-measurement-window'
+        elif schema == 'replica-resources-v2':
+            samples = data['counter_samples']
+            memory = None
+            expected_seconds = [5, 15]
+            checked_counters = (*counters, 'peak_rss_bytes')
+            sampling_mode = 'boundary-cpu-traffic-peak-memory-v2'
+            memory_scope = data['memory_scope']
+            if memory_scope != 'process-start-through-measurement-end':
+                raise ValueError('invalid peak memory scope: '+alias)
+            if data.get('observer') != 'inside-pinned-replica' or not isinstance(data.get('pid'), int) or data['pid'] <= 0:
+                raise ValueError('invalid resource observer identity: '+alias)
+        else:
+            raise ValueError('unknown resource schema: '+str(schema))
         if (data['schema'], data['alias'], data['epoch_ns'], len(samples)) != (
-                'replica-resources-v1', alias, epoch, 11):
+                schema, alias, epoch, len(expected_seconds)):
             raise ValueError('resource identity/window mismatch: '+alias)
         for i, sample in enumerate(samples):
             # Preserve actual timestamps; refuse badly scheduled observations.
-            if abs(sample['unix_ns'] - (epoch+(5+i)*10**9)) > 100_000_000:
+            if abs(sample['unix_ns'] - (epoch+expected_seconds[i]*10**9)) > 100_000_000:
                 raise ValueError('resource sample missed boundary: '+alias)
-            if any(not math.isfinite(sample[k]) or sample[k] < 0 for k in (*counters, 'rss_bytes')):
+            if any(not math.isfinite(sample[k]) or sample[k] < 0 for k in checked_counters):
                 raise ValueError('invalid resource sample: '+alias)
-            if i and any(sample[k] < samples[i-1][k] for k in counters):
+            if i and any(sample[k] < samples[i-1][k] for k in checked_counters):
                 raise ValueError('resource counter regressed: '+alias)
+        if memory is not None and len(memory) != 11:
+            raise ValueError('memory samples do not cover the measurement interval: '+alias)
+        for i, sample in enumerate(memory or []):
+            if abs(sample['unix_ns']-(epoch+(5+i)*10**9)) > 100_000_000:
+                raise ValueError('memory sample missed boundary: '+alias)
+            if not math.isfinite(sample['rss_bytes']) or sample['rss_bytes'] < 0:
+                raise ValueError('invalid memory sample: '+alias)
+            if i and sample['unix_ns'] <= memory[i-1]['unix_ns']:
+                raise ValueError('memory time did not advance: '+alias)
         first, last = samples[0], samples[-1]
         seconds = (last['unix_ns']-first['unix_ns'])/1e9
         delta = {k: last[k]-first[k] for k in counters}
         # Trapezoidal time average of sampled RSS, including both boundaries.
-        rss = sum((a['rss_bytes']+b['rss_bytes'])/2*(b['unix_ns']-a['unix_ns'])/1e9
-                  for a, b in zip(samples, samples[1:]))/seconds
+        rss = (sum((a['rss_bytes']+b['rss_bytes'])/2*(b['unix_ns']-a['unix_ns'])
+                   for a, b in zip(memory, memory[1:]))/(memory[-1]['unix_ns']-memory[0]['unix_ns'])
+               if memory else None)
         rows.append(dict(replicas=topology['replica_count'], protocol=plan['protocol'].lower(),
             profile=run.parent.name.removeprefix('ycsb-'), topology_id=topology['topology_id'],
             case=topology.get('case', ''), case_sha256=topology.get('case_sha256', ''),
@@ -51,10 +81,14 @@ def summarize(run):
             sent_messages=delta['sent_frames'], received_messages=delta['received_frames'],
             traffic_bytes_per_request=(delta['sent_bytes']+delta['received_bytes'])/completions if completions else '',
             messages_per_request=(delta['sent_frames']+delta['received_frames'])/completions if completions else '',
-            cpu_percent=100*delta['cpu_seconds']/seconds, mean_rss_mib=rss/2**20,
-            sampled_peak_rss_mib=max(s['rss_bytes'] for s in samples)/2**20,
+            cpu_percent=100*delta['cpu_seconds']/seconds, mean_rss_mib=rss/2**20 if memory else '',
+            sampled_peak_rss_mib=max(s['rss_bytes'] for s in memory)/2**20 if memory else '',
+            peak_rss_mib=last['peak_rss_bytes']/2**20 if schema == 'replica-resources-v2' else '',
+            memory_window_start_ns=memory[0]['unix_ns'] if memory else '',
+            memory_window_end_ns=memory[-1]['unix_ns'] if memory else last['unix_ns'],
+            sampling_mode=sampling_mode, memory_scope=memory_scope,
             timed_out=validation['timed_out'], cohort_complete=validation['cohort_complete'],
-            schema='replica-resources-v1'))
+            schema=schema))
     return rows
 
 

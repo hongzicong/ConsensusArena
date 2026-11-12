@@ -6,8 +6,8 @@ param(
     [string]$RemoteBase = 'ConsensusArena',
     [ValidatePattern('^[A-Za-z0-9_-]+$')]
     [string]$SlurmAccount = 'dcl',
-    [ValidateSet('swiftpaxos', 'bodega', 'paxos', 'kcensus', 'agreement', 'pql', 'pqlfrontier')]
-    [string[]]$Protocols = @('swiftpaxos', 'bodega', 'paxos', 'kcensus', 'agreement', 'pql'),
+    [ValidateSet('swiftpaxos', 'bodega', 'paxos', 'kcensus', 'agreement', 'pqlfrontier')]
+    [string[]]$Protocols = @('swiftpaxos', 'bodega', 'paxos', 'kcensus', 'agreement', 'pqlfrontier'),
     [ValidateRange(1, 6)]
     [int]$MaxParallel = 1,
     [switch]$PrepareOnly
@@ -38,7 +38,7 @@ if ($Protocols.Count -eq 0 -or @($Protocols | Select-Object -Unique).Count -ne $
 
 Push-Location $repoPath
 try {
-    Write-Host 'Validating the four 7-replica / A:B:C / 20,000 requests/s inputs...'
+    Write-Host 'Validating four n7 deployments plus NA n3/n5 / A:B / 20,000 requests/s...'
     Invoke-Checked -Program python -Arguments @('-B', (Join-Path $suitePath 'validate.py')) | Out-Host
     Write-Host 'Building the current branch as a frozen Linux executable...'
     $artifactText = Invoke-Checked -Program powershell -Arguments @(
@@ -54,10 +54,10 @@ try {
 
     # Each invocation gets an immutable remote workspace: later uploads cannot
     # alter scripts or inputs used by jobs from an earlier launch.
-    $launchId = 'kcensus-n7-20krps-' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $launchId = 'regular-n3-n5-n7-AB-20krps-' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
     $remoteRelative = $RemoteBase.TrimEnd('/') + '/launches/' + $launchId
     $quotedRelative = ConvertTo-ShellLiteral $remoteRelative
-    $setup = "set -eu; command -v sbatch >/dev/null; command -v python3 >/dev/null; command -v curl >/dev/null; command -v ping >/dev/null; mkdir -p $quotedRelative; cd $quotedRelative; pwd -P"
+    $setup = "set -eu; command -v sbatch >/dev/null; command -v taskset >/dev/null; command -v python3 >/dev/null; command -v curl >/dev/null; command -v ping >/dev/null; mkdir -p $quotedRelative; cd $quotedRelative; pwd -P"
     $remoteOutput = Invoke-Checked -Program ssh -Arguments @('-o', 'ConnectTimeout=30', $Server, $setup)
     $remoteRoot = [string](@($remoteOutput)[-1])
     $remoteRoot = $remoteRoot.Trim()
@@ -86,7 +86,7 @@ common_exports="ALL,CONSENSUSARENA_BINARY=$binary,CONSENSUSARENA_BINARY_SHA256=_
 unset CONSENSUSARENA_RUN_DIR
 unset SBATCH_DEPENDENCY SBATCH_ARRAY_INX
 for protocol in __PROTOCOLS__; do
-    printf '\nSubmitting %s: four deployments x A/B/C (12 scenes)\n' "$protocol"
+    printf '\nSubmitting %s: six deployments x A/B (12 scenes)\n' "$protocol"
     bash slurm/kcensus-suite/submit.sh "$protocol" --account __ACCOUNT__ --max-parallel __PARALLEL__ \
         --export "$common_exports,CONSENSUSARENA_PROTOCOL=$protocol" | tee "submit-$protocol.log"
 done
@@ -99,7 +99,7 @@ pwd -P
     $submit = $submit.Replace("`r`n", "`n")
     # Upload UTF-8/LF script bytes rather than passing nested Bash expressions
     # through Windows' native command-line quoting. No SSH identity is stored.
-    $stagingDirectory = Join-Path $repoPath 'results/launch-scripts'
+    $stagingDirectory = Join-Path $repoPath '.local-artifacts/launch-scripts'
     New-Item -ItemType Directory -Force -Path $stagingDirectory | Out-Null
     $stagingFile = Join-Path $stagingDirectory ($launchId + '.sh')
     [System.IO.File]::WriteAllText($stagingFile, $submit + "`n", (New-Object System.Text.UTF8Encoding($false)))

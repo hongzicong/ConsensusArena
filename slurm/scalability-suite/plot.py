@@ -39,6 +39,10 @@ def load(roots):
     for key, rows in resources.items():
         if len(rows) != key[1] or len({r['replica'] for r in rows}) != key[1]:
             raise ValueError('missing or duplicate replica resources: '+str(key))
+    if len({r.get('runtime_policy', 'legacy') for r in latency.values()}) != 1:
+        raise ValueError('cannot combine different replica CPU policies')
+    if len({r.get('memory_scope', 'sampled-measurement-window') for rows in resources.values() for r in rows}) != 1:
+        raise ValueError('cannot combine different memory measurement scopes')
     return latency, resources
 
 
@@ -53,9 +57,11 @@ def plot(roots, output):
         row, replicas = latency[key], resources[key]
         summary = dict(protocol=key[0], replicas=key[1], mean_ms=row['mean_ms'],
             timed_out=row['timed_out'], cohort_complete=row['cohort_complete'])
-        for metric in ('traffic_bytes_per_request', 'messages_per_request', 'cpu_percent', 'mean_rss_mib', 'sampled_peak_rss_mib'):
-            values = [float(r[metric]) for r in replicas if r[metric] != '']
+        for metric in ('traffic_bytes_per_request', 'messages_per_request', 'cpu_percent', 'mean_rss_mib', 'sampled_peak_rss_mib', 'peak_rss_mib'):
+            values = [float(r[metric]) for r in replicas if r.get(metric, '') != '']
             summary[metric] = statistics.mean(values) if len(values) == len(replicas) else ''
+        summary['peak_memory_mib'] = summary['peak_rss_mib'] if summary['peak_rss_mib'] != '' else summary['sampled_peak_rss_mib']
+        summary['memory_scope'] = replicas[0].get('memory_scope', 'sampled-measurement-window')
         summaries.append(summary)
     with (output / 'scalability-summary.csv').open('w', newline='') as target:
         writer = csv.DictWriter(target, fieldnames=list(summaries[0]))
@@ -64,8 +70,8 @@ def plot(roots, output):
     charts = [('scalability', [('mean_ms', 'Average latency (ms)')]),
               ('resources', [('traffic_bytes_per_request', 'Traffic (bytes/request/replica)'),
                              ('messages_per_request', 'Messages/request/replica'),
-                             ('cpu_percent', 'CPU per replica (% of one core)'),
-                             ('mean_rss_mib', 'Mean RSS per replica (MiB)')])]
+                             ('cpu_percent', 'CPU per replica (% of one logical CPU)'),
+                             ('peak_memory_mib', 'Peak memory per replica (MiB)')])]
     for name, metrics in charts:
         fig, axes = plt.subplots(1 if len(metrics) == 1 else 2,
                                  1 if len(metrics) == 1 else 2,
@@ -85,9 +91,11 @@ def plot(roots, output):
             ax.set(xlabel='Number of replicas', ylabel=label, xticks=list(range(3, 32, 4)))
             ax.grid(alpha=.25)
         fig.legend(*axes.flat[0].get_legend_handles_labels(), loc='upper center', ncol=6)
-        fig.text(.5, .01, 'Workload B · aws-random · complete, fully drained runs only\nDotted connectors span omitted runs; no values are imputed.',
+        memory_note = ('Kernel peak memory includes setup and warmup.' if summaries[0]['memory_scope'] ==
+                       'process-start-through-measurement-end' else 'Memory is the peak of one-second samples.')
+        fig.text(.5, .01, 'Workload B · aws-random · complete, fully drained runs only\nDotted connectors span omitted runs; no values are imputed.\n'+memory_note,
                  ha='center', fontsize=8)
-        fig.tight_layout(rect=(0, .035, 1, .9))
+        fig.tight_layout(rect=(0, .075, 1, .9))
         for extension in ('png', 'pdf'):
             fig.savefig(output / f'{name}.{extension}', dpi=200)
         plt.close(fig)

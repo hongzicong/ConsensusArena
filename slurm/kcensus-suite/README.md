@@ -1,10 +1,22 @@
-# KCensus four-deployment latency suite
+# Regular latency evaluation
 
 This folder supplies frozen inputs to the existing generated-suite pipeline.
-There are seven replicas and seven clients in each deployment, one modeled
-colocated client per replica. All four deployments run A/B/C, giving 12 scenes
-per protocol. This suite does not change the existing runner or measurement
-semantics. No benchmarks are launched by generation or validation.
+Keep the four original seven-replica deployments and add North American
+deployments with three and five replicas. Each has one modeled colocated client
+per replica. All six deployments run A/B, giving 12 scenes per protocol and
+72 scenes for the six comparison protocols. Read-only workload C is excluded.
+Measurement timing and total offered load stay unchanged. Generation and
+validation do not launch benchmarks.
+
+The launcher now restricts each replica to `GOMAXPROCS=1` plus `taskset` on one
+logical CPU, before Go starts. Networking and garbage collection share that CPU.
+Clients, master, network emulation and job control remain separate. Slurm still
+reserves two CPUs per task: the replica uses one, its proxy and supervisor the
+other. Clients and master each receive two CPUs. The final run keeps exclusive
+nodes and the previous 8 GiB memory budget per task (4 GiB per allocated CPU).
+Collection requires startup and per-thread affinity evidence. Periodic replica
+resource observation is disabled for this latency suite. See the
+[paper evaluation overview](../../results/regular/README.md).
 
 | Runtime topology ID | Input case | KCensus deployment |
 | --- | --- | --- |
@@ -12,6 +24,8 @@ semantics. No benchmarks are launched by generation or validation.
 | 2 | `n7-c7-topology-01` | `europe-7` |
 | 3 | `n7-c7-topology-02` | `east-asia-7` |
 | 4 | `n7-c7-topology-03` | `north-america-7` |
+| 5 | `n3-c3-topology-04` | `north-america-3` |
+| 6 | `n5-c5-topology-05` | `north-america-5` |
 
 The case directory index is zero-based; the runtime topology ID is one-based.
 Case metadata retains deployment names, full region labels, membership mapping,
@@ -21,15 +35,26 @@ the `OVERALL` rows provide average and P99 latency. Per-client rows may remain i
 raw outputs and need not be shown in the paper. Raw latency samples remain
 available for subsequent CDF plots.
 
+NA-3 uses Northern Virginia, Northern California and Oregon. NA-5 adds Canada
+Central and Ohio. Both are submatrices of the existing NA-7 snapshot, preserving
+source order, exact directed delays and their original source checksum. The
+case metadata records the selected source indices. These are explicitly chosen
+North American subsets, rather than a claim of a standard three/five-site layout.
+
+Report every topology and workload separately; never average across topologies.
+The initial figure plan includes A and B for all six deployments with mean and
+p99 latency. If space is limited, A on ring 7 may be shown in a separate figure;
+that presentation choice does not remove the other A measurements.
+
 ## Workload and network choices
 
 | Parameter | Value | Basis |
 | --- | --- | --- |
 | Aggregate offered load | **20,000 requests/s** | New paper's latency experiment target |
-| Per-client arrival rate | 20,000 / 7 ≈ 2,857.143 requests/s | Seven independent Poisson generators; no clones |
+| Per-client arrival rate | 20,000 / replica count requests/s | One independent Poisson generator per replica; no clones |
 | Keys | 100,000 | KCensus `KEYS` |
 | Zipf skew | **0.99** in every case | User requirement; KCensus's skewed contention point |
-| Read/write mix | A: 50/50; B: 95/5; C: 100/0 | Requested existing ConsensusArena profiles |
+| Read/write mix | A: 50/50; B: 95/5 | Two requested ConsensusArena profiles |
 | Key sharing | Shared keyspace across clients | Contention enabled; no requester keyspace partitioning |
 | Value size | 16 bytes | Small-value approximation, explained below |
 | Warmup / measured arrivals | 5 s / 10 s | Existing pipeline; also KCensus's default 10 s latency run with 5 s warmup |
@@ -44,8 +69,9 @@ KCensus's original latency/CDF scripts set a total offered load of 1,000
 requests/s. This suite instead uses 20,000 total requests/s following the new
 paper's experiment directions. That is an arrival-rate target; achieved
 completion throughput is measured by the existing pipeline and may be lower.
-The four placements remain Europe, East Asia, North America and the worldwide
-Northern-Hemisphere ring, all with seven replicas.
+The four original placements remain Europe, East Asia, North America and the
+worldwide Northern-Hemisphere ring, all with seven replicas. The two additions
+use subsets of North America with three and five replicas.
 
 KCensus's generator uses short variable strings of the form
 `v<process>.<request>!` (`src/cassandra.rs`), without a fixed value-size setting.
@@ -80,7 +106,8 @@ at runtime; no account-specific edit is needed:
 ```
 
 The defaults submit SwiftPaxos, Bodega, Paxos, KCensus, Agreement and PQL, each
-with all 12 deployment/profile scenes, for 72 scenes total. The launcher validates
+with all 12 deployment/profile scenes, for 72 scenes total. PQL uses the
+`pqlfrontier` implementation; original `pql` is rejected. The launcher validates
 the suite, builds the current branch, checks the pinned proxy, uploads the binary,
 proxy and complete Slurm directory into a unique remote workspace, verifies remote
 hashes and submits six Slurm arrays plus their collectors. `submit-<protocol>.log`
@@ -92,7 +119,7 @@ owns the experiments and result collection. No `nohup` or persistent local
 connection is required. If submission fails partway through, inspect already
 printed job IDs and submission logs before retrying to avoid duplicate runs.
 
-The default concurrency is one scene per protocol, up to six scenes / 12 exclusive
+The default concurrency is one scene per protocol, up to six scenes / six exclusive
 nodes across the six protocols. `-MaxParallel` changes the per-protocol limit.
 `-Protocols` selects a subset. `-SlurmAccount` controls the Slurm billing account
 (default `dcl`), independently of the SSH login. `-PrepareOnly` validates and builds
@@ -138,13 +165,12 @@ On Jed, from the prepared `ConsensusArena/` directory:
 bash slurm/kcensus-suite/submit.sh agreement
 ```
 
-Replace `agreement` with the desired registered protocol, such as `pql`,
-`bodega`, `kcensus`, `swiftpaxos`, `paxos`, `epaxos`, `curp` or `fastpaxos`.
+Replace `agreement` with `pqlfrontier`, `bodega`, `kcensus`, `swiftpaxos` or `paxos`.
 The wrapper delegates directly to `benchmark-suite.py submit latency --suite
-generated --generated-root ...`, pins all A/B/C profiles, seven replicas,
+generated --generated-root ...`, selects both A/B profiles and all six cases,
 network controls and workload seed, and clears inherited case/arrival-rate
 filters. Existing binary paths and binary/proxy hash environment settings remain
-in effect. It uses the ordinary array collector and reserves two nodes / 15 tasks
+in effect. It uses the ordinary array collector and reserves one node / 15 tasks
 per scene, with at most six simultaneous scenes by default. Additional runner
 arguments can be appended, for example `--mode serial` or `--max-parallel 3`.
 Use a fresh result directory per submission if overriding `CONSENSUSARENA_RUN_DIR`.
@@ -152,7 +178,7 @@ Use a fresh result directory per submission if overriding `CONSENSUSARENA_RUN_DI
 To regenerate elsewhere with Python 3.11+, using only files in this folder:
 
 ```powershell
-python -B slurm/kcensus-suite/generate.py results/kcensus-regenerated
+python -B slurm/kcensus-suite/generate.py .local-artifacts/kcensus-regenerated
 ```
 
 The generator refuses to replace existing cases or a manifest. Checked-in inputs

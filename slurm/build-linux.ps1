@@ -43,7 +43,7 @@ finally {
 }
 
 $binarySha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $outputPath).Hash.ToLowerInvariant()
-$frozenDirectory = Join-Path $repoRoot "results\binaries\$binarySha256"
+$frozenDirectory = Join-Path $repoRoot ".local-artifacts\binaries\$binarySha256"
 $frozenPath = Join-Path $frozenDirectory "consensusarena-linux-amd64"
 New-Item -ItemType Directory -Force -Path $frozenDirectory | Out-Null
 

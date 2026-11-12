@@ -13,6 +13,7 @@ unset CONSENSUSARENA_REPLICAS
 export CONSENSUSARENA_YCSB_PROFILES=B CONSENSUSARENA_WORKLOAD_SEED=1
 export CONSENSUSARENA_LATENCY_JITTER_MS=0 CONSENSUSARENA_BANDWIDTH_KBPS=125000
 export CONSENSUSARENA_RESOURCES=1
+export CONSENSUSARENA_RUNTIME_POLICY=replica-single-cpu-v2
 cd "$suite_dir/../.."
 exec "${CONSENSUSARENA_PYTHON:-python3}" slurm/benchmark-suite.py submit latency \
     --suite generated --generated-root "$suite_dir/generated" --account dcl \

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import runner
+import runtime_policy
 from search import Settings, SweepSettings, adaptive, sweep_schedule
 
 
@@ -40,6 +41,36 @@ class SearchTests(unittest.TestCase):
 
 
 class MeasurementTests(unittest.TestCase):
+    def test_every_protocol_trial_reapplies_single_cpu_after_environment_cleanup(self):
+        spec, settings, template, _ = runner.specification(runner.HERE/'experiment.toml')
+        self.assertFalse(spec['resources'])
+        for protocol in spec['protocols']:
+            with self.subTest(protocol=protocol), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                seen = {}
+                def manifest(path, value):
+                    seen['manifest'] = value
+                def launch(kind, repo, point, scenes, index, env):
+                    seen['environment'] = env
+                    return 0
+                def collect(kind, point):
+                    runner.write_csv(point/'baseline-latency.csv', [dict(self.row(), protocol=protocol, profile='B')])
+                    return 0
+                suite = SimpleNamespace(publish_manifest=manifest, run_scene=launch, collect=collect,
+                                        clean_steps=lambda job: None)
+                # A diagnostic environment must not silently restore the old CPU mode.
+                with patch.dict(runner.os.environ, dict(SLURM_JOB_ID='123',
+                        CONSENSUSARENA_REPLICA_GOMAXPROCS='8', CONSENSUSARENA_REPLICA_TASKSET='0',
+                        CONSENSUSARENA_RESOURCES='1', CONSENSUSARENA_ARRIVAL_RATE='999')):
+                    result, point = runner.trial(suite, root, template, protocol, 500, 1, settings, False)
+                self.assertTrue(result['sustained'])
+                env = seen['environment']
+                self.assertEqual(env[runtime_policy.SELECTOR], runtime_policy.POLICY)
+                self.assertTrue(all(env[k] == v for k, v in runtime_policy.CONTROLS.items()))
+                self.assertEqual(env['CONSENSUSARENA_RESOURCES'], '0')
+                self.assertNotIn('CONSENSUSARENA_ARRIVAL_RATE', env)
+                self.assertEqual(seen['manifest']['runtime_policy'], runtime_policy.POLICY)
+
     def row(self, **updates):
         row = dict(workload_model='synchronized-ramp-fixed-sustain-v2',latency_sample_policy='completed_measured_requests',
             completed_rps='500',mean_ms='400',p99_ms='800',count='5000',timed_out='False',
@@ -209,7 +240,9 @@ class MeasurementTests(unittest.TestCase):
                 patch.object(runner,'binary_inputs'),patch.object(runner.subprocess,'check_output',side_effect=command):
                 runner.submit(args)
             self.assertIn('--array=0-5%6',calls[0])
-            self.assertIn('--nodes=2',calls[0])
+            self.assertIn('--nodes=1',calls[0])
+            self.assertIn('--cpus-per-task=2',calls[0])
+            self.assertIn('--qos=serial',calls[0])
             self.assertIn('--dependency=afterany:101',calls[1])
             self.assertFalse(any('dependency' in x for x in calls[0]))
             roots=list(Path(directory).glob('consensusarena-throughput-*'))
@@ -224,7 +257,7 @@ class PlotTests(unittest.TestCase):
         except ImportError:
             self.skipTest('matplotlib not available in this interpreter')
         import plot
-        with tempfile.TemporaryDirectory(dir=runner.REPO/'results') as directory:
+        with tempfile.TemporaryDirectory(prefix='throughput-plot-test-') as directory:
             root=Path(directory)
             runner.write_json(root/'suite.json',dict(protocols=['agreement'],binary_sha256='a'*64,
                 spec=dict(sweep=dict(rates=[500,1000],repetitions=3,latency_cap_ms=400))))
@@ -252,7 +285,7 @@ class PlotTests(unittest.TestCase):
         except ImportError:
             self.skipTest('matplotlib not available in this interpreter')
         import plot
-        with tempfile.TemporaryDirectory(dir=runner.REPO/'results') as directory:
+        with tempfile.TemporaryDirectory(prefix='throughput-plot-test-') as directory:
             root=Path(directory)
             runner.write_json(root/'suite.json',dict(protocols=['agreement'],binary_sha256='a'*64,
                 spec=dict(search=dict(latency_cap_ms=400))))

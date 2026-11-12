@@ -12,6 +12,10 @@
 #SBATCH --output=slurm-%j.out
 set -euo pipefail
 export LC_ALL=C
+if [[ -n "${CONSENSUSARENA_RUNTIME_POLICY:-}" ]]; then
+    echo 'Replica CPU runtime policies are not implemented for the fault suite' >&2
+    exit 1
+fi
 repo_root=${CONSENSUSARENA_ROOT:-$SLURM_SUBMIT_DIR}
 if [[ "${CONSENSUSARENA_SCENE_WORKER:-0}" != 1 ]]; then
     if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then

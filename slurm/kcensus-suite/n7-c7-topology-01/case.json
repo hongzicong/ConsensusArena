@@ -57,8 +57,7 @@
     "shared_keyspace": true,
     "profiles": [
       "A",
-      "B",
-      "C"
+      "B"
     ],
     "workload_seed": 1,
     "key_mapping_seed": 1

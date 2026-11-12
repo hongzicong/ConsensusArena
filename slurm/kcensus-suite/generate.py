@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild the four frozen KCensus deployment inputs (Python 3.11+).
+"""Rebuild six frozen regular-evaluation deployment inputs (Python 3.11+).
 
 Run without arguments to populate this folder; existing cases are never replaced.
 An optional output path supports independent reproducibility checks.
@@ -15,7 +15,13 @@ import re
 import tomllib
 
 ROOT = Path(__file__).resolve().parent
-DEPLOYMENTS = ("ring-7", "europe-7", "east-asia-7", "north-america-7")
+# Keep the existing four cases and their IDs; append nested NA subsets.
+# Region indices follow the frozen NA-7 source order, not measured performance.
+DEPLOYMENTS = (("ring-7", "ring-7", None), ("europe-7", "europe-7", None),
+               ("east-asia-7", "east-asia-7", None), ("north-america-7", "north-america-7", None),
+               ("north-america-3", "north-america-7", (3, 5, 6)),
+               ("north-america-5", "north-america-7", (0, 3, 4, 5, 6)))
+PROFILES = ("A", "B")
 SOURCE_REVISION = "b232c3320d7853ea332e9cb17a0acbf8386e125c"
 TOTAL_ARRIVAL_RATE = 20000  # New paper's requested offered load, not KCensus's 1000.
 
@@ -29,16 +35,16 @@ def json_text(value: object) -> str:
 
 
 def generate(output: Path) -> None:
-    cases = [f"n7-c7-topology-{i:02d}" for i in range(len(DEPLOYMENTS))]
+    cases = [f"n{len(indices) if indices else 7}-c{len(indices) if indices else 7}-topology-{i:02d}"
+             for i, (_, _, indices) in enumerate(DEPLOYMENTS)]
     if (output / "manifest.json").exists() or any((output / case).exists() for case in cases):
         raise FileExistsError("refusing to replace existing suite inputs: " + str(output))
     template = (ROOT / "workload-template.conf").read_text(encoding="utf-8")
     # Freeze all workload choices; deployments differ only in network placement.
     overrides = {
-        "writes": "50",  # Existing runner selects A/B/C: 50/5/0 percent.
+        "writes": "50",  # The regular runner selects A/B: 50/5 percent.
         "commandSize": "16",  # Small-value approximation; see README.
         "clones": "0",
-        "arrivalRate": format(TOTAL_ARRIVAL_RATE / 7, ".15g"),
         "warmup": "5s", "duration": "10s", "repetitions": "1",
         "keyCount": "100000", "zipfSkew": "0.99",
         "shuffleKeys": "true", "workloadSeed": "1",
@@ -51,8 +57,8 @@ def generate(output: Path) -> None:
             raise ValueError("template must define exactly one " + key)
 
     prepared = []
-    for index, deployment in enumerate(DEPLOYMENTS):
-        filename = f"aws-{deployment}.toml"
+    for index, (deployment, source_deployment, selected_indices) in enumerate(DEPLOYMENTS):
+        filename = f"aws-{source_deployment}.toml"
         source = ROOT / "sources" / filename
         raw = source.read_bytes()
         config = tomllib.loads(raw.decode("utf-8"), parse_float=Decimal)
@@ -67,20 +73,30 @@ def generate(output: Path) -> None:
         if any(matrix[i][i] != 0 for i in range(7)):
             raise ValueError("expected zero regional diagonal: " + filename)
 
+        indices = list(selected_indices) if selected_indices is not None else list(range(7))
+        regions = [regions[i] for i in indices]
+        codes = [codes[i] for i in indices]
+        matrix = [[matrix[i][j] for j in indices] for i in indices]
+        n = len(indices)
+        rate = format(TOTAL_ARRIVAL_RATE / n, '.15g')
+        workload_template, count = re.subn(r'^arrivalRate:.*$', 'arrivalRate: '+rate, template, flags=re.M)
+        if count != 1:
+            raise ValueError('template must define exactly one arrivalRate')
+
         replicas = [f"replica-{code}" for code in codes]
         clients = [f"client-{code}" for code in codes]
         membership = ["-- Replicas --"]
         membership += [f"{name} 0.0.0.{i+1}" for i, name in enumerate(replicas)]
         membership += ["", "-- Clients --"]
         membership += [f"{name} 0.0.1.{i+1}" for i, name in enumerate(clients)]
-        membership += ["", "-- Master --", "m0 0.0.2.1", "", template.rstrip(),
+        membership += ["", "-- Master --", "m0 0.0.2.1", "", workload_template.rstrip(),
                        "", "keyMappingSeed: 1", "", "-- Proxy --"]
         for replica, client in zip(replicas, clients):
             membership += [f"server_alias {replica}", f"{client} (local)", ""]
         membership += ["---", ""]
 
-        endpoints = [(f"0.0.0.{i+1}", i) for i in range(7)]
-        endpoints += [(f"0.0.1.{i+1}", i) for i in range(7)]
+        endpoints = [(f"0.0.0.{i+1}", i) for i in range(n)]
+        endpoints += [(f"0.0.1.{i+1}", i) for i in range(n)]
         latency = []
         for source_address, i in endpoints:
             for target_address, j in endpoints:
@@ -91,7 +107,7 @@ def generate(output: Path) -> None:
         metadata = {
             "seed": 1,
             "deployment": deployment,
-            "topology_model": "kcensus_aws_snapshot",
+            "topology_model": "kcensus_aws_snapshot_subset" if selected_indices is not None else "kcensus_aws_snapshot",
             "regions": regions,
             "replica_regions": dict(zip(replicas, codes)),
             "client_regions": dict(zip(clients, codes)),
@@ -115,14 +131,17 @@ def generate(output: Path) -> None:
             "workload": {
                 "total_arrival_rate": TOTAL_ARRIVAL_RATE,
                 "offered_load_source": "new paper latency experiment target (KCensus baseline was 1000 total)",
-                "arrival_rate_per_client": float(overrides["arrivalRate"]),
+                "arrival_rate_per_client": float(rate),
                 "key_count": 100000, "zipf_skew": 0.99,
                 "command_size_bytes": 16,
                 "command_size_source": "fixed small-value approximation of KCensus variable strings",
-                "shared_keyspace": True, "profiles": ["A", "B", "C"],
+                "shared_keyspace": True, "profiles": list(PROFILES),
                 "workload_seed": 1, "key_mapping_seed": 1,
             },
         }
+        if selected_indices is not None:
+            metadata['source']['region_indices'] = indices
+            metadata['source']['selection'] = 'nested North American subsets; preserve source order and directed delays'
         prepared.append((cases[index], "\n".join(membership), "".join(latency), metadata))
 
     output.mkdir(parents=True, exist_ok=True)
@@ -133,11 +152,12 @@ def generate(output: Path) -> None:
         write(folder / "latency.conf", latency)
         write(folder / "case.json", json_text(metadata))
     write(output / "manifest.json", json_text({
-        "name": "kcensus-four-deployments-n7-zipf099-20krps",
+        "name": "regular-six-deployments-n3-n5-n7-AB-zipf099-20krps",
+        "profiles": list(PROFILES),
         "topologies": cases,
-        "deployments": {case: name for case, name in zip(cases, DEPLOYMENTS)},
+        "deployments": {case: deployment[0] for case, deployment in zip(cases, DEPLOYMENTS)},
     }))
-    print(f"Generated {len(cases)} deployments (12 A/B/C scenes) in {output}")
+    print(f"Generated {len(cases)} deployments ({len(cases)*len(PROFILES)} A/B scenes) in {output}")
 
 
 if __name__ == "__main__":

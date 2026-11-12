@@ -29,8 +29,8 @@ def validate():
     plan = suite.scenes(dict(CONSENSUSARENA_SUITE='generated',
         CONSENSUSARENA_GENERATED_ROOT=str(ROOT / 'generated'), CONSENSUSARENA_YCSB_PROFILES='B'))
     assert len(plan) == 15 and all(x['profile'] == 'B' for x in plan)
-    assert suite.allocation(plan) == (8, 63)
-    print('Validated: aws-random only; 3..31 odd replicas; B; 15 scenes/protocol; 8 nodes/63 tasks at maximum.')
+    assert suite.allocation(plan, {'CONSENSUSARENA_RUNTIME_POLICY':'replica-single-cpu-v2'}) == (2, 63)
+    print('Validated: aws-random only; 3..31 odd replicas; B; 15 scenes/protocol; 2 nodes/63 tasks/2 CPUs per task at maximum.')
 
 
 if __name__ == '__main__':

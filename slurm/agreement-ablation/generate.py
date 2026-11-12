@@ -13,6 +13,9 @@ from topology import generated_layout
 
 def generate():
     manifest=json.loads((SOURCE/'manifest.json').read_text())
+    # This deferred experiment keeps its original four seven-replica cases.
+    names=[name for name in manifest['topologies'] if name.startswith('n7-c7-')]
+    manifest=dict(manifest,topologies=names,deployments={name:manifest['deployments'][name] for name in names})
     for arm in ARMS:
         root=HERE/arm
         if root.exists():

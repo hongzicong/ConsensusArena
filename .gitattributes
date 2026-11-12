@@ -1,3 +1,8 @@
 *.sh text eol=lf
 *.sbatch text eol=lf
 *.awk text eol=lf
+# Generated inputs are checked byte-for-byte against their Linux reproduction.
+slurm/kcensus-suite/manifest.json text eol=lf
+slurm/kcensus-suite/n*/case.json text eol=lf
+slurm/kcensus-suite/n*/*.conf text eol=lf
+slurm/scalability-suite/generated/** text eol=lf

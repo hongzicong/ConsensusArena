@@ -1,4 +1,10 @@
-results/
+results/*
+!results/README.md
+!results/regular/
+!results/scalability/
+!results/throughput/
+results/**/raw/
+.local-artifacts/
 consensusarena-linux-amd64
 .gocache/
 __pycache__/

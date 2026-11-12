@@ -50,6 +50,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 sys.path.insert(0, str(HERE.parent))
 from topology import generated_layout
+import runtime_policy
 
 PROTOCOLS = ('agreement', 'paxos', 'swiftpaxos', 'bodega', 'kcensus', 'pqlfrontier')
 TIMEOUT = 7200
@@ -192,7 +193,10 @@ def trial(suite, root, template, protocol, rate, attempt, settings, resource_ena
         CONSENSUSARENA_GENERATED_ROOT=str(case_root.parent), CONSENSUSARENA_RESOURCES=str(int(resource_enabled)),
         CONSENSUSARENA_WORKLOAD_SEED='1', CONSENSUSARENA_LATENCY_JITTER_MS='0',
         CONSENSUSARENA_BANDWIDTH_KBPS='125000')
-    suite.publish_manifest(attempt_root, dict(kind='latency', scenes=[scene], execution='adaptive_throughput_point'))
+    env[runtime_policy.SELECTOR] = runtime_policy.POLICY
+    env = runtime_policy.configure(env)
+    suite.publish_manifest(attempt_root, dict(kind='latency', scenes=[scene], execution='adaptive_throughput_point',
+        **runtime_policy.manifest(env)))
     code = suite.run_scene('latency', REPO, attempt_root, [scene], 0, env)
     # Cleanup is required before another point can reuse the allocation.
     try:
@@ -210,6 +214,8 @@ def trial(suite, root, template, protocol, rate, attempt, settings, resource_ena
 
 def worker(root, index):
     manifest = json.loads((root/'suite.json').read_text())
+    if manifest.get('runtime_policy') not in (None, runtime_policy.POLICY):
+        raise ValueError('unknown throughput runtime policy')
     protocol = manifest['protocols'][index]
     if fingerprint(Path(manifest['spec_path'])) != manifest['fingerprint']:
         raise ValueError('frozen experiment inputs changed after submission')
@@ -224,6 +230,8 @@ def worker(root, index):
     suite = harness()
     rows, selected = [], {}
     common = dict(protocol=protocol, binary_sha256=manifest['binary_sha256'], profile='B')
+    if manifest.get('runtime_policy') == runtime_policy.POLICY:
+        common.update(runtime_policy=runtime_policy.POLICY, replica_gomaxprocs=1, replica_logical_cpus=1)
     write_json(series/'status.json', dict(**common, complete=False, status='running'))
 
     def observe(rate, phase, attempt):
@@ -302,6 +310,8 @@ def binary_inputs(binary, proxy, binary_hash, proxy_hash):
 
 def collect(root):
     manifest = json.loads((root/'suite.json').read_text())
+    if manifest.get('runtime_policy') not in (None, runtime_policy.POLICY):
+        raise ValueError('unknown throughput runtime policy')
     statuses, attempts, points = [], [], []
     resources = []
     suite = harness()
@@ -339,6 +349,12 @@ def collect(root):
                         raise ValueError('decision differs from exported attempt')
                 if row['valid'] != 'True':
                     continue
+                if manifest.get('runtime_policy') == runtime_policy.POLICY:
+                    point_manifest = json.loads((attempt_root/'suite.json').read_text())
+                    if (point_manifest.get('runtime_policy') != runtime_policy.POLICY or
+                            row.get('runtime_policy') != runtime_policy.POLICY or
+                            row.get('replica_gomaxprocs') != '1' or row.get('replica_logical_cpus') != '1'):
+                        raise ValueError('throughput point CPU policy differs from suite')
                 if suite.collect('latency', attempt_root) != 0:
                     raise ValueError('raw point failed revalidation')
                 with (attempt_root/'baseline-latency.csv').open(newline='') as f:
@@ -389,14 +405,15 @@ def submit(args):
     root.mkdir(parents=True, exist_ok=False)
     manifest = dict(kind='fixed_throughput_sweep' if 'sweep' in spec else 'adaptive_throughput', spec_path=str(path), spec=spec,
         protocols=spec['protocols'], fingerprint=fingerprint(path), binary=str(binary),
-        proxy=str(proxy), binary_sha256=binary_hash, proxy_sha256=PROXY_HASH)
+        proxy=str(proxy), binary_sha256=binary_hash, proxy_sha256=PROXY_HASH, runtime_policy=runtime_policy.POLICY)
     write_json(root/'suite.json', manifest)
     env = dict(os.environ, CONSENSUSARENA_ROOT=str(REPO))
     # Neither inherited sbatch dependencies nor array settings should serialize algorithms.
     for key in ('SBATCH_DEPENDENCY','SBATCH_ARRAY_INX'):
         env.pop(key, None)
     command = ['sbatch','--parsable','--account='+args.account,'--export=ALL',
-        '--nodes=2','--ntasks=15','--ntasks-per-node=8','--cpus-per-task=8','--mem-per-cpu=1G','--exclusive',
+        '--nodes=1','--ntasks=15','--ntasks-per-node=32','--cpus-per-task=2','--mem-per-cpu=4G','--exclusive',
+        '--qos=serial',
         '--array=0-{}%{}'.format(len(spec['protocols'])-1,args.max_parallel),
         '--time='+args.time,'--output=slurm-throughput-%A_%a.out',str(HERE/'run.sbatch'),str(root)]
     job = subprocess.check_output(command, cwd=REPO, env=env, text=True, timeout=TIMEOUT).strip().split(';')[0]
@@ -434,7 +451,9 @@ def main():
     if args.command == 'plan':
         spec, _, _, layout = specification(args.spec.resolve())
         print(json.dumps(dict(spec=spec, template_sha256=layout['case_sha256'],
-            allocation=dict(nodes=2,tasks=15,cpus_per_task=8), fingerprint=fingerprint(args.spec.resolve())), indent=2))
+            allocation=dict(nodes=1,tasks=15,cpus_per_task=2),
+            runtime_policy=runtime_policy.POLICY, replica_gomaxprocs=1, replica_logical_cpus=1,
+            fingerprint=fingerprint(args.spec.resolve())), indent=2))
     elif args.command == 'submit':
         submit(args)
     elif args.command == 'worker':

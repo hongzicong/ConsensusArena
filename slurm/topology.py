@@ -196,7 +196,10 @@ def shell(layout):
     count = layout['replica_count']
     master = count + len(layout['clients'])
     tasks = master + 1
-    nodes = (tasks + 7)//8
+    slots = int(os.environ.get('CONSENSUSARENA_TASKS_PER_NODE', '8'))
+    if slots not in (8, 32):
+        raise ValueError('expected 8 legacy or 32 compact tasks per node')
+    nodes = (tasks + slots - 1)//slots
     values = dict(replica_count=count, topology_id=layout['topology_id'], client_count=len(layout['clients']),
                   master_rank=master, task_count=tasks, node_count=nodes, tasks_per_node=(tasks+nodes-1)//nodes)
     if 'case' in layout:

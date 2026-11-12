@@ -11,6 +11,8 @@
 #SBATCH --time=02:00:00
 #SBATCH --output=slurm-%j.out
 
+# Headers retain the legacy direct-launch allocation. The named paper suites
+# override CPU, memory, task density and QOS through benchmark-suite.py.
 set -euo pipefail
 export LC_ALL=C
 
@@ -31,6 +33,8 @@ if [[ -n "${CONSENSUSARENA_CASE:-}" ]]; then
     export CONSENSUSARENA_TOPOLOGY=$topology_id
     export CONSENSUSARENA_CASES="$replica_count-$topology_id"
 fi
+task_cpus=${CONSENSUSARENA_TASK_CPUS:-8}
+task_slots=${CONSENSUSARENA_TASKS_PER_NODE:-8}
 replica_counts_spec=${CONSENSUSARENA_REPLICAS:-5:9:13}
 if ! $generated && [[ ! "$replica_counts_spec" =~ ^(5|9|13)(:(5|9|13))*$ ]]; then
     echo "Invalid replica sizes: $replica_counts_spec (expected 5, 9, or 13 separated by colons)" >&2
@@ -58,13 +62,13 @@ if [[ -n "$cases_spec" ]]; then
     done
 fi
 required_tasks=$((max_replica_count + 11))
-required_nodes=$(((required_tasks + 7) / 8))
+required_nodes=$(((required_tasks + task_slots - 1) / task_slots))
 if $generated; then
     required_tasks=$task_count
     required_nodes=$node_count
 fi
-if (( ${SLURM_NTASKS:-0} < required_tasks || ${SLURM_JOB_NUM_NODES:-0} < required_nodes || ${SLURM_CPUS_PER_TASK:-8} < 8 )); then
-    echo "Replica sizes $replica_counts_spec require at least $required_tasks tasks on $required_nodes nodes and 8 CPUs/task; submit with benchmark-suite.py for allocation sizing" >&2
+if (( ${SLURM_NTASKS:-0} < required_tasks || ${SLURM_JOB_NUM_NODES:-0} < required_nodes || ${SLURM_CPUS_PER_TASK:-8} < task_cpus )); then
+    echo "Replica sizes $replica_counts_spec require at least $required_tasks tasks on $required_nodes nodes and $task_cpus CPUs/task; submit with benchmark-suite.py for allocation sizing" >&2
     exit 1
 fi
 binary=${CONSENSUSARENA_BINARY:-$repo_root/consensusarena-linux-amd64}
@@ -177,6 +181,10 @@ printf '%s\n' \
     'request_distribution=zipfian' >> "$run_dir/metadata.txt"
 printf 'resource_observer=GNU time per role; exit-time CPU, RSS, context switches\n' >> "$run_dir/metadata.txt"
 printf 'resources_enabled=%s\n' "${CONSENSUSARENA_RESOURCES:-0}" >> "$run_dir/metadata.txt"
+if [[ "${CONSENSUSARENA_RUNTIME_POLICY:-}" == replica-single-cpu-v2 ]]; then
+    printf 'runtime_policy=replica-single-cpu-v2\nreplica_gomaxprocs=1\nreplica_logical_cpus=1\nclient_gomaxprocs=2\nmaster_gomaxprocs=2\naffinity_policy=taskset_before_exec_all_replica_threads\n' >> "$run_dir/metadata.txt"
+    printf 'resource_sampling_mode=%s\n' "$([[ "${CONSENSUSARENA_RESOURCES:-0}" == 1 ]] && echo boundary-cpu-traffic-peak-memory-v2 || echo disabled)" >> "$run_dir/metadata.txt"
+fi
 if $generated; then
     printf 'experiment_design=generated_one_run_each\ncase=%s\ncase_sha256=%s\nrepetitions_per_topology=1\nlatency_source=generated\n' \
         "$(basename "$CONSENSUSARENA_CASE")" "$CONSENSUSARENA_CASE_SHA256" >> "$run_dir/metadata.txt"
@@ -202,7 +210,7 @@ run_scale() {
     cp "$sweep_dir/metadata.txt" "$run_dir/metadata.txt"
     bash "$script_dir/prepare-topology.sh" "$run_dir/config/logical"
     cat "$run_dir/config/logical/topology-metadata.txt" >> "$run_dir/metadata.txt"
-    printf 'slurm_nodes=%s\nslurm_tasks=%s\ncpus_per_task=8\n' "$node_count" "$task_count" >> "$run_dir/metadata.txt"
+    printf 'slurm_nodes=%s\nslurm_tasks=%s\ncpus_per_task=%s\n' "$node_count" "$task_count" "$task_cpus" >> "$run_dir/metadata.txt"
     echo "Capturing addresses from $node_count allocated nodes for $replica_count replicas..."
     srun --nodelist="$scale_nodes" --nodes="$node_count" --ntasks="$task_count" --ntasks-per-node="$tasks_per_node" --cpus-per-task=1 --distribution=cyclic \
         bash "$script_dir/capture-ip.sh" "$run_dir/ranks"
@@ -318,7 +326,7 @@ run_scale() {
             "$profile" "$write_ratio" "$workload_seed" "$preload_enabled" >> "$repetition_dir/metadata.txt"
 
         echo "Starting YCSB profile $profile (${write_ratio}% writes) $repetition_name/$repetitions through Toxiproxy..."
-        srun --nodelist="$scale_nodes" --nodes="$node_count" --ntasks="$task_count" --ntasks-per-node="$tasks_per_node" --cpus-per-task=8 --distribution=cyclic \
+        srun --nodelist="$scale_nodes" --nodes="$node_count" --ntasks="$task_count" --ntasks-per-node="$tasks_per_node" --cpus-per-task="$task_cpus" --distribution=cyclic \
             --kill-on-bad-exit=1 bash "$script_dir/node-runner.sh" \
             "$repetition_dir" "$binary" "$toxiproxy_binary" &
         runner_pid=$!

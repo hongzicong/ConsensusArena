@@ -2,11 +2,12 @@ name = "ring7-B-agreement-knee-missing-repetitions"
 protocols = ["agreement"]
 template = "../kcensus-suite/n7-c7-topology-00"
 profile = "B"
-resources = true
+resources = false
 
 [sweep]
-# Replace only the missing third repetitions from array 40876123.
-# This suite's attempt-01 maps to logical repetition 3 of the original sweep.
+# Historical rate selection from the missing third repetitions of array 40876123.
+# Current launches use the single-CPU policy and form a new campaign, not a
+# replacement for repetitions in that historical eight-CPU sweep.
 rates = [944000, 960000, 1032000]
 repetitions = 1
 order_seed = 20261104

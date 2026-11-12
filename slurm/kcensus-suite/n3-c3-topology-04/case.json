@@ -1,0 +1,59 @@
+{
+  "seed": 1,
+  "deployment": "north-america-3",
+  "topology_model": "kcensus_aws_snapshot_subset",
+  "regions": [
+    "us-east-1 US East N. Virginia",
+    "us-west-1 US West N. California",
+    "us-west-2 US West Oregon"
+  ],
+  "replica_regions": {
+    "replica-us-east-1": "us-east-1",
+    "replica-us-west-1": "us-west-1",
+    "replica-us-west-2": "us-west-2"
+  },
+  "client_regions": {
+    "client-us-east-1": "us-east-1",
+    "client-us-west-1": "us-west-1",
+    "client-us-west-2": "us-west-2"
+  },
+  "client_placement": "one client colocated with each replica; zero added local delay",
+  "source": {
+    "repository": "https://github.com/LPD-EPFL/kcensus",
+    "checkout_revision": "b232c3320d7853ea332e9cb17a0acbf8386e125c",
+    "path": "configs/aws-north-america-7.toml",
+    "bundled_path": "sources/aws-north-america-7.toml",
+    "sha256": "02ea876df9fe95bbf6ba35c92a8e41c2e47f6a90e70be00077a83ae2d14e3c7e",
+    "unit": "estimated one-way milliseconds (ping RTT / 2)",
+    "conversion": "input[i,j] = 2 * raw_latencies[i,j]; preserve direction and decimals",
+    "region_indices": [
+      3,
+      5,
+      6
+    ],
+    "selection": "nested North American subsets; preserve source order and directed delays"
+  },
+  "network": {
+    "latency_jitter_ms": 0,
+    "bandwidth_kbps": 125000,
+    "bandwidth_source": "ConsensusArena default; not an AWS measurement",
+    "bandwidth_scope": "KB/s per TCP connection per stream direction",
+    "runtime_delay": "ceil(input[i,j] / 2) ms; physical transport overhead is additional"
+  },
+  "workload": {
+    "total_arrival_rate": 20000,
+    "offered_load_source": "new paper latency experiment target (KCensus baseline was 1000 total)",
+    "arrival_rate_per_client": 6666.66666666667,
+    "key_count": 100000,
+    "zipf_skew": 0.99,
+    "command_size_bytes": 16,
+    "command_size_source": "fixed small-value approximation of KCensus variable strings",
+    "shared_keyspace": true,
+    "profiles": [
+      "A",
+      "B"
+    ],
+    "workload_seed": 1,
+    "key_mapping_seed": 1
+  }
+}

@@ -17,6 +17,7 @@ import time
 import uuid
 
 from topology import generated_layouts
+import runtime_policy
 
 TIMEOUT = 7200
 DEFAULT_MAX_PARALLEL = 6
@@ -34,7 +35,9 @@ def scenes(env, kind='latency'):
         layouts = generated_layouts(root)
         available = {row['replica_count'] for row in layouts}
         counts = [int(n) for n in env.get('CONSENSUSARENA_REPLICAS', ':'.join(map(str, sorted(available)))).split(':')]
-        profiles = [p.strip().upper() for p in env.get('CONSENSUSARENA_YCSB_PROFILES', 'A:B:C').split(':')]
+        manifest = json.loads((root/'manifest.json').read_text())
+        default_profiles = ':'.join(manifest.get('profiles', ['A', 'B', 'C']))
+        profiles = [p.strip().upper() for p in env.get('CONSENSUSARENA_YCSB_PROFILES', default_profiles).split(':')]
         if not counts or len(set(counts)) != len(counts) or not set(counts) <= available:
             raise ValueError('replica filter must select distinct sizes in the generated manifest')
         if not profiles or len(set(profiles)) != len(profiles) or any(p not in ('A', 'B', 'C') for p in profiles):
@@ -72,7 +75,13 @@ def scene_name(scene):
     return 'replicas-{replicas}-topology-{topology_id}-ycsb-{profile}'.format(**scene)
 
 
-def allocation(plan):
+def allocation(plan, env=None):
+    if (os.environ if env is None else env).get(runtime_policy.SELECTOR) == runtime_policy.POLICY:
+        tasks = max(scene['replicas'] + scene.get('clients', 10) + 1 for scene in plan)
+        # Jed serial QOS allows one node; parallel QOS requires at least 73 CPUs.
+        if tasks > 32:
+            tasks = max(tasks, 37)
+        return (tasks + 31)//32, tasks
     if 'case' not in plan[0]:
         return 3, 24
     tasks = max(scene['replicas'] + scene['clients'] + 1 for scene in plan)
@@ -104,12 +113,16 @@ def write_json(path, value):
 
 
 def run_scene(kind, repo, root, plan, index, env, array=False):
-    env = dict(os.environ if env is None else env)
+    env = runtime_policy.configure(os.environ if env is None else env, kind=kind)
     scene = plan[index]
     base = root / 'scenes' / scene_name(scene)
     base.parent.mkdir(parents=True, exist_ok=True)
     if base.exists():
         raise FileExistsError('refusing to overwrite scene evidence: ' + str(base))
+    if env.get(runtime_policy.SELECTOR):
+        base.mkdir()
+        write_json(base/'runtime-settings.json', dict(runtime_policy=runtime_policy.POLICY,
+            environment={key:env[key] for key in runtime_policy.CONTROLS}))
     env.update(CONSENSUSARENA_ROOT=str(repo), CONSENSUSARENA_SCENE_WORKER='1',
                CONSENSUSARENA_REPLICAS=str(scene['replicas']),
                CONSENSUSARENA_TOPOLOGY=str(scene['topology_id']),
@@ -151,7 +164,7 @@ def publish_manifest(root, manifest):
 
 def task(kind, repo, env=None):
     """Run one selected scene in this array element's own allocation."""
-    env = dict(os.environ if env is None else env)
+    env = runtime_policy.configure(os.environ if env is None else env, kind=kind)
     plan = scenes(env, kind)
     check_plan(env, plan)
     index = int(env['SLURM_ARRAY_TASK_ID'])
@@ -164,7 +177,8 @@ def task(kind, repo, env=None):
         return 0
     root = suite_root(kind, job, env)
     publish_manifest(root, dict(kind=kind, array_job_id=job, scenes=plan,
-                                execution='isolated_slurm_array', nodes_per_scene=allocation(plan)[0]))
+                                execution='isolated_slurm_array', nodes_per_scene=allocation(plan, env)[0],
+                                **runtime_policy.manifest(env)))
     return run_scene(kind, repo, root, plan, index, env, array=True)
 
 
@@ -194,7 +208,7 @@ def clean_steps(job):
 
 
 def serial(kind, repo, env=None):
-    env = dict(os.environ if env is None else env)
+    env = runtime_policy.configure(os.environ if env is None else env, kind=kind)
     if env.get('SLURM_ARRAY_TASK_ID'):
         raise ValueError('serial mode must run in a non-array allocation')
     job = env['SLURM_JOB_ID']
@@ -206,7 +220,8 @@ def serial(kind, repo, env=None):
     if root.exists():
         raise FileExistsError('refusing to overwrite suite evidence: ' + str(root))
     publish_manifest(root, dict(kind=kind, job_id=job, scenes=plan,
-                                execution='serial_slurm_allocation', nodes_per_scene=allocation(plan)[0]))
+                                execution='serial_slurm_allocation', nodes_per_scene=allocation(plan, env)[0],
+                                **runtime_policy.manifest(env)))
     print('Serial suite: {} | scenes: {} | run directory: {}'.format(job, len(plan), root), flush=True)
     try:
         for index, scene in enumerate(plan):
@@ -238,16 +253,20 @@ def submit(kind, repo, account, exports='ALL', walltime=None, mode='array', max_
         env['CONSENSUSARENA_SUITE'] = suite
     if generated_root is not None:
         env['CONSENSUSARENA_GENERATED_ROOT'] = str(generated_root.resolve())
+    env = runtime_policy.configure(env, kind=kind)
     env.setdefault('CONSENSUSARENA_SUITE', 'fixed')
     env['CONSENSUSARENA_GENERATED_ROOT'] = str(Path(env.get('CONSENSUSARENA_GENERATED_ROOT', repo / 'slurm/generated')).resolve())
     plan = scenes(env, kind)
-    nodes, tasks = allocation(plan)
+    nodes, tasks = allocation(plan, env)
     env['CONSENSUSARENA_PLAN_SHA256'] = plan_sha256(plan)
     worker = repo / 'slurm' / ('run-' + kind + '.sbatch')
     env['CONSENSUSARENA_ROOT'] = str(repo)
     env['CONSENSUSARENA_SCENE_WORKER'] = '0'
     command = ['sbatch', '--parsable', '--account=' + account, '--export=ALL',
                '--nodes=' + str(nodes), '--ntasks=' + str(tasks)]
+    if env.get(runtime_policy.SELECTOR):
+        command.extend(['--cpus-per-task=2', '--ntasks-per-node=32', '--mem-per-cpu=4G',
+                        '--qos='+('serial' if nodes == 1 else 'parallel')])
     if walltime is not None:
         command.append('--time=' + walltime)
     if mode == 'array':
@@ -309,6 +328,10 @@ def collect(kind, root):
     manifest = json.loads((root / 'suite.json').read_text())
     if manifest['kind'] != kind:
         raise ValueError('suite kind mismatch')
+    if manifest.get('runtime_policy') not in (None, runtime_policy.POLICY):
+        raise ValueError('unknown suite runtime policy')
+    if kind == 'fault' and manifest.get('runtime_policy'):
+        raise ValueError('single-CPU policy is not implemented for the fault suite')
     plan = manifest['scenes']
     names = [scene_name(scene) for scene in plan]
     if not names or len(set(names)) != len(names):
@@ -321,6 +344,7 @@ def collect(kind, root):
     for scene, name in zip(plan, names):
         base = root / 'scenes' / name
         status = dict(**scene, complete=False)
+        resource_file = None
         try:
             outcome = json.loads((root / 'scene-status' / (name + '.json')).read_text())
             if any(outcome[key] != scene[key] for key in scene):
@@ -364,7 +388,14 @@ def collect(kind, root):
                     raise ValueError('exported and measured completed-request metrics differ')
                 if 'resources_enabled=1' in (base / 'metadata.txt').read_text().splitlines():
                     from resource_summary import export as export_resources
-                    resource_files.append(export_resources(base))
+                    resource_file = export_resources(base)
+                if manifest.get('runtime_policy') == runtime_policy.POLICY:
+                    status['runtime_validation'] = runtime_policy.validate_run(base, runs[0], scene)
+                    if (rows[0].get('runtime_policy') != runtime_policy.POLICY or
+                            rows[0].get('replica_gomaxprocs') != '1' or rows[0].get('replica_logical_cpus') != '1'):
+                        raise ValueError('exported CPU policy differs from verified launch')
+                elif 'runtime_policy=' in (base / 'metadata.txt').read_text():
+                    raise ValueError('scene CPU policy is missing from suite manifest')
                 status.update(timed_out=validated['timed_out'],
                               completed_requests=validated['completed_requests'],
                               cohort_complete=validated['cohort_complete'],
@@ -372,6 +403,8 @@ def collect(kind, root):
                               throughput_valid=validated['throughput_valid'])
             status['complete'] = outcome['returncode'] == 0 and 'error' not in status
             if status['complete']:
+                if resource_file is not None:
+                    resource_files.append(resource_file)
                 for filename, paths in files.items():
                     if (base / filename).exists():
                         paths.append(base / filename)

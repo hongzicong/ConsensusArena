@@ -1,10 +1,12 @@
 name = "ring7-B-zipf099-load"
-# Each protocol has one adaptive Slurm worker (2 nodes, 15 tasks, 8 CPUs/task).
+# Each protocol has one adaptive Slurm worker (1 node, 15 tasks, 2 CPUs/task).
 # launch.ps1 uploads immutable inputs and submits workers concurrently; plan is read-only.
+# Every replica: GOMAXPROCS=1 plus taskset on one logical CPU; infrastructure is separate.
 protocols = ["agreement", "paxos", "swiftpaxos", "bodega", "kcensus", "pqlfrontier"]
 template = "../kcensus-suite/n7-c7-topology-00"
 profile = "B"
-resources = true
+resources = false
+# CPU and memory sampling belongs to scalability; throughput keeps it off.
 
 [search]
 start = 500

@@ -44,7 +44,7 @@ Reproduce and validate locally from `ConsensusArena/` (Python 3.11+):
 
 ```powershell
 python -B slurm/scalability-suite/validate.py
-python -B slurm/scalability-suite/generate.py results/scalability-reproduction
+python -B slurm/scalability-suite/generate.py .local-artifacts/scalability-reproduction
 # Optional native-binary check of sampling and placement for all protocols at 3/31:
 python -B slurm/scalability-suite/smoke.py PATH_TO_NATIVE_BINARY
 ```
@@ -70,7 +70,8 @@ silently trigger retries. This does not limit unrelated jobs already on Jed.
 ```
 
 For an initial smaller expenditure, `-Protocols agreement` submits 15 scenes.
-At the maximum size each scene reserves 8 exclusive nodes, 63 tasks, 8 CPUs/task.
+At the maximum size each scene reserves 2 exclusive nodes, 63 tasks, 2 CPUs/task.
+Memory remains 8 GiB per task, requested as 4 GiB per allocated CPU.
 The existing runner reserves for the largest selected scene in an array,
 including smaller replica counts. `MaxParallel` controls simultaneous allocations,
 not the work performed or a monetary budget. Standard walltime is 2 hours per
@@ -85,10 +86,19 @@ skill. Wait for collectors and require `suite-status.json: complete=true`.
 
 ## Resource semantics
 
+The launchers select `GOMAXPROCS=1` and `taskset` before Go starts. Every replica
+OS thread shares one logical CPU, including networking, garbage collection and
+resource observation. Clients, master, network emulation and job control remain
+separate. Each task reserves two CPUs; the replica uses one and its proxy and
+supervisor use the other. Clients/master each have two CPUs. Startup and
+per-thread affinity evidence are required by collection. See the
+[paper evaluation overview](../../results/scalability/README.md).
+
 `CONSENSUSARENA_RESOURCES=1` enables an observer in replica processes only.
-Its goroutine waits for the same barrier epoch as clients and records 11 samples
-at seconds 5 through 15, publishing `results/ALIAS-resources.json` atomically
-before the normal 19 s shutdown. GNU time lifetime records remain supplemental.
+Its goroutine waits for the same barrier epoch as clients and records counters
+only at seconds 5 and 15, publishing `results/ALIAS-resources.json` atomically
+after measurement and before the normal 19 s shutdown. Memory is a kernel peak
+counter, with no periodic polling. GNU time lifetime records remain supplemental.
 The report uses:
 
 * **Traffic:** sent plus received serialized data-plane bytes, including the
@@ -105,13 +115,14 @@ The report uses:
   not measured-cohort latency count, offered requests or per-replica ingress.
   Zero completions produce missing normalized metrics, never zeros.
 * **CPU:** Linux `getrusage` user+system time delta divided by actual boundary
-  elapsed time, ×100. One saturated core is 100%; eight cores can reach 800%.
-* **Memory:** trapezoidal average of one-second Linux resident-set samples,
-  in MiB per replica. Also export sampled peak RSS. This includes the live
-  preloaded dataset; startup/preload CPU and traffic are excluded.
+  elapsed time, ×100. One saturated logical CPU is 100%.
+* **Memory:** Linux `getrusage(RUSAGE_SELF).ru_maxrss` at measurement end,
+  converted from KiB to MiB. This kernel peak covers process startup through
+  measurement end, including preload and warmup. Startup/preload CPU and traffic
+  are excluded from the window deltas. Memory is not a time average.
 
-Each frame adds constant-time atomic counter updates; the observer samples once
-per second and writes once per run. This introduces measurement overhead and
+Each frame adds constant-time atomic counter updates; the observer reads at the
+two boundaries and writes once after measurement. This introduces overhead and
 is enabled equally for all six comparisons; its magnitude has not been measured.
 Counters do not change protocol transitions, timing parameters or client routing.
 All samples must fall within 100 ms of their intended boundary. Missing replicas,
@@ -119,7 +130,7 @@ invalid throughput, regressing counters or late samples fail collection. Raw
 timestamps preserve the residual boundary uncertainty.
 
 Each scene and suite exports `resources.csv` with one row per replica, separate
-send/receive counters, CPU, average/sampled-peak RSS, denominator, window timestamps,
+send/receive counters, CPU, kernel peak memory, memory scope, denominator, window timestamps,
 input hash, protocol, timeout and cohort completeness. The collector revalidates
 raw observations. Completed-request latency remains available for timeout runs;
 no missing observations are imputed.
@@ -129,11 +140,14 @@ no missing observations are imputed.
 Retrieve the six complete suite roots with raw evidence, then run:
 
 ```powershell
-python -B slurm/scalability-suite/plot.py RUN_AGREEMENT RUN_PAXOS RUN_SWIFT RUN_BODEGA RUN_KCENSUS RUN_PQLFRONTIER --output results/scalability-figures
+python -B slurm/scalability-suite/plot.py RUN_AGREEMENT RUN_PAXOS RUN_SWIFT RUN_BODEGA RUN_KCENSUS RUN_PQLFRONTIER --output results/scalability/figures
 ```
 
 Requires matplotlib. Produces `scalability.{png,pdf}`, `resources.{png,pdf}`
 and `scalability-summary.csv`. Figures show overall average latency and four
 resource metrics against replica count. PQL's legend maps only to `pqlfrontier`.
-No per-datacenter latency detail is plotted. Crosses flag timeouts or incomplete
-cohorts. One observation per point has no repeated-run confidence interval.
+No per-datacenter latency detail is plotted. Timeout or incomplete cohorts are
+omitted; dotted connectors span gaps without imputing values. Memory uses a
+linear scale. Legacy sampled-memory records keep their original meaning and
+cannot be mixed with kernel peaks. One observation per point has no repeated-run
+confidence interval.

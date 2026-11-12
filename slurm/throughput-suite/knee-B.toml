@@ -2,7 +2,7 @@ name = "ring7-B-agreement-bodega-knee"
 protocols = ["agreement", "bodega"]
 template = "../kcensus-suite/n7-c7-topology-00"
 profile = "B"
-resources = true
+resources = false
 
 [sweep]
 # Lower-load anchors, then 8k spacing across the previously observed latency rise.
@@ -15,3 +15,5 @@ order_seed = 20261103
 latency_cap_ms = 400.0
 # attempt-01/02/03 are independent repetitions, not success-conditioned retries.
 # All repetitions use the same workload seeds/settings as the original search.
+# Current launches use the single-CPU policy and form a new campaign; do not merge
+# them with the historical eight-CPU results that motivated this rate selection.

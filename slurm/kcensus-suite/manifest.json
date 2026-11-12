@@ -1,15 +1,23 @@
 {
-  "name": "kcensus-four-deployments-n7-zipf099-20krps",
+  "name": "regular-six-deployments-n3-n5-n7-AB-zipf099-20krps",
+  "profiles": [
+    "A",
+    "B"
+  ],
   "topologies": [
     "n7-c7-topology-00",
     "n7-c7-topology-01",
     "n7-c7-topology-02",
-    "n7-c7-topology-03"
+    "n7-c7-topology-03",
+    "n3-c3-topology-04",
+    "n5-c5-topology-05"
   ],
   "deployments": {
     "n7-c7-topology-00": "ring-7",
     "n7-c7-topology-01": "europe-7",
     "n7-c7-topology-02": "east-asia-7",
-    "n7-c7-topology-03": "north-america-7"
+    "n7-c7-topology-03": "north-america-7",
+    "n3-c3-topology-04": "north-america-3",
+    "n5-c5-topology-05": "north-america-5"
   }
 }

@@ -15,7 +15,7 @@ PROTOCOLS = ('agreement', 'paxos', 'swiftpaxos', 'bodega', 'kcensus', 'pqlfronti
 
 def smoke(binary):
     # Keep configs in a space-free workspace path, matching cluster deployment.
-    with tempfile.TemporaryDirectory(dir=ROOT.parent.parent / 'results') as temporary:
+    with tempfile.TemporaryDirectory(prefix='scalability-smoke-') as temporary:
         for n in (3, 31):
             for protocol in PROTOCOLS:
                 folder = Path(temporary) / f'{protocol}-{n}'

@@ -57,7 +57,7 @@ try {
     $launchId = 'scalability-random-B-' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
     $remoteRelative = $RemoteBase.TrimEnd('/') + '/launches/' + $launchId
     $quotedRelative = ConvertTo-ShellLiteral $remoteRelative
-    $setup = "set -eu; command -v sbatch >/dev/null; command -v python3 >/dev/null; command -v curl >/dev/null; command -v ping >/dev/null; mkdir -p $quotedRelative; cd $quotedRelative; pwd -P"
+    $setup = "set -eu; command -v sbatch >/dev/null; command -v taskset >/dev/null; command -v python3 >/dev/null; command -v curl >/dev/null; command -v ping >/dev/null; mkdir -p $quotedRelative; cd $quotedRelative; pwd -P"
     $remoteOutput = Invoke-Checked -Program ssh -Arguments @('-o', 'ConnectTimeout=30', $Server, $setup)
     $remoteRoot = [string](@($remoteOutput)[-1])
     $remoteRoot = $remoteRoot.Trim()
@@ -99,7 +99,7 @@ pwd -P
     $submit = $submit.Replace("`r`n", "`n")
     # Upload UTF-8/LF script bytes rather than passing nested Bash expressions
     # through Windows' native command-line quoting. No SSH identity is stored.
-    $stagingDirectory = Join-Path $repoPath 'results/launch-scripts'
+    $stagingDirectory = Join-Path $repoPath '.local-artifacts/launch-scripts'
     New-Item -ItemType Directory -Force -Path $stagingDirectory | Out-Null
     $stagingFile = Join-Path $stagingDirectory ($launchId + '.sh')
     [System.IO.File]::WriteAllText($stagingFile, $submit + "`n", (New-Object System.Text.UTF8Encoding($false)))

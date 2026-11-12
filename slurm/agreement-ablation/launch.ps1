@@ -113,7 +113,7 @@ pwd -P
     $submit = $submit.Replace("`r`n", "`n")
     # Upload UTF-8/LF script bytes rather than passing nested Bash expressions
     # through Windows' native command-line quoting. No SSH identity is stored.
-    $stagingDirectory = Join-Path $repoPath 'results/launch-scripts'
+    $stagingDirectory = Join-Path $repoPath '.local-artifacts/launch-scripts'
     New-Item -ItemType Directory -Force -Path $stagingDirectory | Out-Null
     $stagingFile = Join-Path $stagingDirectory ($launchId + '.sh')
     [System.IO.File]::WriteAllText($stagingFile, $submit + "`n", (New-Object System.Text.UTF8Encoding($false)))
