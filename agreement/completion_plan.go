@@ -193,7 +193,7 @@ func planCompletionDelegation(c *config.Config, t *placement.Topology, plan *con
 	plan.CompletionRanges = nil
 	plan.CompletionTailRejected = false
 	plan.CompletionModelMeanSaving, plan.CompletionModelP99Delta, plan.CompletionModelTailBandDelta = 0, 0, 0
-	if c.Writes <= 0 || c.UniqueKeys || c.KeyCount <= 0 || len(t.Clients) == 0 {
+	if sampledWriteFraction(c) == 0 || c.UniqueKeys || c.KeyCount <= 0 || len(t.Clients) == 0 {
 		return nil
 	}
 	n := len(t.Replicas)
@@ -205,7 +205,7 @@ func planCompletionDelegation(c *config.Config, t *placement.Topology, plan *con
 			responders = append(responders, r)
 		}
 	}
-	m := completionModel{leader: leader, writes: float64(c.Writes) / 100, weights: make([]float64, n), windows: make([]float64, n), hotCutoff: heatpolicy.HotCutoff(c)}
+	m := completionModel{leader: leader, writes: sampledWriteFraction(c), weights: make([]float64, n), windows: make([]float64, n), hotCutoff: heatpolicy.HotCutoff(c)}
 	m.hotDisabled = hotAblated(c)
 	m.offeredWrites = c.ArrivalRate * float64(len(t.Clients)) * float64(max(1, c.Clones)) * m.writes
 	g := newVisibilityGeometry(t, leader, mask)

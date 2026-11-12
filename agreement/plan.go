@@ -15,7 +15,7 @@ func basePlanDeployment(c *config.Config, t *placement.Topology) (config.Deploym
 	if n < 3 || n > 63 || n%2 == 0 {
 		return config.DeploymentPlan{}, fmt.Errorf("XPaxos placement requires odd 3..63 replicas")
 	}
-	writes := float64(c.Writes) / 100
+	writes := sampledWriteFraction(c)
 	best, bestLeader, bestMask := math.Inf(1), 0, uint64(1)
 	bestRead, bestWrite := 0.0, 0.0
 	for leader := 0; leader < n; leader++ {

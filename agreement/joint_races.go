@@ -9,7 +9,7 @@ import (
 
 // Delivery geometry and correlated invalidation proxy, never read authority.
 func planJointReadRaces(c *config.Config, t *placement.Topology, p config.DeploymentPlan) config.DeploymentPlan {
-	if hotAblated(c) || c.Writes <= 0 || c.KeyCount <= 0 || c.UniqueKeys {
+	if hotAblated(c) || sampledWriteFraction(c) == 0 || c.KeyCount <= 0 || c.UniqueKeys {
 		return p
 	}
 	mask := uint64(0)
@@ -27,7 +27,7 @@ func planJointReadRaces(c *config.Config, t *placement.Topology, p config.Deploy
 	}
 	g := newVisibilityGeometry(t, l, mask)
 	prob := c.HeatProfile.Probabilities
-	offered := c.ArrivalRate * float64(len(t.Clients)) * float64(max(1, c.Clones)) * float64(c.Writes) / 100
+	offered := c.ArrivalRate * float64(len(t.Clients)) * float64(max(1, c.Clones)) * sampledWriteFraction(c)
 	remote := 0.0
 	for _, alias := range t.Clients {
 		if rank[p.WriteClientRoutes[alias]] != l {

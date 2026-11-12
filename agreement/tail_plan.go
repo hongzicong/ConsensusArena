@@ -36,7 +36,7 @@ func coupledMean(m *completionModel, p config.DeploymentPlan) float64 {
 // return approximation. Its output is immutable startup metadata only.
 func geometry(c *config.Config, t *placement.Topology, l int, mask uint64) (config.DeploymentPlan, float64, float64) {
 	n := len(t.Replicas)
-	w := float64(c.Writes) / 100
+	w := sampledWriteFraction(c)
 	evidence := evidenceAt(t, l, mask)
 	leader := t.Replicas[l]
 	p := config.DeploymentPlan{Leader: &leader, ClientRoutes: map[string]string{}, WriteClientRoutes: map[string]string{}}
@@ -79,7 +79,7 @@ func admissionCost(t *placement.Topology, c, h, l int, evidence float64) float64
 
 func parentPlanDeploymentLocal(c *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
 	parent, err := basePlanDeployment(c, t)
-	if err != nil || c.Writes <= 0 {
+	if err != nil || sampledWriteFraction(c) == 0 {
 		return parent, err
 	}
 	n := len(t.Replicas)

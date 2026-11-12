@@ -73,17 +73,19 @@ def plot(roots, output):
         for ax, (metric, label) in zip(axes.flat, metrics):
             for protocol, display in PROTOCOLS.items():
                 series = sorted((r for r in summaries if r['protocol'] == protocol), key=lambda r: r['replicas'])
-                ys = [float(r[metric]) if r[metric] != '' else math.nan for r in series]
+                ys = [float(r[metric]) if r[metric] != '' and r['timed_out'] == 'False'
+                      and r['cohort_complete'] == 'True' else math.nan for r in series]
                 line, = ax.plot([r['replicas'] for r in series], ys, marker='o', markersize=3,
                     linewidth=2 if protocol == 'agreement' else 1, label=display)
-                flagged = [(r['replicas'], y) for r, y in zip(series, ys)
-                           if r['timed_out'] == 'True' or r['cohort_complete'] != 'True']
-                if flagged:
-                    ax.scatter(*zip(*flagged), marker='x', s=50, color=line.get_color())
+                valid = [i for i, y in enumerate(ys) if math.isfinite(y)]
+                for a, b in zip(valid, valid[1:]):
+                    if b > a + 1:
+                        ax.plot([series[a]['replicas'], series[b]['replicas']], [ys[a], ys[b]],
+                                color=line.get_color(), linestyle=':', linewidth=1.5)
             ax.set(xlabel='Number of replicas', ylabel=label, xticks=list(range(3, 32, 4)))
             ax.grid(alpha=.25)
         fig.legend(*axes.flat[0].get_legend_handles_labels(), loc='upper center', ncol=6)
-        fig.text(.5, .01, 'Workload B · aws-random · × timeout or incomplete cohort; completed-request latency',
+        fig.text(.5, .01, 'Workload B · aws-random · complete, fully drained runs only\nDotted connectors span omitted runs; no values are imputed.',
                  ha='center', fontsize=8)
         fig.tight_layout(rect=(0, .035, 1, .9))
         for extension in ('png', 'pdf'):

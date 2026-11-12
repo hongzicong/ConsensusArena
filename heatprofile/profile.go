@@ -40,6 +40,8 @@ type File struct {
 type Profile struct {
 	File   File
 	SHA256 string
+	// Operation totals are derived once from the validated frozen sample.
+	ReadRequests, WriteRequests uint64
 	// Optional derived tables used by Agreement. Unobserved raw keys have rank
 	// -1; probabilities are indexed by empirical rank and padded with zeros.
 	Ranks         []int32
@@ -127,6 +129,10 @@ func load(path, expected string, keyCount, clientCount int) (*Profile, error) {
 		}
 	}
 	p := &Profile{File: input, SHA256: digest}
+	for _, key := range input.Keys {
+		p.ReadRequests += key.Reads
+		p.WriteRequests += key.Writes
+	}
 	return p, nil
 }
 

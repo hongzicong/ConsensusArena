@@ -53,8 +53,10 @@ func PlanDeployment(c *config.Config, t *placement.Topology) (config.DeploymentP
 	}
 	row := map[string]interface{}{
 		"visibility_model": "owner-first-delayed-accepted",
-		"protocol":         "agreement", "hot_cutoff": heatpolicy.HotCutoff(c), "hot_rule": "frequency above mean observed key", "policy": "frozen offline sample ranks; unknown keys ordinary",
+		"protocol":         "agreement", "hot_cutoff": heatpolicy.HotCutoff(c), "hot_rule": "frequency above mean observed key", "policy": "frozen offline sample ranks and operation mix; unknown keys ordinary",
 		"profile_sha256": profile.SHA256, "sample_requests": profile.File.Requests,
+		"sample_reads": profile.ReadRequests, "sample_writes": profile.WriteRequests,
+		"sample_write_fraction": sampledWriteFraction(c), "operation_mix_source": "independent-offline-offered-requests",
 		"observed_keys": len(profile.File.Keys), "unobserved_keys": c.KeyCount - len(profile.File.Keys),
 		"cold_enabled": p.ColdEnabled, "cold_cutoff": p.ColdCutoff,
 		"sample_cold_mass": coldMass, "sample_cold_collision_mass": collision, "sample_hot_mass_in_cold_cohort": topCold,

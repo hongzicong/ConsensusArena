@@ -53,7 +53,7 @@ func NewClient(b *client.BufferClient, cfg *config.Config) *Client {
 	c.coldCut = state.Key(cfg.Plan.ColdCutoff)
 	c.coldQ = cfg.Plan.ColdQuorum
 	c.coldVotes = map[int32]map[ColdVoteIdentity]uint64{}
-	c.learningEnabled = cfg.Writes > 0
+	c.learningEnabled = sampledWriteFraction(cfg) > 0
 	c.raceRanges = cfg.Plan.ReadRaceRanges[cfg.Alias]
 	c.completionRanges = cfg.Plan.CompletionRanges
 	c.writeIngress = c.initialLeader

@@ -32,7 +32,7 @@ type coldPlanModel struct {
 }
 
 func newColdPlanModel(c *config.Config, t *placement.Topology, p config.DeploymentPlan) *coldPlanModel {
-	m := &coldPlanModel{HotCutoff: heatpolicy.HotCutoff(c), T: t, P: p, W: float64(c.Writes) / 100, Leader: p.Leader.Rank}
+	m := &coldPlanModel{HotCutoff: heatpolicy.HotCutoff(c), T: t, P: p, W: sampledWriteFraction(c), Leader: p.Leader.Rank}
 	n, clients := len(t.Replicas), len(t.Clients)
 	rank := map[string]int{}
 	for r, v := range t.Replicas {
@@ -347,7 +347,7 @@ func planColdPlacement(c *config.Config, t *placement.Topology, p config.Deploym
 		p.ColdEnabled = false
 		return p
 	}
-	if c.Writes <= 0 || len(c.HeatProfile.File.Keys) <= heatpolicy.HotCutoff(c) || c.UniqueKeys {
+	if sampledWriteFraction(c) == 0 || len(c.HeatProfile.File.Keys) <= heatpolicy.HotCutoff(c) || c.UniqueKeys {
 		return p
 	}
 	m := newColdPlanModel(c, t, p)

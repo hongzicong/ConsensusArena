@@ -270,14 +270,14 @@ func (q probabilityCurve) mean(x certificateGeometry, t *placement.Topology, lam
 
 func exploratoryHotPlan(c *config.Config, t *placement.Topology) (config.DeploymentPlan, error) {
 	p, err := baselineHotPlan(c, t)
-	if err != nil || hotAblated(c) || c.Writes <= 0 || c.KeyCount <= 0 || c.UniqueKeys {
+	if err != nil || hotAblated(c) || sampledWriteFraction(c) == 0 || c.KeyCount <= 0 || c.UniqueKeys {
 		return p, err
 	}
 	n := len(t.Replicas)
 	if n > 13 {
 		return p, nil
 	}
-	w := float64(c.Writes) / 100
+	w := sampledWriteFraction(c)
 	offered := c.ArrivalRate * float64(len(t.Clients)) * float64(max(1, c.Clones)) * w
 	lambda := offered / 1000
 	if lambda <= 0 {
