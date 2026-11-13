@@ -1,0 +1,7 @@
+protocol,binary_sha256,profile,runtime_policy,replica_gomaxprocs,replica_logical_cpus,complete,status,outcome,highest_sustained_offered_rps,first_unsustained_offered_rps,final_step,low_load_mean_ms,achieved_rps_at_highest_sustained_load,mean_ms_at_highest_sustained_load,points,attempts
+agreement,64df6f84e10df8586516743c5dc307d01f0866db77f968c5dfa066becc0080d2,B,replica-single-cpu-v2,1,1,True,complete,bracketed,476000,478000,2000,12.55,474547.0,93.708,22,26
+paxos,64df6f84e10df8586516743c5dc307d01f0866db77f968c5dfa066becc0080d2,B,replica-single-cpu-v2,1,1,True,complete,bracketed,60000,62000,2000,217.151,58876.8,357.353,14,15
+swiftpaxos,64df6f84e10df8586516743c5dc307d01f0866db77f968c5dfa066becc0080d2,B,replica-single-cpu-v2,1,1,True,complete,bracketed,42000,44000,2000,145.755,39770.4,389.571,15,16
+bodega,64df6f84e10df8586516743c5dc307d01f0866db77f968c5dfa066becc0080d2,B,replica-single-cpu-v2,1,1,True,complete,bracketed,336000,338000,2000,44.418,335153.5,132.522,24,33
+kcensus,64df6f84e10df8586516743c5dc307d01f0866db77f968c5dfa066becc0080d2,B,replica-single-cpu-v2,1,1,True,complete,bracketed,66000,68000,2000,125.019,64329.2,301.673,18,22
+pqlfrontier,64df6f84e10df8586516743c5dc307d01f0866db77f968c5dfa066becc0080d2,B,replica-single-cpu-v2,1,1,True,complete,bracketed,124000,126000,2000,88.176,123276.0,375.948,17,21

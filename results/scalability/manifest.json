@@ -1,0 +1,191 @@
+{
+  "campaign_id": "paper-eval-20261112-171140-2e281d",
+  "binary_sha256": "64df6f84e10df8586516743c5dc307d01f0866db77f968c5dfa066becc0080d2",
+  "source_head": "3b34700cc1ed55c91d87eb9a8a1a3ec6542ea4e2",
+  "source_archive_sha256": "d7d2a2d91670cdcbaa40f495f07d6553748a1b2a33437d50ddcde22ea9f95ebe",
+  "runtime_policy": "replica-single-cpu-v2",
+  "replica_gomaxprocs": 1,
+  "replica_logical_cpus": 1,
+  "participant_task_cpu_slots": 2,
+  "client_gomaxprocs": 2,
+  "proxy_and_supervisor": "second replica task CPU slot; separate from replica CPU",
+  "replica_os_threads": "multiple OS threads allowed; all confined to one logical CPU",
+  "physical_core_exclusive": false,
+  "resource_observation": true,
+  "workload": {
+    "offered_rps": 20000,
+    "profiles": [
+      "B"
+    ],
+    "key_count": 100000,
+    "zipf_skew": 0.99,
+    "command_size_bytes": 16,
+    "workload_seed": 1,
+    "key_mapping_seed": 1,
+    "preload_seed": 1,
+    "warmup_s": 5,
+    "measurement_s": 10,
+    "sustain_s": 2,
+    "deadline_s": 19
+  },
+  "latency": "scheduled arrival to authorized completion for arrivals during [5,15); plot only fully drained complete cohorts",
+  "throughput": "authorized completions during [5,15) / 10; includes warmup arrivals completing in this window",
+  "resource_semantics": "CPU and application send+receive frame/byte counter differences at seconds 5 and 15; normalize by system completions; average replica metrics arithmetically",
+  "memory_semantics": "mean across replicas of kernel process lifetime peaks through measurement end, including startup/preload/warmup; MiB; no periodic RSS polling",
+  "runs_per_configuration": 1,
+  "expected_scenes": 90,
+  "validated_scenes": 88,
+  "plotted_scenes": 84,
+  "protocol_status": [
+    {
+      "protocol": "agreement",
+      "complete": true,
+      "expected_scenes": 15,
+      "completed_scenes": 15,
+      "timed_out_scenes": 0
+    },
+    {
+      "protocol": "paxos",
+      "complete": true,
+      "expected_scenes": 15,
+      "completed_scenes": 15,
+      "timed_out_scenes": 0
+    },
+    {
+      "protocol": "swiftpaxos",
+      "complete": false,
+      "expected_scenes": 15,
+      "completed_scenes": 13,
+      "timed_out_scenes": 4
+    },
+    {
+      "protocol": "bodega",
+      "complete": true,
+      "expected_scenes": 15,
+      "completed_scenes": 15,
+      "timed_out_scenes": 0
+    },
+    {
+      "protocol": "kcensus",
+      "complete": true,
+      "expected_scenes": 15,
+      "completed_scenes": 15,
+      "timed_out_scenes": 0
+    },
+    {
+      "protocol": "pqlfrontier",
+      "complete": true,
+      "expected_scenes": 15,
+      "completed_scenes": 15,
+      "timed_out_scenes": 0
+    }
+  ],
+  "input_case_checksums": {
+    "n3-c3-topology-00": "e410cd5981add0e25d0894261b9d8b3323b399992de0f378809dccb2df2d781c",
+    "n5-c5-topology-00": "d4511a40433407872f03f786932817ff3dbbbebe137f4fee4e2b6d5289f43e4d",
+    "n7-c7-topology-00": "a1bb4848d37f39186e21fbb8632c03e2158f0c7c2128b8db789174eaf0182f5a",
+    "n9-c9-topology-00": "7de36867072752c1b8b61ebe6b62c1e4bc6c3f4ba17a79cb706f084cb07c8000",
+    "n11-c11-topology-00": "2a61dd2b77a532f4fb18867f9bb00be782b043b55ac021b621a81d0399caf5d5",
+    "n13-c13-topology-00": "c83b569e381e8b87df6b989627d601a1a6a558a70645df8de02f6ba854b31df0",
+    "n15-c15-topology-00": "d4ee71e2319b56a43d908e35c7f8a20e8e073ab866ad43f8dc241f8348c10750",
+    "n17-c17-topology-00": "a402cb9bdd0699a5ffa738f8297959afb0d0e63e380a144cd01a49c1aefb7751",
+    "n19-c19-topology-00": "7eabb851255cee7bb8a0bac193b84ed299369975ad3e0865da20380335739604",
+    "n21-c21-topology-00": "26c133ca245e485b1a902f3afbc3a41b1958c44c252df63bf9cc1ab1b7946f9b",
+    "n23-c23-topology-00": "33078ea71f297f8b9bda90cffd4c986f40eeb6390cd131326a5f613218a4ad6d",
+    "n25-c25-topology-00": "bf1c9eefaa4e42ff65a00b285fd7077c9beaf3e6bccdbda47f049a8ce35ea21d",
+    "n27-c27-topology-00": "ed6010a66f021a343e21396692d875d87218cf35d9b49438fab3f0bfb96dfa4b",
+    "n29-c29-topology-00": "c054185bf4dc8097862b67c0054694d79bbcbae91cf094abb69fa76d2ed883a9",
+    "n31-c31-topology-00": "cb56f165a4707eb3b0364eb8916e531f99941df29954fb6b5ebd2042f49fbeb1"
+  },
+  "collection_note": "Recovered completed raw runs from site-default scratch paths after the site reset custom SCRATCH. No benchmark reruns.",
+  "validation": "Original frozen collector revalidated workload logs, process role settings and startup/end-of-measurement thread affinity; see checksummed raw archives",
+  "go_version": "go1.27.0",
+  "build": {
+    "goos": "linux",
+    "goarch": "amd64",
+    "cgo_enabled": false,
+    "trimpath": true,
+    "vcs_modified": false
+  },
+  "memory_allocation": "4 GiB per CPU slot, two CPU slots per participant task; Slurm enforcement is at job/step allocation level",
+  "raw_archives": [
+    {
+      "suite": "scalability",
+      "protocol": "agreement",
+      "array_job": "41157587",
+      "sha256": "c062734b4bbc83ee68d45aba29f13c804a463a7bc58c34b958931b689d34e60d",
+      "bytes": 35158937,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/scalability-agreement.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/scalability-agreement.tar.gz",
+      "remote_sha256": "c062734b4bbc83ee68d45aba29f13c804a463a7bc58c34b958931b689d34e60d"
+    },
+    {
+      "suite": "scalability",
+      "protocol": "paxos",
+      "array_job": "41157589",
+      "sha256": "80726fb59a0f6a961ad132c0c12d06b39a783fb5219ca1718d8cf5d908648c37",
+      "bytes": 23118454,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/scalability-paxos.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/scalability-paxos.tar.gz",
+      "remote_sha256": "80726fb59a0f6a961ad132c0c12d06b39a783fb5219ca1718d8cf5d908648c37"
+    },
+    {
+      "suite": "scalability",
+      "protocol": "swiftpaxos",
+      "array_job": "41157591",
+      "sha256": "a9966c8b743d8fb56126341365a3ff368baf44bd3dd28127b69f23421f74c3ce",
+      "bytes": 48800152,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/scalability-swiftpaxos.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/scalability-swiftpaxos.tar.gz",
+      "remote_sha256": "a9966c8b743d8fb56126341365a3ff368baf44bd3dd28127b69f23421f74c3ce"
+    },
+    {
+      "suite": "scalability",
+      "protocol": "bodega",
+      "array_job": "41157593",
+      "sha256": "6d5049b3af98a2ca540d19a842ff1e0b5a098f3a86047d851b2932c6f7453636",
+      "bytes": 89181164,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/scalability-bodega.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/scalability-bodega.tar.gz",
+      "remote_sha256": "6d5049b3af98a2ca540d19a842ff1e0b5a098f3a86047d851b2932c6f7453636"
+    },
+    {
+      "suite": "scalability",
+      "protocol": "kcensus",
+      "array_job": "41157595",
+      "sha256": "5635ce1c043cc68ac79d5a214130d3f1644d0eb47eaa581cbfa425d4d4d10c83",
+      "bytes": 25964907,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/scalability-kcensus.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/scalability-kcensus.tar.gz",
+      "remote_sha256": "5635ce1c043cc68ac79d5a214130d3f1644d0eb47eaa581cbfa425d4d4d10c83"
+    },
+    {
+      "suite": "scalability",
+      "protocol": "pqlfrontier",
+      "array_job": "41157597",
+      "sha256": "a6e9da61acaf0a44f186f140bb9a8cb1f218b825a5c90325ed5187bb289d32eb",
+      "bytes": 46562876,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/scalability-pqlfrontier.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/scalability-pqlfrontier.tar.gz",
+      "remote_sha256": "a6e9da61acaf0a44f186f140bb9a8cb1f218b825a5c90325ed5187bb289d32eb"
+    }
+  ],
+  "csv_sha256": {
+    "data/operation-latency.csv": "dd8b2b2f5b7df1e928dc38a1a34bea0c879077f8a79086f31322214b9bebf35f",
+    "data/resources-by-replica.csv": "e3fd34228b3676a510670770c1516ad22f28f7fcf90ff9b58f41dd1817063dcd",
+    "data/scalability.csv": "39e5e77ec062916c10b2068702ff8c30383589b45810679d541e086ac32a04bf",
+    "data/topologies.csv": "93ebd2f08b4da9cae8d14674d847a4b83687a7415fccee4c3dfa3776879b6925",
+    "data/agreement-vs-best.csv": "ae1b24eb6948c2f7524a3e4f42f719c144312bfa6aab8df8966e0a6ca849ff5d"
+  },
+  "figure_generator_sha256": "648bdfd4c7076659c9c119f190ba003d3acfee2f7145a437f18de1eebbe79ca1",
+  "figure_requirements_sha256": "de950d3b75e4ad1a760c121533e06390c84574f7dd0b53c0eaa742ab6d5c2f38",
+  "local_publication_audit": {
+    "workload_records": 293,
+    "resource_records": 1470,
+    "affinity_snapshots": 5666,
+    "replica_thread_entries": 22759,
+    "proxy_thread_entries": 38687,
+    "complete": true
+  },
+  "comparison_generator_sha256": "3846a746bb9451a5261ea64ca53c20365d9360695dc1a6db478744d8da4d0fe9"
+}

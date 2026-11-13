@@ -1,0 +1,166 @@
+deployment,replicas,profile,operation,offered_rps,metric,unit,better,agreement_value,best_alternative,best_alternative_value,agreement_gain_percent,agreement_advantage_factor,alternatives_compared,excluded_alternatives,comparison_status
+aws-random,3,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,118.0584559638517,bodega,46.48689940315428,-153.960702,0.393762,5,,all_alternatives
+aws-random,3,B,ALL,20000,completed_rps,requests/s,higher,19999.1,paxos,20023.4,-0.121358,0.998786,5,,all_alternatives
+aws-random,3,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,14.756436913484546,bodega,11.541026725337641,-27.860694,0.782101,5,,all_alternatives
+aws-random,3,B,ALL,20000,mean_ms,ms,lower,36.917,bodega,57.035,35.273078,1.544952,5,,all_alternatives
+aws-random,3,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,1.1860867072351589,paxos,0.7754793558203568,-52.948844,0.653813,5,,all_alternatives
+aws-random,3,B,ALL,20000,p99_ms,ms,lower,256.748204,swiftpaxos,180.909928,-41.920461,0.704620,5,,all_alternatives
+aws-random,3,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,73.19921875,bodega,67.27083333333333,-8.812713,0.919010,5,,all_alternatives
+aws-random,5,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,154.51985880050327,bodega,43.0174299231165,-259.202907,0.278394,5,,all_alternatives
+aws-random,5,B,ALL,20000,completed_rps,requests/s,higher,20028.4,kcensus,20033.1,-0.023461,0.999765,5,,all_alternatives
+aws-random,5,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,14.483706874328272,bodega,9.147461990890056,-58.335797,0.631569,5,,all_alternatives
+aws-random,5,B,ALL,20000,mean_ms,ms,lower,36.915,bodega,79.740,53.705794,2.160098,5,,all_alternatives
+aws-random,5,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,1.207330590561403,paxos,0.5293565021190354,-128.075141,0.438452,5,,all_alternatives
+aws-random,5,B,ALL,20000,p99_ms,ms,lower,265.993876,swiftpaxos,238.480062,-11.537155,0.896562,5,,all_alternatives
+aws-random,5,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,70.95078125,bodega,72.5375,2.187446,1.022364,5,,all_alternatives
+aws-random,7,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,178.66451581156628,bodega,42.76446540880503,-317.787324,0.239356,5,,all_alternatives
+aws-random,7,B,ALL,20000,completed_rps,requests/s,higher,20031.9,kcensus,20040.5,-0.042913,0.999571,5,,all_alternatives
+aws-random,7,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,15.063143000412126,bodega,8.428742029758745,-78.711639,0.559561,5,,all_alternatives
+aws-random,7,B,ALL,20000,mean_ms,ms,lower,36.639,bodega,93.374,60.761026,2.548487,5,,all_alternatives
+aws-random,7,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,1.206042077172624,paxos,0.4253274143802036,-183.556158,0.352664,5,,all_alternatives
+aws-random,7,B,ALL,20000,p99_ms,ms,lower,249.314454,swiftpaxos,257.166032,3.053116,1.031493,5,,all_alternatives
+aws-random,7,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,70.37946428571429,bodega,63.916294642857146,-10.111928,0.908167,5,,all_alternatives
+aws-random,9,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,220.92933540654616,bodega,40.533863688688065,-445.048795,0.183470,5,,all_alternatives
+aws-random,9,B,ALL,20000,completed_rps,requests/s,higher,20022.6,pqlfrontier,20041.4,-0.093806,0.999062,5,,all_alternatives
+aws-random,9,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,17.30544588526623,bodega,8.046754290392423,-115.061194,0.464984,5,,all_alternatives
+aws-random,9,B,ALL,20000,mean_ms,ms,lower,35.615,bodega,88.875,59.926864,2.495437,5,,all_alternatives
+aws-random,9,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,1.3939465071136283,paxos,0.36480062685974124,-282.111873,0.261703,5,,all_alternatives
+aws-random,9,B,ALL,20000,p99_ms,ms,lower,267.151608,swiftpaxos,269.418433,0.841377,1.008485,5,,all_alternatives
+aws-random,9,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,70.90711805555556,pqlfrontier,70.10199652777777,-1.148500,0.988645,5,,all_alternatives
+aws-random,11,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,254.70488899761816,bodega,41.44303545255297,-514.590332,0.162710,5,,all_alternatives
+aws-random,11,B,ALL,20000,completed_rps,requests/s,higher,19992.2,kcensus,20005.5,-0.066482,0.999335,5,,all_alternatives
+aws-random,11,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,19.835377468204157,bodega,8.249042140547575,-140.456736,0.415875,5,,all_alternatives
+aws-random,11,B,ALL,20000,mean_ms,ms,lower,38.502,bodega,100.933,61.853903,2.621500,5,,all_alternatives
+aws-random,11,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,1.5539683203722179,paxos,0.32998973461852155,-370.914140,0.212353,5,,all_alternatives
+aws-random,11,B,ALL,20000,p99_ms,ms,lower,262.379282,kcensus,335.210329,21.726970,1.277579,5,,all_alternatives
+aws-random,11,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,75.59375,pqlfrontier,64.9403409090909,-16.404917,0.859070,5,,all_alternatives
+aws-random,13,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,283.86348064465034,bodega,40.64622949468399,-598.375924,0.143189,5,,all_alternatives
+aws-random,13,B,ALL,20000,completed_rps,requests/s,higher,19959.3,bodega,19970.9,-0.058085,0.999419,5,,all_alternatives
+aws-random,13,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,21.478338110783444,bodega,8.082194477359362,-165.748841,0.376295,5,,all_alternatives
+aws-random,13,B,ALL,20000,mean_ms,ms,lower,38.445,bodega,99.196,61.243397,2.580205,5,,all_alternatives
+aws-random,13,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,1.6959871029853444,paxos,0.3024753085943825,-460.702661,0.178348,5,,all_alternatives
+aws-random,13,B,ALL,20000,p99_ms,ms,lower,272.815602,paxos,332.785788,18.020657,1.219819,5,,all_alternatives
+aws-random,13,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,114.92698317307692,bodega,68.72115384615384,-67.236690,0.597955,5,,all_alternatives
+aws-random,15,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,273.8633007480931,bodega,41.420446182804575,-561.179021,0.151245,5,,all_alternatives
+aws-random,15,B,ALL,20000,completed_rps,requests/s,higher,19988.6,bodega,19993.3,-0.023508,0.999765,5,,all_alternatives
+aws-random,15,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,21.77731433212533,bodega,8.17820420403839,-166.284795,0.375538,5,,all_alternatives
+aws-random,15,B,ALL,20000,mean_ms,ms,lower,53.193,bodega,106.879,50.230635,2.009268,5,,all_alternatives
+aws-random,15,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,1.576818453184982,paxos,0.2833786365646301,-456.435189,0.179715,5,,all_alternatives
+aws-random,15,B,ALL,20000,p99_ms,ms,lower,299.500478,kcensus,343.846925,12.897148,1.148068,5,,all_alternatives
+aws-random,15,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,90.91354166666666,pqlfrontier,68.24661458333334,-33.213262,0.750676,5,,all_alternatives
+aws-random,17,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,278.72902648999025,bodega,41.40406557299859,-573.192409,0.148546,5,,all_alternatives
+aws-random,17,B,ALL,20000,completed_rps,requests/s,higher,19994.9,pqlfrontier,19996.8,-0.009502,0.999905,5,,all_alternatives
+aws-random,17,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,20.752070046869076,bodega,7.4034547440333665,-180.302518,0.356757,5,,all_alternatives
+aws-random,17,B,ALL,20000,mean_ms,ms,lower,54.053,bodega,104.151,48.101314,1.926831,5,,all_alternatives
+aws-random,17,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,1.5879366885614656,paxos,0.26921756994602103,-489.833973,0.169539,5,,all_alternatives
+aws-random,17,B,ALL,20000,p99_ms,ms,lower,308.083884,kcensus,360.630938,14.570867,1.170561,5,,all_alternatives
+aws-random,17,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,93.97817095588235,pqlfrontier,70.70680147058823,-32.912491,0.752375,5,,all_alternatives
+aws-random,19,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,310.31439594431265,bodega,42.677719977285584,-627.110999,0.137531,5,,all_alternatives
+aws-random,19,B,ALL,20000,completed_rps,requests/s,higher,19956.9,paxos,19962.8,-0.029555,0.999704,5,,all_alternatives
+aws-random,19,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,22.199996829994642,bodega,7.579500671774763,-192.895242,0.341419,5,,all_alternatives
+aws-random,19,B,ALL,20000,mean_ms,ms,lower,57.168,bodega,110.803,48.405729,1.938200,5,,all_alternatives
+aws-random,19,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,1.7766887642870386,paxos,0.25659278890314935,-592.415703,0.144422,5,,all_alternatives
+aws-random,19,B,ALL,20000,p99_ms,ms,lower,307.072311,kcensus,360.725628,14.873719,1.174725,5,,all_alternatives
+aws-random,19,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,74.93708881578948,pqlfrontier,67.73005756578948,-10.640817,0.903826,5,,all_alternatives
+aws-random,21,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,380.98446956892093,bodega,42.67009277051741,-792.860654,0.112000,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,21,B,ALL,20000,completed_rps,requests/s,higher,19946.4,pqlfrontier,19951.8,-0.027065,0.999729,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,21,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,27.552066197465557,bodega,7.546456778682331,-265.099371,0.273898,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,21,B,ALL,20000,mean_ms,ms,lower,70.095,bodega,112.576,37.735397,1.606049,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,21,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,2.153339043875682,paxos,0.2461859955155056,-774.679747,0.114328,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,21,B,ALL,20000,p99_ms,ms,lower,303.10307,kcensus,392.808741,22.836984,1.295958,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,21,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,95.47749255952381,pqlfrontier,68.2172619047619,-39.960898,0.714485,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,23,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,405.89033047293196,bodega,43.41608324563971,-834.884725,0.106965,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,23,B,ALL,20000,completed_rps,requests/s,higher,19967.3,pqlfrontier,20073.6,-0.529551,0.994704,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,23,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,28.98323388028576,bodega,7.865644301308446,-268.478827,0.271386,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,23,B,ALL,20000,mean_ms,ms,lower,75.005,bodega,117.952,36.410574,1.572588,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,23,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,2.2222917078118374,paxos,0.23550740976749507,-843.618594,0.105975,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,23,B,ALL,20000,p99_ms,ms,lower,314.878526,kcensus,407.899496,22.804875,1.295419,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,23,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,96.85122282608695,pqlfrontier,73.40030570652173,-31.949345,0.757867,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,25,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,422.2765607633848,bodega,43.7942373798619,-864.228597,0.103710,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,25,B,ALL,20000,completed_rps,requests/s,higher,19974.2,paxos,19987.8,-0.068042,0.999320,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,25,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,30.02787006633574,bodega,7.722493961900979,-288.836433,0.257178,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,25,B,ALL,20000,mean_ms,ms,lower,70.950,bodega,118.114,39.930914,1.664750,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,25,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,2.2865326270889446,paxos,0.22547854191056543,-914.079924,0.098612,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,25,B,ALL,20000,p99_ms,ms,lower,318.42993,kcensus,400.016122,20.395726,1.256214,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,25,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,98.14453125,pqlfrontier,78.90046875,-24.390302,0.803921,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,27,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,429.64070105680963,bodega,43.06933579034491,-897.555902,0.100245,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,27,B,ALL,20000,completed_rps,requests/s,higher,19963.3,pqlfrontier,19975.7,-0.062075,0.999379,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,27,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,31.289169326479954,pqlfrontier,7.682620135528218,-307.272113,0.245536,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,27,B,ALL,20000,mean_ms,ms,lower,72.252,bodega,117.475,38.495850,1.625907,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,27,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,2.3871543170606953,paxos,0.21678202122746917,-1001.177258,0.090812,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,27,B,ALL,20000,p99_ms,ms,lower,320.92946,kcensus,376.589393,14.780006,1.173434,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,27,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,99.10604745370371,bodega,82.61328125,-19.963819,0.833585,4,swiftpaxos: timeout or incomplete request cohort,partial_alternatives
+aws-random,29,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,476.8316238150329,bodega,43.08041807718173,-1006.840753,0.090347,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,29,B,ALL,20000,completed_rps,requests/s,higher,19970.0,pqlfrontier,19998.7,-0.143509,0.998565,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,29,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,34.228477306855396,pqlfrontier,7.43136808811022,-360.594562,0.217111,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,29,B,ALL,20000,mean_ms,ms,lower,72.338,bodega,110.799,34.712407,1.531685,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,29,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,2.5839830435308135,paxos,0.20877007849080192,-1137.717139,0.080794,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,29,B,ALL,20000,p99_ms,ms,lower,349.914485,kcensus,393.037347,10.971696,1.123238,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,29,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,101.39210668103448,bodega,75.11516702586206,-34.982202,0.740838,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,31,B,ALL,20000,bytes_per_request_per_replica,bytes/request/replica,lower,467.7084457065401,bodega,43.19003311922551,-982.908282,0.092344,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,31,B,ALL,20000,completed_rps,requests/s,higher,20042.9,paxos,20060.6,-0.088233,0.999118,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,31,B,ALL,20000,cpu_percent_per_replica,% of one logical CPU,lower,35.00896337526535,pqlfrontier,7.095051852938175,-393.427872,0.202664,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,31,B,ALL,20000,mean_ms,ms,lower,67.553,bodega,110.978,39.129377,1.642829,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,31,B,ALL,20000,messages_per_request_per_replica,messages/request/replica,lower,2.5859972294911286,paxos,0.19914224416148105,-1198.567886,0.077008,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,31,B,ALL,20000,p99_ms,ms,lower,334.694747,kcensus,384.905751,13.045013,1.150020,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,31,B,ALL,20000,peak_memory_mib_per_replica,MiB,lower,102.5280997983871,bodega,73.15776209677419,-40.146578,0.713539,4,swiftpaxos: Slurm reported oom_kill / Out Of Memory before replicas became ready,partial_alternatives
+aws-random,3,B,READ,20000,mean_ms,ms,lower,25.404,bodega,45.910,44.665650,1.807196,5,,all_alternatives
+aws-random,3,B,READ,20000,p99_ms,ms,lower,244.48417,bodega,178.02342,-37.332588,0.728159,5,,all_alternatives
+aws-random,3,B,UPDATE,20000,mean_ms,ms,lower,253.625,swiftpaxos,118.029,-114.883630,0.465368,5,,all_alternatives
+aws-random,3,B,UPDATE,20000,p99_ms,ms,lower,258.191501,swiftpaxos,179.917292,-43.505662,0.696837,5,,all_alternatives
+aws-random,5,B,READ,20000,mean_ms,ms,lower,25.010,bodega,66.785,62.551471,2.670332,5,,all_alternatives
+aws-random,5,B,READ,20000,p99_ms,ms,lower,247.132355,bodega,225.878897,-9.409227,0.914000,5,,all_alternatives
+aws-random,5,B,UPDATE,20000,mean_ms,ms,lower,260.397,swiftpaxos,135.074,-92.780994,0.518723,5,,all_alternatives
+aws-random,5,B,UPDATE,20000,p99_ms,ms,lower,267.92804,swiftpaxos,238.44611,-12.364190,0.889963,5,,all_alternatives
+aws-random,7,B,READ,20000,mean_ms,ms,lower,25.630,bodega,79.238,67.654408,3.091611,5,,all_alternatives
+aws-random,7,B,READ,20000,p99_ms,ms,lower,222.068249,bodega,243.856424,8.934837,1.098115,5,,all_alternatives
+aws-random,7,B,UPDATE,20000,mean_ms,ms,lower,244.164,swiftpaxos,162.020,-50.699914,0.663570,5,,all_alternatives
+aws-random,7,B,UPDATE,20000,p99_ms,ms,lower,254.705847,swiftpaxos,257.027888,0.903420,1.009117,5,,all_alternatives
+aws-random,9,B,READ,20000,mean_ms,ms,lower,24.123,bodega,75.956,68.240824,3.148696,5,,all_alternatives
+aws-random,9,B,READ,20000,p99_ms,ms,lower,220.674315,bodega,229.788272,3.966241,1.041300,5,,all_alternatives
+aws-random,9,B,UPDATE,20000,mean_ms,ms,lower,253.163,swiftpaxos,153.177,-65.274813,0.605053,5,,all_alternatives
+aws-random,9,B,UPDATE,20000,p99_ms,ms,lower,270.157521,swiftpaxos,268.571236,-0.590638,0.994128,5,,all_alternatives
+aws-random,11,B,READ,20000,mean_ms,ms,lower,27.141,bodega,86.874,68.758202,3.200840,5,,all_alternatives
+aws-random,11,B,READ,20000,p99_ms,ms,lower,219.836341,bodega,247.764984,11.272232,1.127043,5,,all_alternatives
+aws-random,11,B,UPDATE,20000,mean_ms,ms,lower,251.919,swiftpaxos,185.631,-35.709553,0.736868,5,,all_alternatives
+aws-random,11,B,UPDATE,20000,p99_ms,ms,lower,270.074086,paxos,356.447368,24.231707,1.319813,5,,all_alternatives
+aws-random,13,B,READ,20000,mean_ms,ms,lower,26.965,bodega,85.652,68.517956,3.176414,5,,all_alternatives
+aws-random,13,B,READ,20000,p99_ms,ms,lower,211.33022,bodega,243.781516,13.311631,1.153557,5,,all_alternatives
+aws-random,13,B,UPDATE,20000,mean_ms,ms,lower,256.600,kcensus,181.382,-41.469385,0.706867,5,,all_alternatives
+aws-random,13,B,UPDATE,20000,p99_ms,ms,lower,291.637736,paxos,332.823457,12.374645,1.141222,5,,all_alternatives
+aws-random,15,B,READ,20000,mean_ms,ms,lower,42.623,bodega,92.527,53.934527,2.170823,5,,all_alternatives
+aws-random,15,B,READ,20000,p99_ms,ms,lower,198.138418,kcensus,252.135237,21.415816,1.272521,5,,all_alternatives
+aws-random,15,B,UPDATE,20000,mean_ms,ms,lower,253.776,kcensus,216.116,-17.425827,0.851601,5,,all_alternatives
+aws-random,15,B,UPDATE,20000,p99_ms,ms,lower,373.741871,paxos,367.895764,-1.589066,0.984358,5,,all_alternatives
+aws-random,17,B,READ,20000,mean_ms,ms,lower,43.024,bodega,90.355,52.383377,2.100107,5,,all_alternatives
+aws-random,17,B,READ,20000,p99_ms,ms,lower,200.107053,bodega,245.696816,18.555293,1.227827,5,,all_alternatives
+aws-random,17,B,UPDATE,20000,mean_ms,ms,lower,263.631,kcensus,223.726,-17.836550,0.848633,5,,all_alternatives
+aws-random,17,B,UPDATE,20000,p99_ms,ms,lower,379.623407,paxos,365.840946,-3.767337,0.963694,5,,all_alternatives
+aws-random,19,B,READ,20000,mean_ms,ms,lower,46.071,bodega,96.276,52.146953,2.089731,5,,all_alternatives
+aws-random,19,B,READ,20000,p99_ms,ms,lower,195.991339,bodega,257.821951,23.981904,1.315476,5,,all_alternatives
+aws-random,19,B,UPDATE,20000,mean_ms,ms,lower,266.586,kcensus,223.031,-19.528675,0.836619,5,,all_alternatives
+aws-random,19,B,UPDATE,20000,p99_ms,ms,lower,379.287777,paxos,368.755988,-2.856032,0.972233,5,,all_alternatives
+aws-random,21,B,READ,20000,mean_ms,ms,lower,60.575,bodega,98.111,38.258707,1.619662,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,21,B,READ,20000,p99_ms,ms,lower,240.390793,bodega,256.019718,6.104579,1.065015,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,21,B,UPDATE,20000,mean_ms,ms,lower,251.045,kcensus,231.832,-8.287467,0.923468,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,21,B,UPDATE,20000,p99_ms,ms,lower,400.757523,paxos,400.739974,-0.004379,0.999956,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,23,B,READ,20000,mean_ms,ms,lower,65.376,bodega,103.093,36.585413,1.576924,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,23,B,READ,20000,p99_ms,ms,lower,263.342345,bodega,266.020679,1.006814,1.010171,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,23,B,UPDATE,20000,mean_ms,ms,lower,258.118,kcensus,239.682,-7.691858,0.928575,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,23,B,UPDATE,20000,p99_ms,ms,lower,401.183144,paxos,411.666985,2.546680,1.026132,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,25,B,READ,20000,mean_ms,ms,lower,61.193,bodega,103.238,40.726283,1.687088,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,25,B,READ,20000,p99_ms,ms,lower,241.50155,bodega,266.169298,9.267691,1.102143,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,25,B,UPDATE,20000,mean_ms,ms,lower,255.594,kcensus,239.350,-6.786714,0.936446,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,25,B,UPDATE,20000,p99_ms,ms,lower,390.560912,paxos,415.772438,6.063780,1.064552,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,27,B,READ,20000,mean_ms,ms,lower,62.532,bodega,102.727,39.127980,1.642791,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,27,B,READ,20000,p99_ms,ms,lower,239.06757,bodega,266.270587,10.216306,1.113788,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,27,B,UPDATE,20000,mean_ms,ms,lower,256.187,kcensus,243.481,-5.218477,0.950403,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,27,B,UPDATE,20000,p99_ms,ms,lower,379.422487,paxos,426.057082,10.945621,1.122909,4,swiftpaxos: incomplete or invalid run,partial_alternatives
+aws-random,29,B,READ,20000,mean_ms,ms,lower,61.486,bodega,96.892,36.541717,1.575838,4,swiftpaxos: not measured at this load,partial_alternatives
+aws-random,29,B,READ,20000,p99_ms,ms,lower,263.019799,bodega,243.993066,-7.798063,0.927660,4,swiftpaxos: not measured at this load,partial_alternatives
+aws-random,29,B,UPDATE,20000,mean_ms,ms,lower,278.395,kcensus,250.762,-11.019612,0.900742,4,swiftpaxos: not measured at this load,partial_alternatives
+aws-random,29,B,UPDATE,20000,p99_ms,ms,lower,464.836485,paxos,393.864707,-18.019329,0.847319,4,swiftpaxos: not measured at this load,partial_alternatives
+aws-random,31,B,READ,20000,mean_ms,ms,lower,57.095,bodega,97.109,41.205244,1.700832,4,swiftpaxos: not measured at this load,partial_alternatives
+aws-random,31,B,READ,20000,p99_ms,ms,lower,252.440875,bodega,244.035063,-3.444510,0.966702,4,swiftpaxos: not measured at this load,partial_alternatives
+aws-random,31,B,UPDATE,20000,mean_ms,ms,lower,267.687,kcensus,252.505,-6.012554,0.943285,4,swiftpaxos: not measured at this load,partial_alternatives
+aws-random,31,B,UPDATE,20000,p99_ms,ms,lower,459.805763,paxos,416.116137,-10.499383,0.904982,4,swiftpaxos: not measured at this load,partial_alternatives

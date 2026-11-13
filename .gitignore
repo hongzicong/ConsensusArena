@@ -1,5 +1,9 @@
 results/*
 !results/README.md
+!results/plot.py
+!results/compare.py
+!results/COMPARISONS.md
+!results/requirements.txt
 !results/regular/
 !results/scalability/
 !results/throughput/

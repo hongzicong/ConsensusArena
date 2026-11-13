@@ -1,0 +1,182 @@
+{
+  "campaign_id": "paper-eval-20261112-171140-2e281d",
+  "binary_sha256": "64df6f84e10df8586516743c5dc307d01f0866db77f968c5dfa066becc0080d2",
+  "source_head": "3b34700cc1ed55c91d87eb9a8a1a3ec6542ea4e2",
+  "source_archive_sha256": "d7d2a2d91670cdcbaa40f495f07d6553748a1b2a33437d50ddcde22ea9f95ebe",
+  "runtime_policy": "replica-single-cpu-v2",
+  "replica_gomaxprocs": 1,
+  "replica_logical_cpus": 1,
+  "participant_task_cpu_slots": 2,
+  "client_gomaxprocs": 2,
+  "proxy_and_supervisor": "second replica task CPU slot; separate from replica CPU",
+  "replica_os_threads": "multiple OS threads allowed; all confined to one logical CPU",
+  "physical_core_exclusive": false,
+  "resource_observation": false,
+  "workload": {
+    "offered_rps": 20000,
+    "profiles": [
+      "A",
+      "B"
+    ],
+    "key_count": 100000,
+    "zipf_skew": 0.99,
+    "command_size_bytes": 16,
+    "workload_seed": 1,
+    "key_mapping_seed": 1,
+    "preload_seed": 1,
+    "warmup_s": 5,
+    "measurement_s": 10,
+    "sustain_s": 2,
+    "deadline_s": 19
+  },
+  "latency": "scheduled arrival to authorized completion for arrivals during [5,15); plot only fully drained complete cohorts",
+  "throughput": "authorized completions during [5,15) / 10; includes warmup arrivals completing in this window",
+  "resource_semantics": "CPU and application send+receive frame/byte counter differences at seconds 5 and 15; normalize by system completions; average replica metrics arithmetically",
+  "memory_semantics": "mean across replicas of kernel process lifetime peaks through measurement end, including startup/preload/warmup; MiB; no periodic RSS polling",
+  "runs_per_configuration": 1,
+  "expected_scenes": 72,
+  "validated_scenes": 72,
+  "plotted_scenes": 72,
+  "protocol_status": [
+    {
+      "protocol": "agreement",
+      "complete": true,
+      "expected_scenes": 12,
+      "completed_scenes": 12,
+      "timed_out_scenes": 0
+    },
+    {
+      "protocol": "paxos",
+      "complete": true,
+      "expected_scenes": 12,
+      "completed_scenes": 12,
+      "timed_out_scenes": 0
+    },
+    {
+      "protocol": "swiftpaxos",
+      "complete": true,
+      "expected_scenes": 12,
+      "completed_scenes": 12,
+      "timed_out_scenes": 0
+    },
+    {
+      "protocol": "bodega",
+      "complete": true,
+      "expected_scenes": 12,
+      "completed_scenes": 12,
+      "timed_out_scenes": 0
+    },
+    {
+      "protocol": "kcensus",
+      "complete": true,
+      "expected_scenes": 12,
+      "completed_scenes": 12,
+      "timed_out_scenes": 0
+    },
+    {
+      "protocol": "pqlfrontier",
+      "complete": true,
+      "expected_scenes": 12,
+      "completed_scenes": 12,
+      "timed_out_scenes": 0
+    }
+  ],
+  "input_case_checksums": {
+    "n7-c7-topology-00": "55febe0d4c90546f8cdbf0c994acd1b520ec844d780a46c822d4f933be364612",
+    "n7-c7-topology-01": "50cbaf19d30f5d8308f95b39dae65c7480b78d8ee100ff269861576b244eaeaa",
+    "n7-c7-topology-02": "300e37d242d10da44f74d9a01396e29caface33f755ee9dd76e627d827e393bd",
+    "n7-c7-topology-03": "3682fbba46163f6930897c73f9130970284fc80e47d53154bdd09a8d8d3aabe1",
+    "n3-c3-topology-04": "989487b3f87598318bcad64fe4f00a6bb3b0ab7ced81883685ea6871b918eb61",
+    "n5-c5-topology-05": "b35d536a0a18e3b76ae8fb043505e4d3995f3159f4eaa644113f9c315d92fbb2"
+  },
+  "collection_note": "Recovered completed raw runs from site-default scratch paths after the site reset custom SCRATCH. No benchmark reruns.",
+  "validation": "Original frozen collector revalidated workload logs, process role settings and startup/end-of-measurement thread affinity; see checksummed raw archives",
+  "go_version": "go1.27.0",
+  "build": {
+    "goos": "linux",
+    "goarch": "amd64",
+    "cgo_enabled": false,
+    "trimpath": true,
+    "vcs_modified": false
+  },
+  "memory_allocation": "4 GiB per CPU slot, two CPU slots per participant task; Slurm enforcement is at job/step allocation level",
+  "raw_archives": [
+    {
+      "suite": "regular",
+      "protocol": "agreement",
+      "array_job": "41157599",
+      "sha256": "f2d1ef54a1c0b8751a57d3f615e6ac9651d8de6d70b7ad888649a0be2cad9ff4",
+      "bytes": 21592330,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/regular-agreement.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/regular-agreement.tar.gz",
+      "remote_sha256": "f2d1ef54a1c0b8751a57d3f615e6ac9651d8de6d70b7ad888649a0be2cad9ff4"
+    },
+    {
+      "suite": "regular",
+      "protocol": "paxos",
+      "array_job": "41157601",
+      "sha256": "bdccec707faba35b500a776951730e129cb70bebe176283dfabf37a7741f9c6d",
+      "bytes": 16420901,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/regular-paxos.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/regular-paxos.tar.gz",
+      "remote_sha256": "bdccec707faba35b500a776951730e129cb70bebe176283dfabf37a7741f9c6d"
+    },
+    {
+      "suite": "regular",
+      "protocol": "swiftpaxos",
+      "array_job": "41157603",
+      "sha256": "2fecef82c914ede999f7fe67d4ed7dc570281832cb5ad858b2016c58d33f5b77",
+      "bytes": 45165416,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/regular-swiftpaxos.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/regular-swiftpaxos.tar.gz",
+      "remote_sha256": "2fecef82c914ede999f7fe67d4ed7dc570281832cb5ad858b2016c58d33f5b77"
+    },
+    {
+      "suite": "regular",
+      "protocol": "bodega",
+      "array_job": "41157605",
+      "sha256": "4c9514efb21e56cf2910d9e1a7912d99ddcf5ffb0ad866651f74f3e1feec08d9",
+      "bytes": 41998798,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/regular-bodega.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/regular-bodega.tar.gz",
+      "remote_sha256": "4c9514efb21e56cf2910d9e1a7912d99ddcf5ffb0ad866651f74f3e1feec08d9"
+    },
+    {
+      "suite": "regular",
+      "protocol": "kcensus",
+      "array_job": "41157607",
+      "sha256": "c3c5c642987e14aa6c35a240e6a09a6c6241165b983037c2601c6bd6ddbeca68",
+      "bytes": 17572353,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/regular-kcensus.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/regular-kcensus.tar.gz",
+      "remote_sha256": "c3c5c642987e14aa6c35a240e6a09a6c6241165b983037c2601c6bd6ddbeca68"
+    },
+    {
+      "suite": "regular",
+      "protocol": "pqlfrontier",
+      "array_job": "41157609",
+      "sha256": "71059ad690fae6b805771cb6eca3ad7ff37a1b5d9a7d65d83df24a7b0fc04907",
+      "bytes": 31737173,
+      "local_path": ".local-artifacts/campaigns/paper-eval-20261112-171140-2e281d/retrieved/regular-pqlfrontier.tar.gz",
+      "remote_path": "/home/veski/ConsensusArena/campaigns/paper-eval-20261112-171140-2e281d/archives/regular-pqlfrontier.tar.gz",
+      "remote_sha256": "71059ad690fae6b805771cb6eca3ad7ff37a1b5d9a7d65d83df24a7b0fc04907"
+    }
+  ],
+  "csv_sha256": {
+    "data/latency.csv": "2c926d4f87927f55873b4df7f75bf946f3423de0a9dc9faa0211143d660e97d9",
+    "data/operation-latency.csv": "7f4685462bb53140d14f28b4f1c9a0c959dc9ea4a9c9e6c99e5e4489f7443767",
+    "data/topologies.csv": "aa7eb43dfdf943f7ebcee839048af2388d050c0ec6dbfc509e233ccff18ead6d",
+    "data/agreement-vs-best.csv": "6d00ff3be126c9e24f7de185d99184c8cf81c35df92f8b1c7af6bdad1127033b"
+  },
+  "figure_generator_sha256": "648bdfd4c7076659c9c119f190ba003d3acfee2f7145a437f18de1eebbe79ca1",
+  "figure_requirements_sha256": "de950d3b75e4ad1a760c121533e06390c84574f7dd0b53c0eaa742ab6d5c2f38",
+  "local_publication_audit": {
+    "workload_records": 293,
+    "resource_records": 1470,
+    "affinity_snapshots": 5666,
+    "replica_thread_entries": 22759,
+    "proxy_thread_entries": 38687,
+    "complete": true
+  },
+  "comparison_generator_sha256": "3846a746bb9451a5261ea64ca53c20365d9360695dc1a6db478744d8da4d0fe9"
+}
